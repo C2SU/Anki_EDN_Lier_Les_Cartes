@@ -3,12 +3,14 @@
 **Recherche et liaison rapide de cartes pour Anki**
 
 Cet addon permet de créer des liens entre vos cartes Anki facilement, facilitant la navigation et l'interconnexion de vos connaissances.
+![preview.png](preview.png)
 
 ## ✨ Fonctionnalités
 
 ### 🔗 Liaison de cartes
 - **Recherche rapide** : Trouvez et liez des cartes en quelques secondes
-- **Liens cliquables** : Cliquez sur un lien dans le reviewer pour ouvrir la carte dans le browser
+- **Aperçu des cartes liées** : Survolez un hyperlien pour afficher instantanément un aperçu interactif de la carte liée.
+- **Liens cliquables** : Cliquez sur un hyperlien dans le reviewer pour ouvrir la carte dans le browser
 - **Copie de NID** : Copiez facilement l'identifiant d'une carte
 
 ### ⌨️ Raccourcis personnalisables
@@ -16,17 +18,12 @@ Cet addon permet de créer des liens entre vos cartes Anki facilement, facilitan
 - `Ctrl+Alt+C` : Copier le NID de la carte sélectionnée dans le browser
 - `nid:` : Tapez ces 4 caractères dans l'éditeur pour ouvrir automatiquement le dialog de recherche
 
-### 🎯 Menu partagé EDN
-Intègre le système de menu partagé Anki EDN (package `edn_menu`), permettant :
-- Activation/désactivation du module
-- Personnalisation des raccourcis clavier
-- Compatibilité avec d'autres addons EDN
 
 ## 📦 Fonctionnalités intégrées
 
-Cet addon intègre **directement** les fonctionnalités suivantes (aucune installation externe requise) :
-- ✅ **Link Cards** (addon restauré) : Fonctionnalités complètes de liaison
-- ✅ **Open Multiple Windows** : Support multi-fenêtres pour le browser
+Cet addon intègre les fonctionnalités suivantes (aucune installation externe requise) :
+- [**Link Cards**](https://ankiweb.net/shared/info/1170639320) : Fonctionnalités complètes de liaison
+- [**Open Multiple Windows**](https://ankiweb.net/shared/info/354407385) : Support multi-fenêtres pour le browser
 
 ## 🚀 Installation
 
@@ -47,19 +44,20 @@ Cet addon intègre **directement** les fonctionnalités suivantes (aucune instal
 
 **Méthode 1 : Via le dialog de recherche**
 1. Placez votre curseur dans l'éditeur
-2. Appuyez sur `Ctrl+Alt+L` ou tapez `nid:`
+2. Appuyez sur `Lier`, `Ctrl+Alt+L` ou tapez `nid:`
 3. Recherchez la carte que vous voulez lier
 4. Cliquez sur "Insérer" ou double-cliquez sur la carte
+![GUI.png](GUI.png)
 
 **Méthode 2 : Liaison rapide**
 1. Copiez le NID d'une carte (`Ctrl+Alt+C` dans le browser)
 2. Collez-le dans l'éditeur
 3. Sélectionnez le NID et appuyez sur `Ctrl+Alt+L`
-4. Le lien est créé automatiquement (sans afficher le recto)
+4. Le lien est créé automatiquement
 
 ### Naviguer via les liens
 
-Dans le reviewer, cliquez simplement sur le badge NID pour ouvrir la carte liée dans le browser.
+Dans le reviewer, passez la souris pour voir un aperçu, ou cliquez sur l'hyperlien pour ouvrir la carte liée dans le browser.
 
 ### Personnaliser les raccourcis
 
@@ -91,8 +89,5 @@ Vous êtes libre de :
 Pour toute question, suggestion ou rapport de bug :
 - [**Anki EDN**](https://tools.c2su.org/Anki_EDN/book/)
 - [Discord Anki EDN](https://discord.gg/2A7zHAEBYt)
-- GitHub Issues : [Lien vers issues]
-- Forum Anki : [Lien si applicable]
----
-
-**Développé avec ❤️ pour la communauté EDN**
+- [GitHub](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)
+- [AnkiWeb](https://ankiweb.net/shared/info/)
