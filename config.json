@@ -1,0 +1,6 @@
+{
+    "multiple": {
+        "default": true
+    },
+    "search_trigger": "nid:"
+}
