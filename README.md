@@ -29,14 +29,14 @@ Cet addon intègre les fonctionnalités suivantes (aucune installation externe r
 
 ### Via AnkiWeb
 1. Allez dans `Tools > Add-ons > Get Add-ons...`
-2. Entrez le code : `[CODE_ANKIWEB]` 
+2. Entrez le code : `[445658251]` 
 3. Redémarrez Anki
 
 ### Depuis le fichier .ankiaddon
 1. Téléchargez le fichier `.ankiaddon` depuis [GitHub](https://github.com/[VOTRE_COMPTE]/anki-edn-linked-cards/releases)
 2. Dans Anki, allez dans `Tools > Add-ons > Install from file...`
-3. Sélectionnez le fichier téléchargé
-4. Redémarrez Anki
+4. Sélectionnez le fichier téléchargé
+5. Redémarrez Anki
 
 ## 📖 Guide d'utilisation
 
@@ -66,12 +66,6 @@ Dans le reviewer, passez la souris pour voir un aperçu, ou cliquez sur l'hyperl
 3. Modifiez les raccourcis selon vos préférences
 4. Cliquez sur "✅ Appliquer" et redémarrez Anki
 
-## 🔧 Compatibilité
-
-- **Anki** : 2.1.50+
-- **Autres addons EDN** : Compatible avec tous les addons utilisant le menu partagé EDN
-
-
 ## 📄 Licence
 
 Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
@@ -88,6 +82,6 @@ Vous êtes libre de :
 
 Pour toute question, suggestion ou rapport de bug :
 - [**Anki EDN**](https://tools.c2su.org/Anki_EDN/book/)
-- [Discord Anki EDN](https://discord.gg/2A7zHAEBYt)
-- [GitHub](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)
-- [AnkiWeb](https://ankiweb.net/shared/info/)
+- [**Discord Anki EDN**](https://discord.gg/2A7zHAEBYt)
+- [**GitHub**](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)
+- [**AnkiWeb**](https://ankiweb.net/shared/info/445658251)
