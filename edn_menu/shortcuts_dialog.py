@@ -62,7 +62,7 @@ class ShortcutsDialog(QDialog):
                     row_layout.setContentsMargins(0, 5, 0, 5)
                     
                     # Label (module name + action)
-                    label_text = f"{module_info['name']}"
+                    label_text = f"{module_info['name']} - {action_info['label']}"
                     label = QLabel(label_text)
                     label.setMinimumWidth(200)
                     label.setStyleSheet("font-weight: bold;")
@@ -70,13 +70,15 @@ class ShortcutsDialog(QDialog):
                     
                     # Key sequence input widget
                     shortcut_input = KeySequenceEdit()
-                    current = get_shortcut(module_id, shortcut)
+                    # Use explicit shortcut_key if defined; otherwise compute from module_id + label
+                    action_key = action_info.get('shortcut_key') or f"{module_id}_{action_info['label']}"
+                    current = get_shortcut(action_key, shortcut)
                     shortcut_input.set_shortcut(current)
                     shortcut_input.setMinimumWidth(250)
                     row_layout.addWidget(shortcut_input)
                     
                     # Store ref
-                    self.shortcut_inputs[module_id] = {
+                    self.shortcut_inputs[action_key] = {
                         'widget': shortcut_input,
                         'default': shortcut
                     }
@@ -85,7 +87,7 @@ class ShortcutsDialog(QDialog):
                     reset_btn = QPushButton("Réinitialiser")
                     reset_btn.setMinimumWidth(120)
                     reset_btn.clicked.connect(
-                        lambda checked=False, mid=module_id: self.reset_shortcut(mid)
+                        lambda checked=False, ak=action_key: self.reset_shortcut(ak)
                     )
                     row_layout.addWidget(reset_btn)
                     

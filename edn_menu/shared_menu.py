@@ -22,6 +22,9 @@ def _get_config_path():
     """Get config path (lazy initialization to avoid profile loading issues)."""
     global _config_path
     if _config_path is None:
+        # Prevent crash if profile is not yet loaded (e.g. during addon scan)
+        if not mw.pm or not mw.pm.name:
+            return None
         # CRITICAL: Use profile folder for shared config across all EDN addons
         _config_path = os.path.join(mw.pm.profileFolder(), "edn_shared_config.json")
     return _config_path
@@ -32,6 +35,10 @@ def get_edn_menu():
     
     # Check if menu already exists (created by another addon instance)
     if _edn_menu is None:
+        # Prevent crash if UI is not yet fully initialized
+        if not hasattr(mw, "form") or not mw.form or not hasattr(mw.form, "menubar") or not mw.form.menubar:
+            return None
+            
         # Search for existing menu by object name in menubar
         for action in mw.form.menubar.actions():
             menu = action.menu()
@@ -93,16 +100,12 @@ def register_action(module_id: str, label: str, callback: Callable,
     action = QAction(label, mw)
     action.triggered.connect(callback)
     
+    # NOTE: We intentionally do NOT apply shortcuts to menu actions.
+    # Shortcuts are managed independently (editor_did_init_shortcuts, browser window actions)
+    # so they don't conflict across contexts. The shortcut info is stored in the registry
+    # for reference and display in the config widget only.
     if shortcut:
-        try:
-            # Get custom shortcut from config or use default
-            custom_shortcut = get_shortcut(module_id, shortcut)
-            action.setShortcut(QKeySequence(custom_shortcut))
-            # CRITICAL: Set shortcut context to ApplicationShortcut so it works globally
-            action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-            print(f"[shared_menu] Set shortcut '{custom_shortcut}' for {label}")
-        except Exception as e:
-            print(f"[shared_menu] Error setting shortcut: {e}")
+        print(f"[shared_menu] Shortcut '{shortcut}' for '{label}' managed externally (not on menu action)")
     
     # Insert before separator (settings is last)
     actions = menu.actions()
@@ -122,10 +125,32 @@ def register_action(module_id: str, label: str, callback: Callable,
     
     return action
 
+
+def register_action_shortcut_only(module_id: str, label: str, callback: Callable,
+                                  shortcut: Optional[str] = None, icon: Optional[str] = None,
+                                  shortcut_key: Optional[str] = None):
+    """
+    Register an action in the shortcut config dialog ONLY.
+    The action will NOT appear in the EDN dropdown menu.
+    It is still listed in the registry so it's visible in ShortcutsDialog.
+    
+    shortcut_key: explicit config store key (e.g. 'linked_cards_search').
+                  If None, the key will be computed as '{module_id}_{label}'.
+    """
+    registry = _get_registry()
+    if module_id in registry:
+        registry[module_id]["actions"].append({
+            "label": label,
+            "shortcut": shortcut,
+            "action": None,  # No QAction in the menu
+            "shortcut_key": shortcut_key  # explicit config key override
+        })
+    return None
+
 def get_config() -> dict:
     """Load EDN configuration."""
     config_path = _get_config_path()
-    if os.path.exists(config_path):
+    if config_path and os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -136,6 +161,8 @@ def get_config() -> dict:
 def save_config(config: dict):
     """Save EDN configuration."""
     config_path = _get_config_path()
+    if not config_path:
+        return
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 

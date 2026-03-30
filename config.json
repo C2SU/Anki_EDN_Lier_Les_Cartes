@@ -2,5 +2,13 @@
     "multiple": {
         "default": true
     },
-    "search_trigger": "nid:"
+    "search_trigger": "nid:",
+    "kbd_open_card": "n",
+    "kbd_preview": "p",
+    "hidden_preview_sections": [
+        "sourcesMegaContainer",
+        "commentsMegaContainer",
+        "tagsMegaContainer"
+    ],
+    "kbd_navigate": "Tab"
 }

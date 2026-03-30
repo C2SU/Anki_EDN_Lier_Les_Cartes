@@ -1,3 +1,4 @@
+/* Clickable cards styling - used throughout the app */
 kbd.clickable_cards {
   background:
     gradient(
@@ -26,7 +27,6 @@ kbd.clickable_cards:hover {
   color: #BD93BD;
 }
 
-/* Hover Preview Card */
 #edn-preview-box {
   position: fixed;        /* fixed = no layout reflow, spaces don't jump */
   z-index: 99999;
@@ -48,13 +48,15 @@ kbd.clickable_cards:hover {
   border-color: #e5e6e9 #dfe0e4 #d0d1d5;
   color: #fff;
 }
-.preview-recto {
+
+/* Scope preview styles to ONLY apply within #edn-preview-box */
+#edn-preview-box .preview-recto {
   font-weight: bold;
   border-bottom: 1px solid #c0c1c5;
   padding-bottom: 5px;
   margin-bottom: 5px;
   text-align: center;
 }
-.preview-verso {
+#edn-preview-box .preview-verso {
   font-size: 14px;
 }
