@@ -45,13 +45,13 @@ def init_linked_cards():
         register_action_shortcut_only("linked_cards", "Copier NID", copy_nid_from_active_browser,
                                       shortcut=shortcut_copy, shortcut_key="linked_cards_copy")
         # Touches simples — visibles et modifiables dans la config raccourcis
-        register_action_shortcut_only("linked_cards", "Editer", lambda: None,
+        register_action_shortcut_only("linked_cards", "Sélectionner / Suivant", lambda: None,
                                       shortcut=shortcut_kbd_n,
                                       shortcut_key="linked_cards_kbd_open")
         register_action_shortcut_only("linked_cards", "Aperçu", lambda: None,
                                       shortcut=shortcut_kbd_p,
                                       shortcut_key="linked_cards_kbd_preview")
-        register_action_shortcut_only("linked_cards", "Naviguer", lambda: None,
+        register_action_shortcut_only("linked_cards", "Ouvrir Aperçu", lambda: None,
                                       shortcut=shortcut_kbd_r,
                                       shortcut_key="linked_cards_kbd_navigate")
     except Exception as e:
@@ -185,83 +185,71 @@ if (!window._ednListenersAttached) {
             return;
         }
         
-        // N : pre-select inner link if preview open. Otherwise, open card.
-        if (e.key === kbdOpen || e.key === 'n') {
+        // N : Cycle through cards (Navigate/Highlight)
+        if (e.key === kbdOpen || e.key === 'n' || e.key === 'N') {
+            e.preventDefault();
+            var targetCards = [];
             if (previewVisible) {
-                e.preventDefault();
-                var innerCards = Array.from(previewBox.querySelectorAll('.clickable_cards'));
-                if (innerCards.length > 0) {
-                    var focused = document.activeElement;
-                    var idx = innerCards.indexOf(focused);
-                    var next = e.shiftKey ? idx - 1 : idx + 1;
-                    if (idx === -1) {
-                        next = e.shiftKey ? innerCards.length - 1 : 0;
-                    } else {
-                        if (next < 0) next = innerCards.length - 1;
-                        if (next >= innerCards.length) next = 0;
-                    }
-                    if (innerCards[next]) {
-                        innerCards[next].focus();
-                        innerCards[next].style.outline = "2px solid #007acc";
-                        innerCards[next].style.outlineOffset = "2px";
-                        if (focused && focused !== innerCards[next]) {
-                            focused.style.outline = "";
-                        }
-                    }
-                }
-                return;
+                targetCards = Array.from(previewBox.querySelectorAll('.clickable_cards'));
             } else {
-                var activeOrFirst = document.activeElement;
-                if (!activeOrFirst || !activeOrFirst.classList.contains('clickable_cards')) {
-                    var parentCards = Array.from(document.querySelectorAll('.clickable_cards')).filter(function(c) {
-                        return !previewBox || !previewBox.contains(c);
-                    });
-                    if (parentCards.length > 0) {
-                        var fi = (window._ednPreviewIndex >= 0 && window._ednPreviewIndex < parentCards.length) ? window._ednPreviewIndex : 0;
-                        activeOrFirst = parentCards[fi];
-                    }
-                }
-                if (activeOrFirst && activeOrFirst.classList.contains('clickable_cards')) {
-                    e.preventDefault();
-                    var nid2 = activeOrFirst.innerText.trim();
-                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid2);
-                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid2);
-                }
-                return;
+                targetCards = Array.from(document.querySelectorAll('.clickable_cards')).filter(function(c) {
+                    return !previewBox || !previewBox.contains(c);
+                });
             }
+            if (targetCards.length > 0) {
+                var idx = -1;
+                for (var i = 0; i < targetCards.length; i++) {
+                    if (targetCards[i].classList.contains('edn-selected-badge')) { idx = i; break; }
+                    else if (targetCards[i].style.outline) { idx = i; break; }
+                }
+                var next = e.shiftKey ? idx - 1 : idx + 1;
+                if (idx === -1) {
+                    next = e.shiftKey ? targetCards.length - 1 : 0;
+                } else {
+                    if (next < 0) next = targetCards.length - 1;
+                    if (next >= targetCards.length) next = 0;
+                }
+                if (targetCards[next]) {
+                    targetCards.forEach(function(c) {
+                        c.classList.remove('edn-selected-badge');
+                        c.style.outline = "";
+                    });
+                    targetCards[next].focus();
+                    targetCards[next].classList.add('edn-selected-badge');
+                    targetCards[next].style.outline = "2px solid #007acc";
+                    targetCards[next].style.outlineOffset = "2px";
+                }
+            }
+            return;
         }
         
-        // R : open preview of preview card if open and targeted, otherwise scroll
-        if (e.key === kbdNavigate || e.key === 'r') {
-            if (previewVisible) {
-                var focusedNode = document.activeElement;
-                if (focusedNode && focusedNode.classList.contains('clickable_cards') && previewBox.contains(focusedNode)) {
-                    e.preventDefault();
-                    var nid3 = focusedNode.innerText.trim();
-                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
-                    return;
-                } else {
-                    e.preventDefault();
-                    var scrollAmt = e.shiftKey ? -80 : 80;
-                    previewBox.scrollTop += scrollAmt;
-                    return;
+        // R : Open selected card PREVIEW (or scroll preview)
+        if (e.key === kbdNavigate || e.key === 'r' || e.key === 'R') {
+            var selectedNode = document.querySelector('.edn-selected-badge');
+            if (!selectedNode) {
+                var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
+                for(var i=0; i < allCardsSearch.length; i++) {
+                    if (allCardsSearch[i].style.outline) { selectedNode = allCardsSearch[i]; break; }
                 }
-            } else {
-                var allCards2 = Array.from(document.querySelectorAll('.clickable_cards'));
-                if (allCards2.length > 0) {
-                    e.preventDefault();
-                    var focused2 = document.activeElement;
-                    var idx2 = allCards2.indexOf(focused2);
-                    var next2 = e.shiftKey ? idx2 - 1 : idx2 + 1;
-                    if (idx2 === -1) {
-                        next2 = e.shiftKey ? allCards2.length - 1 : 0;
-                    } else {
-                        if (next2 < 0) next2 = allCards2.length - 1;
-                        if (next2 >= allCards2.length) next2 = 0;
-                    }
-                    if (allCards2[next2]) { allCards2[next2].focus(); }
-                }
+            }
+            
+            // If preview is already visible and we press R, scroll it
+            if (previewVisible && !e.shiftKey && !e.ctrlKey && !e.altKey && (!selectedNode || previewBox.contains(selectedNode))) {
+                e.preventDefault();
+                previewBox.scrollTop += 80;
+                return;
+            } else if (previewVisible && e.shiftKey) {
+                e.preventDefault();
+                previewBox.scrollTop -= 80;
+                return;
+            }
+
+            if (selectedNode) {
+                e.preventDefault();
+                var nid3 = selectedNode.innerText.trim();
+                window._edn_hover_target = selectedNode;
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
                 return;
             }
         }
@@ -415,6 +403,10 @@ if (!window._ednListenersAttached) {
             }
         }
         // Si targetInsideBox && _ednPositionLocked : position conservee
+        setTimeout(function() {
+            var kbdOpen = window._ednKbdOpenCfg || window._ednKbdOpen || 'n';
+            document.dispatchEvent(new KeyboardEvent('keydown', {key: kbdOpen, bubbles: true}));
+        }, 50);
     };
 
 } // fin guard _ednListenersAttached
@@ -464,46 +456,32 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
                 data = {}
             
             preview_visible = data.get("previewVisible", False)
-            badges_count = data.get("badgesCount", 0)
-            inner_focused = data.get("innerFocused", False)
+            is_focused = data.get("isFocused", False)
             shift_held = data.get("shiftHeld", False)
             
-            if preview_visible:
-                if inner_focused:
-                    mw.reviewer.web.eval("""
-                        var focusedNode = document.activeElement;
-                        if (focusedNode && focusedNode.classList.contains('clickable_cards')) {
-                            var nid3 = focusedNode.innerText.trim();
-                            if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                            else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
+            if is_focused:
+                mw.reviewer.web.eval("""
+                    var selectedNode = document.querySelector('.edn-selected-badge');
+                    if (!selectedNode) {
+                        var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
+                        for(var i=0; i < allCardsSearch.length; i++) {
+                            if (allCardsSearch[i].style.outline) { selectedNode = allCardsSearch[i]; break; }
                         }
-                    """)
-                else:
-                    # Scroller la preview
-                    scroll_amt = -80 if shift_held else 80
-                    mw.reviewer.web.eval(
-                        f"var b=document.getElementById('edn-preview-box');"
-                        f"if(b){{b.scrollTop+={scroll_amt};}}"
-                    )
-            elif badges_count > 0:
-                # Naviguer entre les badges
-                dir_js = "true" if shift_held else "false"
-                mw.reviewer.web.eval(f"""
-                    (function() {{
-                        var allCards = Array.from(document.querySelectorAll('.clickable_cards'));
-                        if (!allCards.length) return;
-                        var focused = document.activeElement;
-                        var idx = allCards.indexOf(focused);
-                        var goBack = {dir_js};
-                        var next = goBack ? idx - 1 : idx + 1;
-                        if (idx === -1) {{ next = goBack ? allCards.length - 1 : 0; }}
-                        else {{
-                            if (next < 0) next = allCards.length - 1;
-                            if (next >= allCards.length) next = 0;
-                        }}
-                        if (allCards[next]) {{ allCards[next].focus(); }}
-                    }})();
+                    }
+                    if (selectedNode) {
+                        var nid3 = selectedNode.innerText.trim();
+                        window._edn_hover_target = selectedNode;
+                        if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
+                        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
+                    }
                 """)
+            elif preview_visible:
+                # Scroller la preview
+                scroll_amt = -80 if shift_held else 80
+                mw.reviewer.web.eval(
+                    f"var b=document.getElementById('edn-preview-box');"
+                    f"if(b){{b.scrollTop+={scroll_amt};}}"
+                )
             else:
                 # Fallback: rejouer l'audio (comportement Anki par défaut)
                 for key, handler in original_r_handlers:
@@ -516,8 +494,7 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
             """JSON.stringify({
                 previewVisible: !!(document.getElementById('edn-preview-box') && 
                                    document.getElementById('edn-preview-box').style.display !== 'none'),
-                badgesCount: document.querySelectorAll('.clickable_cards').length,
-                innerFocused: !!(document.activeElement && document.activeElement.classList.contains('clickable_cards') && document.getElementById('edn-preview-box') && document.getElementById('edn-preview-box').contains(document.activeElement)),
+                isFocused: !!(document.querySelector('.edn-selected-badge') || Array.from(document.querySelectorAll('.clickable_cards')).some(c => c.style.outline)),
                 shiftHeld: false
             })""",
             _js_callback
@@ -550,33 +527,33 @@ def _on_reviewer_show_answer(card):
             var previewBox = document.getElementById('edn-preview-box');
             var previewVisible = previewBox && previewBox.style.display !== 'none';
             
-            var allCards = Array.from(document.querySelectorAll('.clickable_cards'));
+            var selectedNode = document.querySelector('.edn-selected-badge');
+            if (!selectedNode) {{
+                var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
+                for(var i=0; i < allCardsSearch.length; i++) {{
+                    if (allCardsSearch[i].style.outline) {{ selectedNode = allCardsSearch[i]; break; }}
+                }}
+            }}
             
-            if (previewVisible) {{
+            if (previewVisible && !e.shiftKey && (!selectedNode || previewBox.contains(selectedNode))) {{
                 e.preventDefault();
                 e.stopImmediatePropagation();
-                var focusedNode = document.activeElement;
-                if (focusedNode && focusedNode.classList.contains('clickable_cards') && previewBox.contains(focusedNode)) {{
-                    var nid3 = focusedNode.innerText.trim();
-                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
-                }} else {{
-                    var scrollAmt = e.shiftKey ? -80 : 80;
-                    previewBox.scrollTop += scrollAmt;
-                }}
-            }} else if (allCards.length > 0) {{
+                previewBox.scrollTop += 80;
+                return;
+            }} else if (previewVisible && e.shiftKey) {{
                 e.preventDefault();
                 e.stopImmediatePropagation();
-                var focused = document.activeElement;
-                var idx = allCards.indexOf(focused);
-                var next = e.shiftKey ? idx - 1 : idx + 1;
-                if (idx === -1) {{
-                    next = e.shiftKey ? allCards.length - 1 : 0;
-                }} else {{
-                    if (next < 0) next = allCards.length - 1;
-                    if (next >= allCards.length) next = 0;
-                }}
-                if (allCards[next]) {{ allCards[next].focus(); }}
+                previewBox.scrollTop -= 80;
+                return;
+            }}
+
+            if (selectedNode) {{
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                var nid3 = selectedNode.innerText.trim();
+                window._edn_hover_target = selectedNode;
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
             }}
         }}, true);  // true = capture phase, priority over Anki
     }})();
@@ -797,10 +774,18 @@ def handle_editor_button(editor):
     """Smart Link: Direct link if selection is NID, else Search GUI."""
     editor.web.evalWithCallback("""
         (function() {
-            // Nettoyer tout ancien marker avant d'en placer un nouveau
-            document.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                try { m.parentNode.removeChild(m); } catch(e) {}
+            // Nettoyer tout ancien marker
+            let markers = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+            document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
+                if (el.shadowRoot) {
+                    markers = markers.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                    el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {
+                       if (inner.shadowRoot) markers = markers.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                    });
+                }
             });
+            markers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+
             window._ednSavedRange = null;
             let textValue = '';
             let isFullField = false;
@@ -857,10 +842,18 @@ def handle_editor_button(editor):
                         range.collapse(false);
                         if (sel) { sel.removeAllRanges(); sel.addRange(range); }
                         window._ednSavedRange = range.cloneRange();
-                        // Supprimer l'éventuel marker créé précédemment (champ text sélectionné)
-                        document.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                            try { m.parentNode.removeChild(m); } catch(e) {}
+                        
+                        let cleanOld = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+                        document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
+                            if (el.shadowRoot) {
+                                cleanOld = cleanOld.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                                el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {
+                                   if (inner.shadowRoot) cleanOld = cleanOld.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                                });
+                            }
                         });
+                        cleanOld.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+                        
                         _insertMarkerAtCursor(sel || { rangeCount: 1, getRangeAt: () => range });
                     }
                     // Champ vide : le marker a déjà été placé (ou il sera à la fin par défaut)
@@ -1029,6 +1022,10 @@ def on_editor_init(editor: Editor):
                 box.style.left = leftPos + "px";
                 window._ednPositionLocked = true;
             }
+            setTimeout(function() {
+                var kbdOpen = window._ednKbdOpenCfg || window._ednKbdOpen || 'n';
+                document.dispatchEvent(new KeyboardEvent('keydown', {key: kbdOpen, bubbles: true}));
+            }, 50);
         };
 
         document.addEventListener("mouseover", function(e) {
@@ -1124,13 +1121,13 @@ def on_editor_init(editor: Editor):
                 
                 if (sel && sel.rangeCount > 0) {{
                     window._ednSavedRange = sel.getRangeAt(0).cloneRange();
-                try {{
-                    let r = window._ednSavedRange.cloneRange();
-                    r.collapse(false);
-                    let marker = document.createElement("span");
-                    marker.id = "edn-cursor-marker";
-                    r.insertNode(marker);
-                }} catch(e) {{}}
+                    try {{
+                        let r = window._ednSavedRange.cloneRange();
+                        r.collapse(false);
+                        let marker = document.createElement("span");
+                        marker.id = "edn-cursor-marker";
+                        r.insertNode(marker);
+                    }} catch(e) {{}}
                 }}
                 
                 if (typeof pycmd !== 'undefined') pycmd('edn_nid_trigger');
@@ -1237,22 +1234,20 @@ class LinkInserter:
             if (!activeEditable) return;
 
             // ── Étape 2 : rechercher le marker dans la BONNE racine ───────────────────
-            // Le marker a été inséré via r.insertNode() dans le contexte du shadow DOM
-            // du champ actif. Il faut le chercher là-bas en priorité.
+            let markers = Array.from(editRoot.querySelectorAll('[id="edn-cursor-marker"]'));
 
-            let markers = Array.from(editRoot.querySelectorAll('#edn-cursor-marker'));
-
-            // Complément : chercher aussi dans tous les shadow roots si pas trouvé
             if (!markers.length) {{
-                document.querySelectorAll('anki-editable').forEach(function(ae) {{
-                    if (ae.shadowRoot) {{
-                        let found = Array.from(ae.shadowRoot.querySelectorAll('#edn-cursor-marker'));
-                        markers = markers.concat(found);
+                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {{
+                    if (el.shadowRoot) {{
+                        markers = markers.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                        el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {{
+                           if (inner.shadowRoot) markers = markers.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                        }});
                     }}
                 }});
             }}
             if (!markers.length) {{
-                markers = Array.from(document.querySelectorAll('#edn-cursor-marker'));
+                markers = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
             }}
 
             // Garder seulement le dernier (le plus récent)
@@ -1383,22 +1378,57 @@ class LinkedCardsDialog(QDialog):
         self.search_bar.setFocus()
         
     def closeEvent(self, event):
+        self._cleanup_on_close()
+        super().closeEvent(event)
+
+    def reject(self):
+        self._cleanup_on_close()
+        super().reject()
+
+    def _cleanup_on_close(self):
+        # Fermer la preview popup si elle est ouverte
+        self.hide_preview_popup()
+        if getattr(self, '_is_inserting', False):
+            return
         # Clean up the marker on close if it was not consumed string link insertion.
         self.editor.web.eval("""
             (function() {
-                document.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                    try { m.parentNode.removeChild(m); } catch(e) {}
-                });
-                document.querySelectorAll('anki-editable').forEach(function(ae) {
-                    if (ae.shadowRoot) {
-                        ae.shadowRoot.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                            try { m.parentNode.removeChild(m); } catch(e) {}
-                        });
+                function findAllMarkers(root, found) {
+                    if (!root) return;
+                    if (root.querySelectorAll) {
+                        let ms = root.querySelectorAll('[id="edn-cursor-marker"]');
+                        for (let i = 0; i < ms.length; i++) {
+                            if (!found.includes(ms[i])) found.push(ms[i]);
+                        }
                     }
+                    if (root.shadowRoot) findAllMarkers(root.shadowRoot, found);
+                    if (root.children) {
+                        for (let i = 0; i < root.children.length; i++) findAllMarkers(root.children[i], found);
+                    }
+                }
+                let markers = [];
+                findAllMarkers(document.body, markers);
+                document.querySelectorAll('anki-editable, anki-editor').forEach(el => findAllMarkers(el, markers));
+                
+                let changedEditables = new Set();
+                markers.forEach(function(m) { 
+                    try { 
+                        let rootNode = m.getRootNode ? m.getRootNode() : null;
+                        let host = rootNode && rootNode.host ? rootNode.host : null;
+                        let editable = m.closest ? m.closest('anki-editable') : null;
+                        if (!editable && host && host.tagName === 'ANKI-EDITABLE') editable = host;
+                        if (editable) changedEditables.add(editable);
+                        
+                        if (m.parentNode) m.parentNode.removeChild(m); 
+                    } catch(e) {} 
+                });
+                changedEditables.forEach(function(editable) {
+                    try {
+                        editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    } catch(e) {}
                 });
             })();
         """)
-        super().closeEvent(event)
     @perf_log
     def do_search(self, query):
         if len(query) < 2:
@@ -1435,15 +1465,20 @@ class LinkedCardsDialog(QDialog):
                             self.clicked.connect(self.on_click)
                             
                         def on_click(self):
-                            # Afficher/masquer la preview inline sans cacher le dialog principal
-                            self.dialog_parent.toggle_preview_popup(self.nid, position_widget=self)
+                            # Sur click, on ouvre la carte dans le navigateur Anki
+                            from aqt import dialogs, mw
+                            browser = dialogs.open("Browser", mw)
+                            browser.search_for(f"nid:{self.nid}")
+                            self.dialog_parent.hide_preview_popup()
+                            self.dialog_parent.close()
 
                         def enterEvent(self, event):
                             self.dialog_parent.show_preview_popup(self.nid, position_widget=self)
                             super().enterEvent(event)
                             
                         def leaveEvent(self, event):
-                            # Ne pas masquer immédiatement — laisser l'utilisateur interagir
+                            # Hide immediately so it doesn't stay open and block interaction
+                            self.dialog_parent.hide_preview_popup()
                             super().leaveEvent(event)
 
                     btn = HoverButton("Voir", str(nid), self)
@@ -1503,13 +1538,14 @@ class LinkedCardsDialog(QDialog):
                 r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
 
             if not hasattr(self, '_preview_dlg') or self._preview_dlg is None:
-                dlg = QDialog(self)
+                dlg = QWidget(self)
+                dlg.setObjectName("PreviewPopup")
                 dlg.setWindowTitle("Apercu")
-                dlg.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+                dlg.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+                dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
                 dlg.setMinimumSize(450, 300)
                 dlg.setMaximumSize(600, 520)
-                dlg.setModal(False)
-                dlg.setStyleSheet("QDialog { border: 2px solid #ccc; background: white; border-radius: 8px; }")
+                dlg.setStyleSheet("#PreviewPopup { border: 2px solid #007acc; background: white; border-radius: 8px; }")
 
                 v = QVBoxLayout(dlg)
                 v.setContentsMargins(4, 4, 4, 4)
@@ -1581,6 +1617,7 @@ class LinkedCardsDialog(QDialog):
             items.append((data['nid'], data['recto']))
             
         if items:
+            self._is_inserting = True
             self.close()
             editor = self.editor
             # Ne pas appeler setFocus() ici : ça réinitialise la sélection et perd le marqueur de curseur
@@ -1596,16 +1633,16 @@ def open_search_dialog(editor):
         (function() {
             // Nettoyer les anciens markers en premier — chercher aussi dans les shadow DOM
             function _cleanMarkers() {
-                document.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                    try { m.parentNode.removeChild(m); } catch(e) {}
-                });
-                document.querySelectorAll('anki-editable').forEach(function(ae) {
-                    if (ae.shadowRoot) {
-                        ae.shadowRoot.querySelectorAll('#edn-cursor-marker').forEach(function(m) {
-                            try { m.parentNode.removeChild(m); } catch(e) {}
+                let markers = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
+                    if (el.shadowRoot) {
+                        markers = markers.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
+                        el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {
+                           if (inner.shadowRoot) markers = markers.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
                         });
                     }
                 });
+                markers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
             }
 
             // Si _ednSavedRange est déjà défini (par handle_editor_button), le conserver
