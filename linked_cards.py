@@ -45,13 +45,13 @@ def init_linked_cards():
         register_action_shortcut_only("linked_cards", "Copier NID", copy_nid_from_active_browser,
                                       shortcut=shortcut_copy, shortcut_key="linked_cards_copy")
         # Touches simples — visibles et modifiables dans la config raccourcis
-        register_action_shortcut_only("linked_cards", "Sélectionner / Suivant", lambda: None,
+        register_action_shortcut_only("linked_cards", "Suivant", lambda: None,
                                       shortcut=shortcut_kbd_n,
                                       shortcut_key="linked_cards_kbd_open")
         register_action_shortcut_only("linked_cards", "Aperçu", lambda: None,
                                       shortcut=shortcut_kbd_p,
                                       shortcut_key="linked_cards_kbd_preview")
-        register_action_shortcut_only("linked_cards", "Ouvrir Aperçu", lambda: None,
+        register_action_shortcut_only("linked_cards", "Aperçu²", lambda: None,
                                       shortcut=shortcut_kbd_r,
                                       shortcut_key="linked_cards_kbd_navigate")
     except Exception as e:
@@ -155,6 +155,13 @@ if (!window._ednListenersAttached) {
             el.setAttribute('tabindex', '0');
         });
     }
+    function _ednClearAllSelections() {
+        document.querySelectorAll('.clickable_cards').forEach(function(el) {
+            el.classList.remove('edn-selected-badge');
+            el.style.outline = "";
+            el.style.outlineOffset = "";
+        });
+    }
     _ednSetupBadges();
     setTimeout(_ednSetupBadges, 300);
 
@@ -175,7 +182,11 @@ if (!window._ednListenersAttached) {
             if (parentCards.length > 0) {
                 window._ednPreviewIndex = (window._ednPreviewIndex + 1) % parentCards.length;
                 var targetBadge = parentCards[window._ednPreviewIndex];
+                _ednClearAllSelections();
                 targetBadge.focus();
+                targetBadge.classList.add('edn-selected-badge');
+                targetBadge.style.outline = "2px solid #ff4444"; // ROUGE
+                targetBadge.style.outlineOffset = "2px";
                 window._edn_hover_target = targetBadge;
                 var nid = targetBadge.innerText.trim();
                 window._ednPositionLocked = false;
@@ -200,7 +211,6 @@ if (!window._ednListenersAttached) {
                 var idx = -1;
                 for (var i = 0; i < targetCards.length; i++) {
                     if (targetCards[i].classList.contains('edn-selected-badge')) { idx = i; break; }
-                    else if (targetCards[i].style.outline) { idx = i; break; }
                 }
                 var next = e.shiftKey ? idx - 1 : idx + 1;
                 if (idx === -1) {
@@ -210,13 +220,10 @@ if (!window._ednListenersAttached) {
                     if (next >= targetCards.length) next = 0;
                 }
                 if (targetCards[next]) {
-                    targetCards.forEach(function(c) {
-                        c.classList.remove('edn-selected-badge');
-                        c.style.outline = "";
-                    });
+                    _ednClearAllSelections();
                     targetCards[next].focus();
                     targetCards[next].classList.add('edn-selected-badge');
-                    targetCards[next].style.outline = "2px solid #007acc";
+                    targetCards[next].style.outline = "2px solid #007acc"; // BLEU
                     targetCards[next].style.outlineOffset = "2px";
                 }
             }
@@ -225,7 +232,14 @@ if (!window._ednListenersAttached) {
         
         // R : Open selected card PREVIEW (or scroll preview)
         if (e.key === kbdNavigate || e.key === 'r' || e.key === 'R') {
-            var selectedNode = document.querySelector('.edn-selected-badge');
+            var selectedNode = null;
+            if (previewVisible) {
+                selectedNode = previewBox.querySelector('.edn-selected-badge');
+            }
+            if (!selectedNode) {
+                selectedNode = document.querySelector('.edn-selected-badge');
+            }
+            // Fallback outline
             if (!selectedNode) {
                 var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
                 for(var i=0; i < allCardsSearch.length; i++) {
@@ -233,24 +247,40 @@ if (!window._ednListenersAttached) {
                 }
             }
             
-            // If preview is already visible and we press R, scroll it
-            if (previewVisible && !e.shiftKey && !e.ctrlKey && !e.altKey && (!selectedNode || previewBox.contains(selectedNode))) {
-                e.preventDefault();
-                previewBox.scrollTop += 80;
-                return;
-            } else if (previewVisible && e.shiftKey) {
-                e.preventDefault();
-                previewBox.scrollTop -= 80;
-                return;
+            // Priorité 1 : Ouvrir si la sélection a changé ou si elle est imbriquée (pour les aperçus en cascade)
+            if (selectedNode && (selectedNode !== window._edn_hover_target || (previewVisible && previewBox.contains(selectedNode)))) {
+                var nid3 = selectedNode.innerText.trim();
+                // Si c'est déjà le NID survolé, et qu'on est déjà dans le preview, on scroll (évite le feedback loop)
+                // Mais si c'est un badge interne, on veut l'ouvrir.
+                if (selectedNode !== window._edn_hover_target) {
+                    e.preventDefault();
+                    window._edn_hover_target = selectedNode;
+                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
+                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
+                    return;
+                }
             }
 
-            if (selectedNode) {
-                e.preventDefault();
-                var nid3 = selectedNode.innerText.trim();
-                window._edn_hover_target = selectedNode;
-                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
+            // Priorité 2 : Faire défiler l'aperçu existant
+            if (previewVisible) {
+                if (!e.shiftKey && !e.ctrlKey && !e.altKey) {
+                    e.preventDefault();
+                    previewBox.scrollTop += 80;
+                } else if (e.shiftKey) {
+                    e.preventDefault();
+                    previewBox.scrollTop -= 80;
+                }
                 return;
+            }
+        }
+        
+        // Escape : Masquer la preview
+        if (e.key === 'Escape') {
+            if (previewVisible) {
+                e.preventDefault();
+                previewBox.style.display = "none";
+                window._edn_hover_target = null;
+                window._ednPositionLocked = false;
             }
         }
         
@@ -390,16 +420,24 @@ if (!window._ednListenersAttached) {
         box.innerHTML = tempDiv.innerHTML;
         box.style.display = "block";
         box.style.overflowY = "auto";
-        if (!targetInsideBox || !window._ednPositionLocked) {
-            if(window._edn_hover_target) {
+        
+        // Ajuster la position : seulement si changement de cible majeure ou si non locké
+        if (window._edn_hover_target) {
+            var targetInsideBox = box.contains(window._edn_hover_target);
+            if (!targetInsideBox || !window._ednPositionLocked) {
                 var rect = window._edn_hover_target.getBoundingClientRect();
-                var topPos = rect.top; // 0 gap to facilitate hover
+                var topPos = rect.top;
                 var leftPos = rect.right + 10;
                 if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
                 if (leftPos < 0) leftPos = 10;
-                box.style.top = topPos + "px";
-                box.style.left = leftPos + "px";
-                window._ednPositionLocked = true;
+                // Si rect.top est 0 (cas possible si élément pas encore bien rendu ou scrollé), on essaie de garder l'ancien top
+                if (rect.top === 0 && rect.bottom === 0) {
+                     // Fallback sécurité si rect invalide
+                } else {
+                    box.style.top = topPos + "px";
+                    box.style.left = leftPos + "px";
+                    window._ednPositionLocked = true;
+                }
             }
         }
         // Si targetInsideBox && _ednPositionLocked : position conservee
@@ -522,12 +560,44 @@ def _on_reviewer_show_answer(card):
         
         // On capture la touche '{nav_key}' en phase capture pour avoir la priorité sur Anki
         document.addEventListener('keydown', function(e) {{
+            function _ednClearAllSelections() {{
+                document.querySelectorAll('.clickable_cards').forEach(function(el) {{
+                    el.classList.remove('edn-selected-badge');
+                    el.style.outline = "";
+                    el.style.outlineOffset = "";
+                }});
+            }}
+
+            if (e.key === 'Escape') {{
+                var previewBox = document.getElementById('edn-preview-box');
+                if (previewBox && previewBox.style.display !== 'none') {{
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    previewBox.style.display = "none";
+                    window._edn_hover_target = null;
+                    window._ednPositionLocked = false;
+                    _ednClearAllSelections();
+                    return;
+                }}
+            }}
+
+            if (e.key === 'p') {{
+                // On laisse le handler principal gérer P pour l'instant (car non configuré ici)
+                // Mais on nettoie si besoin. 
+            }}
+
             if (e.key !== '{nav_key}') return;
             
             var previewBox = document.getElementById('edn-preview-box');
             var previewVisible = previewBox && previewBox.style.display !== 'none';
             
-            var selectedNode = document.querySelector('.edn-selected-badge');
+            var selectedNode = null;
+            if (previewVisible) {{
+                selectedNode = previewBox.querySelector('.edn-selected-badge');
+            }}
+            if (!selectedNode) {{
+                selectedNode = document.querySelector('.edn-selected-badge');
+            }}
             if (!selectedNode) {{
                 var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
                 for(var i=0; i < allCardsSearch.length; i++) {{
@@ -535,25 +605,29 @@ def _on_reviewer_show_answer(card):
                 }}
             }}
             
-            if (previewVisible && !e.shiftKey && (!selectedNode || previewBox.contains(selectedNode))) {{
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                previewBox.scrollTop += 80;
-                return;
-            }} else if (previewVisible && e.shiftKey) {{
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                previewBox.scrollTop -= 80;
-                return;
-            }}
-
-            if (selectedNode) {{
+            // Si un badge est sélectionné ET que ce n'est pas celui déjà affiché -> PRIORITÉ OUVERTURE
+            if (selectedNode && selectedNode !== window._edn_hover_target) {{
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 var nid3 = selectedNode.innerText.trim();
                 window._edn_hover_target = selectedNode;
                 if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
                 else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
+                return;
+            }}
+
+            // Sinon (pas de badge ou déjà affiché) -> PRIORITÉ SCROLL
+            if (previewVisible) {{
+                if (!e.shiftKey) {{
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    previewBox.scrollTop += 80;
+                }} else {{
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    previewBox.scrollTop -= 80;
+                }}
+                return;
             }}
         }}, true);  // true = capture phase, priority over Anki
     }})();
@@ -798,7 +872,7 @@ def handle_editor_button(editor):
                 if (!selection || selection.rangeCount === 0) return;
                 try {
                     let r = selection.getRangeAt(0).cloneRange();
-                    r.collapse(false);
+                    r.deleteContents();
                     let m = document.createElement('span');
                     m.id = 'edn-cursor-marker';
                     r.insertNode(m);
@@ -807,8 +881,8 @@ def handle_editor_button(editor):
 
             if (sel && sel.rangeCount > 0) {
                 window._ednSavedRange = sel.getRangeAt(0).cloneRange();
-                _insertMarkerAtCursor(sel);
                 textValue = sel.toString();
+                _insertMarkerAtCursor(sel);
             }
 
             if (!textValue.trim() && active) {
@@ -889,7 +963,7 @@ def create_link_for_nid(editor, nid, with_recto=False):
         recto = None
         if with_recto:
             recto = note.fields[0] if note.fields else ""
-            recto = strip_html(recto)[:80] or "[Vide]"
+            recto = strip_html(recto)[:240] or "[Vide]"
         LinkInserter(editor).insert_link([(nid, recto)])
     except:
         tooltip(f"Note {nid} non trouvée.")
@@ -1064,6 +1138,18 @@ def on_editor_init(editor: Editor):
                 window._ednPositionLocked = false;
             }
         });
+
+        document.addEventListener("keydown", function(e) {
+            if (e.key === 'Escape') {
+                var box = document.getElementById("edn-preview-box");
+                if (box && box.style.display !== 'none') {
+                    e.preventDefault();
+                    box.style.display = "none";
+                    window._edn_hover_target = null;
+                    window._ednPositionLocked = false;
+                }
+            }
+        });
     })();
     """
     editor.web.eval(js_hover)
@@ -1146,6 +1232,27 @@ def on_js_message(handled, message, context):
         if editor:
             open_search_dialog(editor)
         return (True, None)
+    elif message.startswith("gui_preview_hover:"):
+        nid = message.split(":")[1]
+        global _active_dialog
+        if _active_dialog and hasattr(_active_dialog, 'show_nested_preview'):
+            _active_dialog.show_nested_preview(nid)
+        return (True, None)
+    elif message.startswith("gui_preview_mouseout:"):
+        if _active_dialog:
+            if message == "gui_preview_mouseout:esc":
+                if hasattr(_active_dialog, '_preview_stack') and _active_dialog._preview_stack:
+                    _active_dialog.hide_nested_preview()
+                elif hasattr(_active_dialog, 'hide_preview_popup'):
+                    _active_dialog.hide_preview_popup()
+            elif hasattr(_active_dialog, 'hide_nested_preview'):
+                _active_dialog.hide_nested_preview()
+        return (True, None)
+    elif message.startswith("gui_preview_click:"):
+        nid = message.split(":")[1]
+        if _active_dialog and hasattr(_active_dialog, 'on_gui_preview_click'):
+            _active_dialog.on_gui_preview_click(nid)
+        return (True, None)
     return handled
 
 def strip_html(text):
@@ -1211,8 +1318,7 @@ class LinkInserter:
                     if (el) {{ activeEditable = el; editRoot = root; }}
                 }}
             }}
-
-            // Fallback : index du champ sauvegardé
+                // Fallback : index du champ sauvegardé
             if (!activeEditable && window._ednSavedFieldIndex >= 0) {{
                 let allAE = Array.from(document.querySelectorAll('anki-editable'));
                 let target = allAE[window._ednSavedFieldIndex];
@@ -1233,8 +1339,11 @@ class LinkInserter:
 
             if (!activeEditable) return;
 
-            // ── Étape 2 : rechercher le marker dans la BONNE racine ───────────────────
-            let markers = Array.from(editRoot.querySelectorAll('[id="edn-cursor-marker"]'));
+            // ── Étape 2 : rechercher le marker dans TOUTES les racines ─────────────────
+            let markers = [];
+            if (editRoot) {{
+                markers = Array.from(editRoot.querySelectorAll('[id="edn-cursor-marker"]'));
+            }}
 
             if (!markers.length) {{
                 document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {{
@@ -1255,9 +1364,22 @@ class LinkInserter:
             for (let i = 0; i < markers.length - 1; i++) {{
                 try {{ markers[i].parentNode.removeChild(markers[i]); }} catch(e) {{}}
             }}
+            
+            if (!marker && !activeEditable) return;
 
             // ── Étape 3 : insérer le HTML ─────────────────────────────────────────────
             if (marker) {{
+                let curr = marker.parentNode;
+                if (!activeEditable) {{
+                    while (curr) {{
+                        if (curr.tagName === 'ANKI-EDITABLE' || curr.isContentEditable) {{
+                            activeEditable = curr;
+                            break;
+                        }}
+                        curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host);
+                    }}
+                }}
+                
                 let temp = document.createElement('template');
                 temp.innerHTML = htmlToInsert;
                 let frag = temp.content;
@@ -1388,6 +1510,9 @@ class LinkedCardsDialog(QDialog):
     def _cleanup_on_close(self):
         # Fermer la preview popup si elle est ouverte
         self.hide_preview_popup()
+        if hasattr(self, '_preview_dlg') and self._preview_dlg:
+            self._preview_dlg.deleteLater()
+            self._preview_dlg = None
         if getattr(self, '_is_inserting', False):
             return
         # Clean up the marker on close if it was not consumed string link insertion.
@@ -1444,7 +1569,7 @@ class LinkedCardsDialog(QDialog):
                 try:
                     note = mw.col.get_note(nid)
                     recto = note.fields[0] if note.fields else ""
-                    recto_clean = strip_html(recto)[:80] or "[Vide]"
+                    recto_clean = strip_html(recto)[:240] or "[Vide]"
                     
                     row = self.results_table.rowCount()
                     self.results_table.insertRow(row)
@@ -1473,12 +1598,15 @@ class LinkedCardsDialog(QDialog):
                             self.dialog_parent.close()
 
                         def enterEvent(self, event):
+                            self.dialog_parent._preview_current_widget = self
                             self.dialog_parent.show_preview_popup(self.nid, position_widget=self)
                             super().enterEvent(event)
                             
                         def leaveEvent(self, event):
-                            # Hide immediately so it doesn't stay open and block interaction
-                            self.dialog_parent.hide_preview_popup()
+                            # On ne cache pas immédiatement pour permettre le survol de la popup
+                            # La popup se cachera via les événements de survol du dialogue si besoin
+                            from aqt.qt import QTimer
+                            QTimer.singleShot(150, lambda: self.dialog_parent.check_hide_preview())
                             super().leaveEvent(event)
 
                     btn = HoverButton("Voir", str(nid), self)
@@ -1489,6 +1617,23 @@ class LinkedCardsDialog(QDialog):
             self.results_label.setText(f"{count} résultats")
         except Exception as e:
             self.results_label.setText(str(e))
+        
+        # Ancrage dynamique au défilement
+        if not hasattr(self, '_scroll_connected'):
+            self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
+            self._scroll_connected = True
+
+    def _on_table_scroll(self, value):
+        if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
+            if hasattr(self, '_preview_current_widget') and self._preview_current_widget:
+                btn = self._preview_current_widget
+                # Check if still visible
+                rect = self.results_table.visualItemRect(self.results_table.itemAt(btn.pos()))
+                if btn.isVisible() and btn.rect().intersects(self.results_table.viewport().rect()):
+                    pos = btn.mapToGlobal(QPoint(btn.width() + 10, -50))
+                    self._preview_dlg.move(pos)
+                else:
+                    self.hide_preview_popup()
 
     def toggle_preview_popup(self, nid, position_widget=None):
         """Affiche ou masque la preview sans fermer le dialog principal."""
@@ -1538,12 +1683,12 @@ class LinkedCardsDialog(QDialog):
                 r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
 
             if not hasattr(self, '_preview_dlg') or self._preview_dlg is None:
-                dlg = QWidget(self)
+                flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                dlg = QWidget(None, flags)
                 dlg.setObjectName("PreviewPopup")
                 dlg.setWindowTitle("Apercu")
-                dlg.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
                 dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-                dlg.setMinimumSize(450, 300)
+                dlg.setMinimumSize(450, 100)
                 dlg.setMaximumSize(600, 520)
                 dlg.setStyleSheet("#PreviewPopup { border: 2px solid #007acc; background: white; border-radius: 8px; }")
 
@@ -1556,6 +1701,9 @@ class LinkedCardsDialog(QDialog):
 
                 self._preview_dlg = dlg
                 self._preview_web = web
+
+                # Install event filter to track mouse leave from popup
+                dlg.installEventFilter(self)
             else:
                 dlg = self._preview_dlg
                 web = self._preview_web
@@ -1564,13 +1712,17 @@ class LinkedCardsDialog(QDialog):
 
             if position_widget:
                 pos = position_widget.mapToGlobal(QPoint(position_widget.width() + 10, -50))
+                # Ajustement si on sort de l'écran bas
+                screen = QApplication.primaryScreen().availableGeometry()
+                if pos.y() + 300 > screen.height():
+                    pos.setY(screen.height() - 320)
                 dlg.move(pos)
 
             addon_package = mw.addonManager.addonFromModule(__name__)
             css_link = '<link rel="stylesheet" href="/_addons/' + addon_package + '/user_files/clickable_cards.css">'
             scoped_css = """
             <style>
-                body { margin: 2px; font-size: 12px; overflow: hidden; padding: 0 !important; }
+                body { margin: 2px; font-size: 12px; overflow-x: hidden; padding: 0 !important; }
                 span[id*='FSRS'] { display: none !important; }
                 hr { display: none !important; }
                 .card > *:last-child { margin-bottom: 0 !important; padding-bottom: 0 !important; }
@@ -1583,17 +1735,122 @@ class LinkedCardsDialog(QDialog):
                 .bar { flex: 0 0 24px !important; width: 24px !important; min-height: 24px !important; margin: 0 !important; padding: 0 !important; background-size: 18px !important; border-right-width: 1px !important; }
                 .barHider { display: none !important; }
                 br { line-height: 1px !important; margin: 0 !important; }
-                .clickable_cards { font-size: 11px !important; height: 11px !important; line-height: 11px !important; padding: 3px !important; margin: 3px !important; }
+                .clickable_cards { font-size: 11px !important; height: 11px !important; line-height: 11px !important; padding: 3px !important; margin: 3px !important; cursor: pointer; }
                 .items.cartesLiees { flex-direction: row !important; flex-wrap: wrap !important; align-items: center !important; justify-content: flex-start !important; margin-left: 0 !important; }
             </style>
             """
-            web.stdHtml(css_link + scoped_css + '<div class="card">' + isolated + '</div>')
+            
+            gui_hover_script = """
+            <script>
+            document.addEventListener("mouseover", function(e) {
+                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                    var nid = e.target.innerText.trim();
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
+                    e.target.style.outline = '2px solid #007acc';
+                }
+            });
+            document.addEventListener("mouseout", function(e) {
+                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                    var nid = e.target.innerText.trim();
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:' + nid);
+                    e.target.style.outline = '';
+                }
+            });
+            document.addEventListener("click", function(e) {
+                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                    var nid = e.target.innerText.trim();
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
+                }
+            });
+            document.addEventListener("keydown", function(e) {
+                if(e.key === 'Escape') {
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:esc'); // Hack pour cacher via python
+                    else if(typeof bridgeCommand !== 'undefined') bridgeCommand('gui_preview_mouseout:esc');
+                }
+                if(e.key === 'r' || e.key === 'R') {
+                    var sel = document.querySelector('.edn-selected-badge');
+                    if(!sel) {
+                        var badges = Array.from(document.querySelectorAll('.clickable_cards'));
+                        for(var i=0; i<badges.length; i++) {
+                            if(badges[i].style.outline) { sel = badges[i]; break; }
+                        }
+                        if(!sel && badges.length > 0) sel = badges[0];
+                    }
+                    
+                    // Si une sélection existe ET qu'elle n'est pas déjà celle survolée/ouverte, on l'ouvre
+                    if(sel) {
+                        e.preventDefault();
+                        var nid = sel.innerText.trim();
+                        if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
+                        else if(typeof bridgeCommand !== 'undefined') bridgeCommand('gui_preview_hover:' + nid);
+                    } else {
+                        // Scroll fallback pour la navigation clavier
+                        if (!e.shiftKey) {
+                            window.scrollBy(0, 100);
+                        } else {
+                            window.scrollBy(0, -100);
+                        }
+                    }
+                }
+            });
+            </script>
+            """
+            
+            web.stdHtml(css_link + scoped_css + gui_hover_script + '<div class="card">' + isolated + '</div>')
 
             dlg.show()
             dlg.raise_()
+            
+            # Adaptation de la taille via JS
+            web.evalWithCallback("document.documentElement.scrollHeight;", lambda h: self._adjust_preview_height(dlg, h))
         except Exception as ex:
             from aqt.utils import tooltip
             tooltip("Erreur preview : " + str(ex))
+
+    def _adjust_preview_height(self, dlg, h):
+        if h and h > 0:
+            new_height = min(520, h + 20)
+            dlg.resize(dlg.width(), new_height)
+
+    def eventFilter(self, obj, event):
+        if hasattr(self, '_preview_dlg') and obj == self._preview_dlg:
+            if event.type() == QEvent.Type.Leave:
+                from aqt.qt import QTimer
+                QTimer.singleShot(150, lambda: self.check_hide_preview())
+        return super().eventFilter(obj, event)
+
+    def check_hide_preview(self):
+        if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
+            # Si la souris est sur le bouton ou sur le dlg, on ne cache pas
+            pos = QCursor.pos()
+            if self._preview_dlg.geometry().contains(pos):
+                return
+            if hasattr(self, '_preview_current_widget') and self._preview_current_widget and self._preview_current_widget.geometry().contains(self._preview_current_widget.parentWidget().mapFromGlobal(pos)):
+                return
+            self.hide_preview_popup()
+
+    def show_nested_preview(self, nid):
+        # Pour les nested links, on remplace temporairement le NID
+        if not hasattr(self, '_preview_dlg') or not self._preview_dlg:
+            return
+        if not hasattr(self, '_preview_stack'):
+            self._preview_stack = []
+        if self._preview_current_nid != nid:
+            self._preview_stack.append(self._preview_current_nid)
+            self.show_preview_popup(nid, position_widget=None) # Réutilise la popup sans la déplacer
+
+    def hide_nested_preview(self):
+        # On ressort la carte parente
+        if hasattr(self, '_preview_stack') and self._preview_stack:
+            parent_nid = self._preview_stack.pop()
+            self.show_preview_popup(parent_nid, position_widget=None)
+
+    def on_gui_preview_click(self, nid):
+        self.hide_preview_popup()
+        from aqt import dialogs, mw
+        browser = dialogs.open("Browser", mw)
+        browser.search_for(f"nid:{nid}")
+        self.close()
 
     def hide_preview_popup(self):
         if hasattr(self, '_preview_dlg') and self._preview_dlg:
@@ -1669,7 +1926,7 @@ def open_search_dialog(editor):
             if (window._ednSavedRange) {
                 try {
                     let r = window._ednSavedRange.cloneRange();
-                    r.collapse(false);
+                    r.deleteContents();
                     let marker = document.createElement("span");
                     marker.id = "edn-cursor-marker";
                     r.insertNode(marker);
