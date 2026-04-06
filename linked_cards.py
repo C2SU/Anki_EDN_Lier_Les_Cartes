@@ -37,6 +37,7 @@ def init_linked_cards():
     shortcut_kbd_n   = get_shortcut("linked_cards_kbd_open",    "n")
     shortcut_kbd_p   = get_shortcut("linked_cards_kbd_preview", "p")
     shortcut_kbd_r   = get_shortcut("linked_cards_kbd_navigate", "r")
+    shortcut_kbd_z   = get_shortcut("linked_cards_kbd_back",    "z")
     
     try:
         from .edn_menu import register_action_shortcut_only
@@ -54,6 +55,9 @@ def init_linked_cards():
         register_action_shortcut_only("linked_cards", "Aperçu²", lambda: None,
                                       shortcut=shortcut_kbd_r,
                                       shortcut_key="linked_cards_kbd_navigate")
+        register_action_shortcut_only("linked_cards", "Retour", lambda: None,
+                                      shortcut=shortcut_kbd_z,
+                                      shortcut_key="linked_cards_kbd_back")
     except Exception as e:
         log(f"Linked Cards : register_action_shortcut_only non disponible ({e})")
     
@@ -84,6 +88,9 @@ def init_linked_cards():
     # Hook reviewer to intercept 'r' key before Anki processes it
     gui_hooks.reviewer_did_show_answer.append(_on_reviewer_show_answer)
     
+    # Protection crash changement de thème
+    gui_hooks.theme_did_change.append(_on_theme_changed)
+    
     log("Linked Cards module initialized (Full Restoration).")
 
 
@@ -105,11 +112,13 @@ def build_add_to_card_script():
     kbd_open = get_shortcut("linked_cards_kbd_open", "n")
     kbd_preview = get_shortcut("linked_cards_kbd_preview", "p")
     kbd_navigate = get_shortcut("linked_cards_kbd_navigate", "r")
+    kbd_back = get_shortcut("linked_cards_kbd_back", "z")
     vars_js = (
         "<script type=\"text/javascript\">"
         "window._ednKbdOpenCfg = '" + kbd_open + "';"  
         "window._ednKbdPreviewCfg = '" + kbd_preview + "';"  
         "window._ednKbdNavigateCfg = '" + kbd_navigate + "';"  
+        "window._ednKbdBackCfg = '" + kbd_back + "';"  
         "</script>"
     )
     return vars_js + _add_to_card_script_body
@@ -126,8 +135,10 @@ _add_to_card_script_body = """
     if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
     if (window._ednHideTimer) { clearTimeout(window._ednHideTimer); window._ednHideTimer = null; }
     window._edn_hover_target = null;
+    window._edn_parent_badge = null;
     window._ednPositionLocked = false;
     window._ednPreviewIndex = -1;
+    window._ednPreviewHistory = [];
     // Réinitialiser pour permettre la réinstallation du handler 'r' sur chaque carte
     window._ednReviewerRKeyInit = false;
 })();
@@ -155,12 +166,24 @@ if (!window._ednListenersAttached) {
             el.setAttribute('tabindex', '0');
         });
     }
+    // Nettoyer les sélections SAUF le badge parent (bordure rouge)
+    function _ednClearPreviewSelections() {
+        var previewBox = document.getElementById('edn-preview-box');
+        document.querySelectorAll('.clickable_cards').forEach(function(el) {
+            // Conserver le badge parent (bordure rouge)
+            if (el === window._edn_parent_badge) return;
+            el.classList.remove('edn-selected-badge');
+            el.style.outline = "";
+            el.style.outlineOffset = "";
+        });
+    }
     function _ednClearAllSelections() {
         document.querySelectorAll('.clickable_cards').forEach(function(el) {
             el.classList.remove('edn-selected-badge');
             el.style.outline = "";
             el.style.outlineOffset = "";
         });
+        window._edn_parent_badge = null;
     }
     _ednSetupBadges();
     setTimeout(_ednSetupBadges, 300);
@@ -173,9 +196,10 @@ if (!window._ednListenersAttached) {
         var previewBox = document.getElementById('edn-preview-box');
         var previewVisible = previewBox && previewBox.style.display !== 'none';
         
-        // P : navigate parent links only
+        // P : cycle à travers les badges de la carte mère et afficher preview
         if (e.key === kbdPreview || e.key === 'p') {
             e.preventDefault();
+            e.stopImmediatePropagation();
             var parentCards = Array.from(document.querySelectorAll('.clickable_cards')).filter(function(c) {
                 return !previewBox || !previewBox.contains(c);
             });
@@ -183,11 +207,12 @@ if (!window._ednListenersAttached) {
                 window._ednPreviewIndex = (window._ednPreviewIndex + 1) % parentCards.length;
                 var targetBadge = parentCards[window._ednPreviewIndex];
                 _ednClearAllSelections();
-                targetBadge.focus();
                 targetBadge.classList.add('edn-selected-badge');
                 targetBadge.style.outline = "2px solid #ff4444"; // ROUGE
                 targetBadge.style.outlineOffset = "2px";
                 window._edn_hover_target = targetBadge;
+                window._edn_parent_badge = targetBadge;
+                window._ednPreviewHistory = [];
                 var nid = targetBadge.innerText.trim();
                 window._ednPositionLocked = false;
                 if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
@@ -196,17 +221,12 @@ if (!window._ednListenersAttached) {
             return;
         }
         
-        // N : Cycle through cards (Navigate/Highlight)
+        // N : Cycle dans les badges de la preview UNIQUEMENT (jamais la carte mère)
         if (e.key === kbdOpen || e.key === 'n' || e.key === 'N') {
+            if (!previewVisible) return; // N ne fait rien hors preview
             e.preventDefault();
-            var targetCards = [];
-            if (previewVisible) {
-                targetCards = Array.from(previewBox.querySelectorAll('.clickable_cards'));
-            } else {
-                targetCards = Array.from(document.querySelectorAll('.clickable_cards')).filter(function(c) {
-                    return !previewBox || !previewBox.contains(c);
-                });
-            }
+            e.stopImmediatePropagation();
+            var targetCards = Array.from(previewBox.querySelectorAll('.clickable_cards'));
             if (targetCards.length > 0) {
                 var idx = -1;
                 for (var i = 0; i < targetCards.length; i++) {
@@ -220,8 +240,7 @@ if (!window._ednListenersAttached) {
                     if (next >= targetCards.length) next = 0;
                 }
                 if (targetCards[next]) {
-                    _ednClearAllSelections();
-                    targetCards[next].focus();
+                    _ednClearPreviewSelections();
                     targetCards[next].classList.add('edn-selected-badge');
                     targetCards[next].style.outline = "2px solid #007acc"; // BLEU
                     targetCards[next].style.outlineOffset = "2px";
@@ -230,58 +249,73 @@ if (!window._ednListenersAttached) {
             return;
         }
         
-        // R : Open selected card PREVIEW (or scroll preview)
+        // R : Ouvrir la carte sélectionnée en preview OU scroller (preview uniquement)
         if (e.key === kbdNavigate || e.key === 'r' || e.key === 'R') {
-            var selectedNode = null;
-            if (previewVisible) {
-                selectedNode = previewBox.querySelector('.edn-selected-badge');
-            }
-            if (!selectedNode) {
-                selectedNode = document.querySelector('.edn-selected-badge');
-            }
-            // Fallback outline
-            if (!selectedNode) {
-                var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
-                for(var i=0; i < allCardsSearch.length; i++) {
-                    if (allCardsSearch[i].style.outline) { selectedNode = allCardsSearch[i]; break; }
-                }
-            }
+            if (!previewVisible) return; // R ne fait rien hors preview
+            e.preventDefault();
+            e.stopImmediatePropagation();
             
-            // Priorité 1 : Ouvrir si la sélection a changé ou si elle est imbriquée (pour les aperçus en cascade)
-            if (selectedNode && (selectedNode !== window._edn_hover_target || (previewVisible && previewBox.contains(selectedNode)))) {
+            var selectedNode = previewBox.querySelector('.edn-selected-badge');
+            
+            // Si un badge preview est sélectionné et différent du parent → ouvrir sa preview
+            if (selectedNode && selectedNode !== window._edn_parent_badge) {
                 var nid3 = selectedNode.innerText.trim();
-                // Si c'est déjà le NID survolé, et qu'on est déjà dans le preview, on scroll (évite le feedback loop)
-                // Mais si c'est un badge interne, on veut l'ouvrir.
-                if (selectedNode !== window._edn_hover_target) {
-                    e.preventDefault();
-                    window._edn_hover_target = selectedNode;
-                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
-                    return;
+                // Sauvegarder l'historique pour Z
+                if (window._edn_hover_target) {
+                    var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                    if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
+                        window._ednPreviewHistory.push(currentNid);
+                    }
                 }
-            }
-
-            // Priorité 2 : Faire défiler l'aperçu existant
-            if (previewVisible) {
-                if (!e.shiftKey && !e.ctrlKey && !e.altKey) {
-                    e.preventDefault();
-                    previewBox.scrollTop += 80;
-                } else if (e.shiftKey) {
-                    e.preventDefault();
-                    previewBox.scrollTop -= 80;
-                }
+                window._edn_hover_target = selectedNode;
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
                 return;
             }
+            
+            // Sinon → scroller la preview
+            if (!e.shiftKey) {
+                previewBox.scrollTop += 80;
+            } else {
+                previewBox.scrollTop -= 80;
+            }
+            return;
         }
         
-        // Escape : Masquer la preview
+        // Z : Retour arrière dans la navigation preview
+        var kbdBack = window._ednKbdBackCfg || 'z';
+        if (e.key === kbdBack || e.key === 'z' || e.key === 'Z') {
+            if (!previewVisible) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (window._ednPreviewHistory && window._ednPreviewHistory.length > 0) {
+                var prevNid = window._ednPreviewHistory.pop();
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + prevNid);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + prevNid);
+            } else {
+                // Pile vide → fermer la preview
+                previewBox.style.display = "none";
+                _ednClearAllSelections();
+                window._edn_hover_target = null;
+                window._ednPositionLocked = false;
+                window._ednPreviewIndex = -1;
+            }
+            return;
+        }
+        
+        // Escape : Masquer la preview et réinitialiser
         if (e.key === 'Escape') {
             if (previewVisible) {
                 e.preventDefault();
+                e.stopImmediatePropagation();
                 previewBox.style.display = "none";
+                _ednClearAllSelections();
                 window._edn_hover_target = null;
                 window._ednPositionLocked = false;
+                window._ednPreviewIndex = -1;
+                window._ednPreviewHistory = [];
             }
+            return;
         }
         
         if (e.key === 'Enter') {
@@ -328,6 +362,7 @@ if (!window._ednListenersAttached) {
                 window._ednHideTimer = setTimeout(function() {
                     box.style.display = "none";
                     window._edn_hover_target = null;
+                    window._edn_parent_badge = null;
                     window._ednPositionLocked = false;
                     window._ednHideTimer = null;
                 }, 80);
@@ -336,12 +371,53 @@ if (!window._ednListenersAttached) {
         return box;
     };
 
+    // Delegated click handler on the preview box for reliable click-before-hover
+    // This fires immediately on click, cancelling any pending hover navigation.
+    document.addEventListener('click', function(e) {
+        if (!e.target || !e.target.classList || !e.target.classList.contains('clickable_cards')) return;
+        var box = document.getElementById('edn-preview-box');
+        if (!box || !box.contains(e.target)) return;
+        // Click on a badge inside the preview box → open in browser
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // Cancel any pending hover that would replace the content
+        if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
+        window._ednPreviewBadgeClicked = true;
+        var nid = e.target.innerText.trim();
+        if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
+        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+    }, true); // capture phase = fires before any other click handler
+
     document.addEventListener("mouseover", function(e) {
         if(e.target && e.target.classList.contains("clickable_cards")) {
+            var box = document.getElementById('edn-preview-box');
             if (window._ednHideTimer) { clearTimeout(window._ednHideTimer); window._ednHideTimer = null; }
             if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
+            window._ednPreviewBadgeClicked = false;
             var target = e.target;
             var nid = target.innerText.trim();
+
+            // Badge inside the preview box: hover-navigate with generous delay
+            // so the user has time to click before the preview changes.
+            if (box && box.contains(e.target)) {
+                window._ednHoverTimer = setTimeout(function() {
+                    if (window._ednPreviewBadgeClicked) return; // click won the race
+                    // Save history for Z-back
+                    if (window._edn_hover_target) {
+                        var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                        if (!window._ednPreviewHistory) window._ednPreviewHistory = [];
+                        if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
+                            window._ednPreviewHistory.push(currentNid);
+                        }
+                    }
+                    window._edn_hover_target = target;
+                    if(typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
+                    else if(typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid);
+                }, 100);
+                return;
+            }
+
+            // Badge on the main card: normal hover preview
             window._ednHoverTimer = setTimeout(function() {
                 if(typeof pycmd !== 'undefined') {
                     pycmd("cards_ct_hover:" + nid);
@@ -364,6 +440,7 @@ if (!window._ednListenersAttached) {
             window._ednHideTimer = setTimeout(function() {
                 if(box) box.style.display = "none";
                 window._edn_hover_target = null;
+                window._edn_parent_badge = null;
                 window._ednPositionLocked = false;
                 window._ednHideTimer = null;
             }, 80);
@@ -375,6 +452,7 @@ if (!window._ednListenersAttached) {
         if(box && !box.contains(e.target)) {
             box.style.display = "none";
             window._edn_hover_target = null;
+            window._edn_parent_badge = null;
             window._ednPositionLocked = false;
         }
     });
@@ -416,35 +494,76 @@ if (!window._ednListenersAttached) {
             headStyle.textContent = styleEl.textContent;
             styleEl.parentNode.removeChild(styleEl);
         }
-        var targetInsideBox = window._edn_hover_target && box.contains(window._edn_hover_target);
         box.innerHTML = tempDiv.innerHTML;
         box.style.display = "block";
         box.style.overflowY = "auto";
         
         // Ajuster la position : seulement si changement de cible majeure ou si non locké
-        if (window._edn_hover_target) {
-            var targetInsideBox = box.contains(window._edn_hover_target);
-            if (!targetInsideBox || !window._ednPositionLocked) {
-                var rect = window._edn_hover_target.getBoundingClientRect();
-                var topPos = rect.top;
-                var leftPos = rect.right + 10;
-                if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
-                if (leftPos < 0) leftPos = 10;
-                // Si rect.top est 0 (cas possible si élément pas encore bien rendu ou scrollé), on essaie de garder l'ancien top
-                if (rect.top === 0 && rect.bottom === 0) {
-                     // Fallback sécurité si rect invalide
-                } else {
-                    box.style.top = topPos + "px";
-                    box.style.left = leftPos + "px";
-                    window._ednPositionLocked = true;
-                }
+        if (window._edn_parent_badge) {
+            // Toujours positionner par rapport au badge parent (rouge)
+            var rect = window._edn_parent_badge.getBoundingClientRect();
+            var topPos = rect.top;
+            var leftPos = rect.right + 10;
+            if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
+            if (leftPos < 0) leftPos = 10;
+            if (!(rect.top === 0 && rect.bottom === 0)) {
+                box.style.top = topPos + "px";
+                box.style.left = leftPos + "px";
+            }
+            window._ednPositionLocked = true;
+        } else if (window._edn_hover_target && !window._ednPositionLocked) {
+            var rect = window._edn_hover_target.getBoundingClientRect();
+            var topPos = rect.top;
+            var leftPos = rect.right + 10;
+            if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
+            if (leftPos < 0) leftPos = 10;
+            if (!(rect.top === 0 && rect.bottom === 0)) {
+                box.style.top = topPos + "px";
+                box.style.left = leftPos + "px";
+                window._ednPositionLocked = true;
             }
         }
-        // Si targetInsideBox && _ednPositionLocked : position conservee
-        setTimeout(function() {
-            var kbdOpen = window._ednKbdOpenCfg || window._ednKbdOpen || 'n';
-            document.dispatchEvent(new KeyboardEvent('keydown', {key: kbdOpen, bubbles: true}));
-        }, 50);
+        
+        // Étape 1 : ajustement rapide de la hauteur (avant MathJax)
+        requestAnimationFrame(function() {
+            var contentHeight = box.scrollHeight;
+            var maxAllowed = window.innerHeight * 0.6;
+            box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
+        });
+        
+        // MathJax typesetting : on vide d'abord l'état précédent du box (typesetClear)
+        // pour forcer MathJax à retraiter le nouveau contenu, puis on appelle typesetPromise.
+        // On utilise Promise.resolve() pour différer après le rendu synchrone courant.
+        Promise.resolve().then(function() {
+            if (typeof MathJax === 'undefined' || !MathJax.typesetPromise) return;
+            try {
+                // typesetClear indique à MathJax que ce nœud n'est pas encore traité
+                if (MathJax.typesetClear) { MathJax.typesetClear([box]); }
+                return MathJax.typesetPromise([box]);
+            } catch(e) { return Promise.resolve(); }
+        }).then(function() {
+            // Réajuster la hauteur après rendu LaTeX (les formules prennent plus de place)
+            if (!box) return;
+            var contentHeight = box.scrollHeight;
+            var maxAllowed = window.innerHeight * 0.6;
+            box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
+        }).catch(function(){});
+        
+        // Auto-sélectionner le premier badge dans la preview (sans toucher au badge parent)
+        requestAnimationFrame(function() {
+            var previewBadges = box.querySelectorAll('.clickable_cards');
+            if (previewBadges.length > 0) {
+                // Retirer les sélections bleues précédentes dans la preview
+                previewBadges.forEach(function(b) {
+                    b.classList.remove('edn-selected-badge');
+                    b.style.outline = '';
+                    b.style.outlineOffset = '';
+                });
+                previewBadges[0].classList.add('edn-selected-badge');
+                previewBadges[0].style.outline = '2px solid #007acc';
+                previewBadges[0].style.outlineOffset = '2px';
+            }
+        });
     };
 
 } // fin guard _ednListenersAttached
@@ -461,10 +580,9 @@ def on_card_render(output, context):
 
 def _on_state_shortcuts_will_change(state: str, shortcuts: list):
     """
-    Intercepte les raccourcis du reviewer pour gérer la touche 'r'.
-    Si la preview EDN est ouverte → scroller.
-    S'il y a des badges → naviguer.
-    Sinon → comportement Anki par défaut (replay audio).
+    Intercepte les raccourcis du reviewer pour gérer les touches 'r' et 'z'.
+    R/N/Z ne doivent agir QUE si la preview EDN est ouverte.
+    Sinon → comportement Anki par défaut.
     """
     if state != "review":
         return
@@ -472,167 +590,102 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
     kbd_navigate = get_shortcut("linked_cards_kbd_navigate", "r")
     nav_key = kbd_navigate
     
-    if nav_key != "r":
-        return  # La touche n'est pas 'r', pas de conflit à gérer
-    
-    # Trouver et retirer le raccourci 'r' par défaut (replay audio)
-    original_r_handlers = [s for s in shortcuts if s[0] == 'r']
-    for handler in original_r_handlers:
-        shortcuts.remove(handler)
-    
-    def _edn_r_key_handler():
-        """Handler pour 'r' : EDN en priorité, replay audio en fallback."""
-        if not mw.reviewer or not mw.reviewer.web:
-            return
+    if nav_key == "r":
+        # Trouver et retirer le raccourci 'r' par défaut (replay audio)
+        original_r_handlers = [s for s in shortcuts if s[0] == 'r']
+        for handler in original_r_handlers:
+            shortcuts.remove(handler)
         
-        # Vérifier via JS si la preview est visible ou s'il y a des badges
-        def _js_callback(result):
-            import json
-            try:
-                data = json.loads(result) if result else {}
-            except:
-                data = {}
+        def _edn_r_key_handler():
+            """Handler pour 'r' : preview EDN en priorité, replay audio en fallback.
             
-            preview_visible = data.get("previewVisible", False)
-            is_focused = data.get("isFocused", False)
-            shift_held = data.get("shiftHeld", False)
+            IMPORTANT: Qt intercepte 'r' AVANT le webview — le JS keydown handler
+            ne reçoit jamais la touche. On doit donc exécuter l'action 'r' directement
+            depuis Python via eval() quand la preview est visible.
+            """
+            if not mw.reviewer or not mw.reviewer.web:
+                return
             
-            if is_focused:
-                mw.reviewer.web.eval("""
-                    var selectedNode = document.querySelector('.edn-selected-badge');
-                    if (!selectedNode) {
-                        var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
-                        for(var i=0; i < allCardsSearch.length; i++) {
-                            if (allCardsSearch[i].style.outline) { selectedNode = allCardsSearch[i]; break; }
+            # JS qui vérifie la preview ET exécute l'action 'r' d'un coup (pas de callback)
+            r_action_js = """
+            (function() {
+                var previewBox = document.getElementById('edn-preview-box');
+                var previewVisible = previewBox && previewBox.style.display !== 'none';
+                if (!previewVisible) return 'replay';
+                
+                var selectedNode = previewBox.querySelector('.edn-selected-badge');
+                
+                if (selectedNode && selectedNode !== window._edn_parent_badge) {
+                    var nid = selectedNode.innerText.trim();
+                    // Sauvegarder l'historique pour Z
+                    if (window._edn_hover_target) {
+                        var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                        if (!window._ednPreviewHistory) window._ednPreviewHistory = [];
+                        if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
+                            window._ednPreviewHistory.push(currentNid);
                         }
                     }
-                    if (selectedNode) {
-                        var nid3 = selectedNode.innerText.trim();
-                        window._edn_hover_target = selectedNode;
-                        if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
-                    }
-                """)
-            elif preview_visible:
-                # Scroller la preview
-                scroll_amt = -80 if shift_held else 80
-                mw.reviewer.web.eval(
-                    f"var b=document.getElementById('edn-preview-box');"
-                    f"if(b){{b.scrollTop+={scroll_amt};}}"
-                )
-            else:
-                # Fallback: rejouer l'audio (comportement Anki par défaut)
-                for key, handler in original_r_handlers:
-                    try:
-                        handler()
-                    except:
-                        pass
+                    window._edn_hover_target = selectedNode;
+                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
+                    return 'navigated';
+                }
+                
+                // Pas de badge sélectionné → scroller
+                previewBox.scrollTop += 80;
+                return 'scrolled';
+            })();
+            """
+            
+            def _js_callback(result):
+                if result and result.strip("'\"") == 'replay':
+                    # Pas de preview → comportement Anki par défaut (replay audio)
+                    for key, handler in original_r_handlers:
+                        try:
+                            handler()
+                        except:
+                            pass
+            
+            mw.reviewer.web.evalWithCallback(r_action_js, _js_callback)
         
-        mw.reviewer.web.evalWithCallback(
-            """JSON.stringify({
-                previewVisible: !!(document.getElementById('edn-preview-box') && 
-                                   document.getElementById('edn-preview-box').style.display !== 'none'),
-                isFocused: !!(document.querySelector('.edn-selected-badge') || Array.from(document.querySelectorAll('.clickable_cards')).some(c => c.style.outline)),
-                shiftHeld: false
-            })""",
-            _js_callback
-        )
-    
-    shortcuts.append(('r', _edn_r_key_handler))
+        shortcuts.append(('r', _edn_r_key_handler))
 
 
 def _on_reviewer_show_answer(card):
     """
     Appelé quand l'answer d'une carte est affichée dans le reviewer.
-    Injecte un handler pour la touche 'r' qui scrolle la preview si ouverte,
-    et navigue entre les badges si la preview est fermée.
+    Le handler principal dans _add_to_card_script_body gère déjà N/R/Z/P/Escape
+    en phase capture. On se contente ici de ré-initialiser le flag.
     """
     if not mw.reviewer or not mw.reviewer.web:
         return
+    # Le script principal gère tout via le guard _ednListenersAttached
+    # Pas besoin d'un second handler ici — ça causait des conflits
+
+def _on_theme_changed():
+    """Protection contre le crash lors du changement de thème.
     
-    kbd_navigate = get_shortcut("linked_cards_kbd_navigate", "r")
-    nav_key = kbd_navigate
-    
-    js = f"""
-    (function() {{
-        if (window._ednReviewerRKeyInit) return;
-        window._ednReviewerRKeyInit = true;
-        
-        // On capture la touche '{nav_key}' en phase capture pour avoir la priorité sur Anki
-        document.addEventListener('keydown', function(e) {{
-            function _ednClearAllSelections() {{
-                document.querySelectorAll('.clickable_cards').forEach(function(el) {{
-                    el.classList.remove('edn-selected-badge');
-                    el.style.outline = "";
-                    el.style.outlineOffset = "";
-                }});
-            }}
-
-            if (e.key === 'Escape') {{
-                var previewBox = document.getElementById('edn-preview-box');
-                if (previewBox && previewBox.style.display !== 'none') {{
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    previewBox.style.display = "none";
-                    window._edn_hover_target = null;
-                    window._ednPositionLocked = false;
-                    _ednClearAllSelections();
-                    return;
-                }}
-            }}
-
-            if (e.key === 'p') {{
-                // On laisse le handler principal gérer P pour l'instant (car non configuré ici)
-                // Mais on nettoie si besoin. 
-            }}
-
-            if (e.key !== '{nav_key}') return;
-            
-            var previewBox = document.getElementById('edn-preview-box');
-            var previewVisible = previewBox && previewBox.style.display !== 'none';
-            
-            var selectedNode = null;
-            if (previewVisible) {{
-                selectedNode = previewBox.querySelector('.edn-selected-badge');
-            }}
-            if (!selectedNode) {{
-                selectedNode = document.querySelector('.edn-selected-badge');
-            }}
-            if (!selectedNode) {{
-                var allCardsSearch = Array.from(document.querySelectorAll('.clickable_cards'));
-                for(var i=0; i < allCardsSearch.length; i++) {{
-                    if (allCardsSearch[i].style.outline) {{ selectedNode = allCardsSearch[i]; break; }}
-                }}
-            }}
-            
-            // Si un badge est sélectionné ET que ce n'est pas celui déjà affiché -> PRIORITÉ OUVERTURE
-            if (selectedNode && selectedNode !== window._edn_hover_target) {{
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                var nid3 = selectedNode.innerText.trim();
-                window._edn_hover_target = selectedNode;
-                if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
-                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
-                return;
-            }}
-
-            // Sinon (pas de badge ou déjà affiché) -> PRIORITÉ SCROLL
-            if (previewVisible) {{
-                if (!e.shiftKey) {{
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    previewBox.scrollTop += 80;
-                }} else {{
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    previewBox.scrollTop -= 80;
-                }}
-                return;
-            }}
-        }}, true);  // true = capture phase, priority over Anki
-    }})();
+    Le hook theme_did_change appelle page().setBackgroundColor() sur toutes
+    les AnkiWebView, y compris la preview popup qui peut avoir été détruite.
+    On la nettoie préventivement.
     """
-    mw.reviewer.web.eval(js)
+    global _active_dialog
+    if _active_dialog:
+        try:
+            if hasattr(_active_dialog, '_preview_web') and _active_dialog._preview_web:
+                try:
+                    _active_dialog._preview_web.cleanup()
+                except:
+                    pass
+                _active_dialog._preview_web = None
+            if hasattr(_active_dialog, '_preview_dlg') and _active_dialog._preview_dlg:
+                try:
+                    _active_dialog._preview_dlg.hide()
+                    _active_dialog._preview_dlg.deleteLater()
+                except:
+                    pass
+                _active_dialog._preview_dlg = None
+        except:
+            pass
 
 @perf_log
 def on_js_message_reviewer(handled, message, context):
@@ -690,6 +743,7 @@ def on_js_message_reviewer(handled, message, context):
                     #edn-preview-box .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 14px !important; line-height: 1.3 !important; max-width: 100% !important; text-align: left !important; }
                     #edn-preview-box a { font-size: 0.85em !important; }
                     #edn-preview-box .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
+                    #edn-preview-box div[class*='section'] { display: flex !important; }
                     #edn-preview-box .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
                     #edn-preview-box .items ul, #edn-preview-box .items ol { padding-top: 5px !important; padding-bottom: 5px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                     #edn-preview-box .items li { padding-top: 1px !important; padding-bottom: 1px !important; }
@@ -702,6 +756,7 @@ def on_js_message_reviewer(handled, message, context):
                         line-height: 11px !important;
                         padding: 3px !important;
                         margin: 3px !important;
+                        cursor: pointer;
                     }
                     #edn-preview-box .items.cartesLiees {
                         flex-direction: row !important;
@@ -1027,6 +1082,12 @@ def _setup_editor_window_shortcuts(editor: Editor):
 
 def on_editor_init(editor: Editor):
     global _current_editor
+    # Déporter l'initialisation JS pour ne pas bloquer l'ouverture de l'éditeur
+    from aqt.qt import QTimer
+    QTimer.singleShot(0, lambda: _do_editor_init(editor))
+
+def _do_editor_init(editor: Editor):
+    global _current_editor
     _current_editor = editor
     
     config = mw.addonManager.getConfig(__name__)
@@ -1271,12 +1332,12 @@ class LinkInserter:
         html_parts = []
         for nid, recto in items:
             if recto is None:
-                html_parts.append(f'<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>&nbsp;')
+                html_parts.append(f'<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
             else:
                 recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
-                html_parts.append(f'{recto_escaped}&nbsp;—&nbsp;<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>&nbsp;')
+                html_parts.append(f'{recto_escaped}&nbsp;—&nbsp;<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
                 
-        html = "&nbsp;|&nbsp;".join(html_parts)
+        html = "<br>".join(html_parts)
         if html:
             html += "&nbsp;"
         
@@ -1510,6 +1571,12 @@ class LinkedCardsDialog(QDialog):
     def _cleanup_on_close(self):
         # Fermer la preview popup si elle est ouverte
         self.hide_preview_popup()
+        if hasattr(self, '_preview_web') and self._preview_web:
+            try:
+                self._preview_web.cleanup()
+            except:
+                pass
+            self._preview_web = None
         if hasattr(self, '_preview_dlg') and self._preview_dlg:
             self._preview_dlg.deleteLater()
             self._preview_dlg = None
@@ -1591,11 +1658,11 @@ class LinkedCardsDialog(QDialog):
                             
                         def on_click(self):
                             # Sur click, on ouvre la carte dans le navigateur Anki
+                            # Le GUI reste ouvert pour continuer la navigation
                             from aqt import dialogs, mw
                             browser = dialogs.open("Browser", mw)
                             browser.search_for(f"nid:{self.nid}")
                             self.dialog_parent.hide_preview_popup()
-                            self.dialog_parent.close()
 
                         def enterEvent(self, event):
                             self.dialog_parent._preview_current_widget = self
@@ -1729,6 +1796,7 @@ class LinkedCardsDialog(QDialog):
                 .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 14px !important; line-height: 1.3 !important; max-width: 100% !important; text-align: left !important; }
                 a { font-size: 0.85em !important; }
                 .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
+                div[class*='section'] { display: flex !important; }
                 .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
                 .items ul, .items ol { padding-top: 5px !important; padding-bottom: 5px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                 .items li { padding-top: 1px !important; padding-bottom: 1px !important; }
@@ -1796,21 +1864,66 @@ class LinkedCardsDialog(QDialog):
             </script>
             """
             
-            web.stdHtml(css_link + scoped_css + gui_hover_script + '<div class="card">' + isolated + '</div>')
+            # stdHtml ne charge pas MathJax automatiquement — on le passe via js=
+            # afin que le LaTeX \(...\) et \[...\] soit rendu correctement.
+            web.stdHtml(
+                css_link + scoped_css + gui_hover_script + '<div class="card">' + isolated + '</div>',
+                js=["/_anki/js/mathjax.js"]
+            )
 
             dlg.show()
             dlg.raise_()
             
-            # Adaptation de la taille via JS
-            web.evalWithCallback("document.documentElement.scrollHeight;", lambda h: self._adjust_preview_height(dlg, h))
+            # Ajustement rapide de la hauteur sans attendre MathJax
+            dlg.resize(dlg.width(), 100)
+            from aqt.qt import QTimer
+
+            def _quick_resize():
+                try:
+                    web.evalWithCallback(
+                        "document.documentElement.scrollHeight;",
+                        lambda h: self._adjust_preview_height(dlg, h)
+                    )
+                except Exception:
+                    pass
+
+            def _try_typeset(attempts=0):
+                """Retry MathJax typeset every 100ms until available (max 1.5s)."""
+                def _check(ready):
+                    if ready:
+                        web.eval(
+                            "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
+                            "MathJax.typesetPromise().catch(function(){});"
+                        )
+                        # Réajuster la hauteur 150ms après le typeset
+                        QTimer.singleShot(150, _quick_resize)
+                    elif attempts < 15:
+                        QTimer.singleShot(100, lambda: _try_typeset(attempts + 1))
+                    else:
+                        # MathJax non disponible : redimensionner quand même
+                        _quick_resize()
+                try:
+                    web.evalWithCallback(
+                        "typeof MathJax !== 'undefined' && !!MathJax.typesetPromise",
+                        _check
+                    )
+                except Exception:
+                    _quick_resize()
+
+            # Ajustement initial rapide (~50ms)
+            QTimer.singleShot(50, _quick_resize)
+            # Lancement du typeset MathJax
+            QTimer.singleShot(100, lambda: _try_typeset())
         except Exception as ex:
             from aqt.utils import tooltip
             tooltip("Erreur preview : " + str(ex))
 
     def _adjust_preview_height(self, dlg, h):
         if h and h > 0:
-            new_height = min(520, h + 20)
+            new_height = min(520, max(100, h + 20))
             dlg.resize(dlg.width(), new_height)
+        else:
+            dlg.resize(dlg.width(), 100)
 
     def eventFilter(self, obj, event):
         if hasattr(self, '_preview_dlg') and obj == self._preview_dlg:
@@ -2036,6 +2149,9 @@ class LinkedCardsConfigWidget(QWidget):
         self.edit_kbd_preview = QLineEdit(get_shortcut("linked_cards_kbd_preview", "p"))
         g_layout.addRow("Touche : Afficher preview carte focusée:", self.edit_kbd_preview)
 
+        self.edit_kbd_back = QLineEdit(get_shortcut("linked_cards_kbd_back", "z"))
+        g_layout.addRow("Touche : Retour arrière dans la preview:", self.edit_kbd_back)
+
         layout.addWidget(group_shortcuts)
         
         # --- Blacklist ---
@@ -2083,6 +2199,7 @@ class LinkedCardsConfigWidget(QWidget):
         set_shortcut("linked_cards_kbd_navigate", self.edit_kbd_navigate.text() or "r")
         set_shortcut("linked_cards_kbd_open", self.edit_kbd_open.text() or "n")
         set_shortcut("linked_cards_kbd_preview", self.edit_kbd_preview.text() or "p")
+        set_shortcut("linked_cards_kbd_back", self.edit_kbd_back.text() or "z")
         
         hiddens = [box_id for box_id, cb in self.checkboxes.items() if cb.isChecked()]
         config["hidden_preview_sections"] = hiddens

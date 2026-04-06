@@ -29,13 +29,5 @@ def log_error(message):
     log(message, level="ERROR")
 
 def perf_log(func):
-    """Decorator to measure and log function execution time."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.perf_counter()
-        result = func(*args, **kwargs)
-        end_time = time.perf_counter()
-        duration = end_time - start_time
-        log(f"PERFORMANCE: {func.__module__}.{func.__qualname__} pris {duration:.4f}s")
-        return result
-    return wrapper
+    """Decorator — performance logging disabled."""
+    return func
