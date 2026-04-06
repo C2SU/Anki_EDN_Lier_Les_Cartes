@@ -372,7 +372,15 @@ if (!window._ednListenersAttached) {
     };
 
     // Delegated click handler on the preview box for reliable click-before-hover
-    // This fires immediately on click, cancelling any pending hover navigation.
+    // Fires in capture phase (before hover), cancels any pending hover navigation.
+    document.addEventListener('mousedown', function(e) {
+        if (!e.target || !e.target.classList || !e.target.classList.contains('clickable_cards')) return;
+        var box = document.getElementById('edn-preview-box');
+        if (!box || !box.contains(e.target)) return;
+        // Arm the click-wins flag as early as mousedown so hover timer cannot fire
+        if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
+        window._ednPreviewBadgeClicked = true;
+    }, true);
     document.addEventListener('click', function(e) {
         if (!e.target || !e.target.classList || !e.target.classList.contains('clickable_cards')) return;
         var box = document.getElementById('edn-preview-box');
@@ -380,7 +388,6 @@ if (!window._ednListenersAttached) {
         // Click on a badge inside the preview box → open in browser
         e.preventDefault();
         e.stopImmediatePropagation();
-        // Cancel any pending hover that would replace the content
         if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
         window._ednPreviewBadgeClicked = true;
         var nid = e.target.innerText.trim();
@@ -397,7 +404,7 @@ if (!window._ednListenersAttached) {
             var target = e.target;
             var nid = target.innerText.trim();
 
-            // Badge inside the preview box: hover-navigate with generous delay
+            // Badge inside the preview box: hover-navigate with generous delay (200ms)
             // so the user has time to click before the preview changes.
             if (box && box.contains(e.target)) {
                 window._ednHoverTimer = setTimeout(function() {
@@ -413,7 +420,7 @@ if (!window._ednListenersAttached) {
                     window._edn_hover_target = target;
                     if(typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
                     else if(typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid);
-                }, 100);
+                }, 200);
                 return;
             }
 
@@ -531,23 +538,23 @@ if (!window._ednListenersAttached) {
             box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
         });
         
-        // MathJax typesetting : on vide d'abord l'état précédent du box (typesetClear)
-        // pour forcer MathJax à retraiter le nouveau contenu, puis on appelle typesetPromise.
-        // On utilise Promise.resolve() pour différer après le rendu synchrone courant.
-        Promise.resolve().then(function() {
-            if (typeof MathJax === 'undefined' || !MathJax.typesetPromise) return;
-            try {
-                // typesetClear indique à MathJax que ce nœud n'est pas encore traité
-                if (MathJax.typesetClear) { MathJax.typesetClear([box]); }
-                return MathJax.typesetPromise([box]);
-            } catch(e) { return Promise.resolve(); }
-        }).then(function() {
-            // Réajuster la hauteur après rendu LaTeX (les formules prennent plus de place)
-            if (!box) return;
-            var contentHeight = box.scrollHeight;
-            var maxAllowed = window.innerHeight * 0.6;
-            box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
-        }).catch(function(){});
+        // MathJax typesetting avec retry : on boucle jusqu'à ce que MathJax soit prêt
+        // (max ~1.5 s, toutes les 100 ms), puis on retraite le contenu du box.
+        (function _ednTryTypeset(attempt) {
+            if (typeof MathJax !== 'undefined' && MathJax.typesetPromise) {
+                try {
+                    if (MathJax.typesetClear) { MathJax.typesetClear([box]); }
+                    MathJax.typesetPromise([box]).then(function() {
+                        // Réajuster la hauteur après rendu LaTeX
+                        var contentHeight = box.scrollHeight;
+                        var maxAllowed = window.innerHeight * 0.6;
+                        box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
+                    }).catch(function(){});
+                } catch(e) {}
+            } else if (attempt < 15) {
+                setTimeout(function() { _ednTryTypeset(attempt + 1); }, 100);
+            }
+        })(0);
         
         // Auto-sélectionner le premier badge dans la preview (sans toucher au badge parent)
         requestAnimationFrame(function() {
