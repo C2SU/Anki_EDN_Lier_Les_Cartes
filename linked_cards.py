@@ -213,7 +213,7 @@ if (!window._ednListenersAttached) {
                 window._edn_hover_target = targetBadge;
                 window._edn_parent_badge = targetBadge;
                 window._ednPreviewHistory = [];
-                var nid = targetBadge.innerText.trim();
+                var nid = targetBadge.dataset.nid || targetBadge.innerText.trim();
                 window._ednPositionLocked = false;
                 if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
                 else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid);
@@ -259,10 +259,10 @@ if (!window._ednListenersAttached) {
             
             // Si un badge preview est sélectionné et différent du parent → ouvrir sa preview
             if (selectedNode && selectedNode !== window._edn_parent_badge) {
-                var nid3 = selectedNode.innerText.trim();
+                var nid3 = selectedNode.dataset.nid || selectedNode.innerText.trim();
                 // Sauvegarder l'historique pour Z
                 if (window._edn_hover_target) {
-                    var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                    var currentNid = window._edn_hover_target.dataset.nid || (window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '');
                     if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
                         window._ednPreviewHistory.push(currentNid);
                     }
@@ -390,7 +390,7 @@ if (!window._ednListenersAttached) {
         e.stopImmediatePropagation();
         if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
         window._ednPreviewBadgeClicked = true;
-        var nid = e.target.innerText.trim();
+        var nid = e.target.dataset.nid || e.target.innerText.trim();
         if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
         else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
     }, true); // capture phase = fires before any other click handler
@@ -402,9 +402,9 @@ if (!window._ednListenersAttached) {
             if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
             window._ednPreviewBadgeClicked = false;
             var target = e.target;
-            var nid = target.innerText.trim();
+            var nid = target.dataset.nid || target.innerText.trim();
 
-            // Badge inside the preview box: hover-navigate with generous delay (200ms)
+            // Badge inside the preview box: hover-navigate with generous delay (250ms)
             // so the user has time to click before the preview changes.
             if (box && box.contains(e.target)) {
                 window._ednHoverTimer = setTimeout(function() {
@@ -623,10 +623,10 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
                 var selectedNode = previewBox.querySelector('.edn-selected-badge');
                 
                 if (selectedNode && selectedNode !== window._edn_parent_badge) {
-                    var nid = selectedNode.innerText.trim();
+                    var nid = selectedNode.dataset.nid || selectedNode.innerText.trim();
                     // Sauvegarder l'historique pour Z
                     if (window._edn_hover_target) {
-                        var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                        var currentNid = window._edn_hover_target.dataset.nid || (window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '');
                         if (!window._ednPreviewHistory) window._ednPreviewHistory = [];
                         if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
                             window._ednPreviewHistory.push(currentNid);
@@ -1016,8 +1016,10 @@ def _on_selection_check(editor, result):
         if len(nid) > 9: # timestamp check roughly
             create_link_for_nid(editor, nid, with_recto=True)
             return
-            
-    open_search_dialog(editor)
+    
+    # Texte non-NID sélectionné ? Le sauvegarder pour le passage au GUI
+    selected_text = text.strip() if text and text.strip() else ""
+    open_search_dialog(editor, selected_text=selected_text)
 
 def create_link_for_nid(editor, nid, with_recto=False):
     try:
@@ -1175,7 +1177,7 @@ def _do_editor_init(editor: Editor):
                 if (window._ednHideTimer) { clearTimeout(window._ednHideTimer); window._ednHideTimer = null; }
                 if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
                 var target = e.target;
-                var nid = target.innerText.trim();
+                var nid = target.dataset.nid || target.innerText.trim();
                 window._ednHoverTimer = setTimeout(function() {
                     window._edn_hover_target = target;
                     if (typeof pycmd !== 'undefined') pycmd("cards_ct_hover:" + nid);
@@ -1333,20 +1335,24 @@ class LinkInserter:
     def __init__(self, editor):
         self.editor = editor
         
-    def insert_link(self, items):
+    def insert_link(self, items, override_html=None):
         is_direct_replacement = all(recto is None for _, recto in items)
         
         html_parts = []
         for nid, recto in items:
             if recto is None:
                 html_parts.append(f'<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
+
             else:
                 recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
                 html_parts.append(f'{recto_escaped}&nbsp;—&nbsp;<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
+
                 
         html = "<br>".join(html_parts)
         if html:
             html += "&nbsp;"
+        if override_html is not None:
+            html = override_html
         
         js = f"""
         (function() {{
@@ -1511,15 +1517,29 @@ class LinkInserter:
         else:
             tooltip(f"{len(items)} liens créés")
 
+    def insert_link_with_text(self, nid, display_text):
+        """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid.
+        
+        Contrairement à insert_link(), remplace le texte sélectionné par le badge.
+        Le marker edn-cursor-marker est déjà posé Là où se trouvait la sélection.
+        """
+        safe_text = display_text.replace('`', '\\`').replace('"', '&quot;')
+        safe_nid = str(nid)
+        html = f'<kbd class="clickable_cards" tabindex="0" data-nid="{safe_nid}" onclick="cards_ct_click(\'{safe_nid}\')" ondblclick="cards_ct_click(\'{safe_nid}\')">{safe_text}</kbd>&nbsp;'
+        # Réutilise la même logique d'insertion que insert_link()
+        self.insert_link([(safe_nid, None)], override_html=html)
+        tooltip(f"Lien '{display_text}' → carte {nid}")
+
 
 class LinkedCardsDialog(QDialog):
-    def __init__(self, editor):
+    def __init__(self, editor, selected_text=""):
         parent = editor.parentWindow if hasattr(editor, 'parentWindow') else mw
         super().__init__(parent)
         self.editor = editor
         self.inserter = LinkInserter(editor)
         self.selected_nid = None
         self.selected_recto = None
+        self.selected_text = selected_text  # Texte à afficher dans le badge (mode hyperlien)
         self.setWindowTitle("Rechercher une carte liée")
         self.setMinimumSize(800, 500)
         self.setModal(False)
@@ -1528,6 +1548,13 @@ class LinkedCardsDialog(QDialog):
     def setup_ui(self):
         layout = QVBoxLayout()
         self.setLayout(layout)
+        
+        # Bandeau indicateur si on est en mode hyperlien
+        if self.selected_text:
+            hint = QLabel(f"🔗 Mode hyperlien — Les mots <b>'{self.selected_text}'</b> deviendront cliquables vers la carte choisie.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("background:#e8f4ff; border-radius:4px; padding:4px 8px; color:#005a9e; margin-bottom:4px;")
+            layout.addWidget(hint)
         
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Rechercher dans les cartes...")
@@ -1819,21 +1846,21 @@ class LinkedCardsDialog(QDialog):
             <script>
             document.addEventListener("mouseover", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.innerText.trim();
+                    var nid = e.target.dataset.nid || e.target.innerText.trim();
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
                     e.target.style.outline = '2px solid #007acc';
                 }
             });
             document.addEventListener("mouseout", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.innerText.trim();
+                    var nid = e.target.dataset.nid || e.target.innerText.trim();
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:' + nid);
                     e.target.style.outline = '';
                 }
             });
             document.addEventListener("click", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.innerText.trim();
+                    var nid = e.target.dataset.nid || e.target.innerText.trim();
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
                 }
             });
@@ -1996,12 +2023,18 @@ class LinkedCardsDialog(QDialog):
         if items:
             self._is_inserting = True
             self.close()
-            editor = self.editor
-            # Ne pas appeler setFocus() ici : ça réinitialise la sélection et perd le marqueur de curseur
-            from aqt.qt import QTimer
-            QTimer.singleShot(0, lambda: self.inserter.insert_link(items))
+            # Mode hyperlien : texte visible = mot(s) sélectionné(s), NID dans data-nid
+            if self.selected_text:
+                if len(items) > 1:
+                    tooltip("Mode hyperlien : 1 seul lien possible. Seule la première carte sélectionnée sera utilisée.")
+                nid = items[0][0]
+                from aqt.qt import QTimer
+                QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text))
+            else:
+                from aqt.qt import QTimer
+                QTimer.singleShot(0, lambda: self.inserter.insert_link(items))
 
-def open_search_dialog(editor):
+def open_search_dialog(editor, selected_text=""):
     global _active_dialog
     if not editor: return
 
@@ -2080,7 +2113,7 @@ def open_search_dialog(editor):
     try:
         if _active_dialog: _active_dialog.close()
     except: pass
-    _active_dialog = LinkedCardsDialog(editor)
+    _active_dialog = LinkedCardsDialog(editor, selected_text=selected_text)
     _active_dialog.show()
     _active_dialog.activateWindow()
 
