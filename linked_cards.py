@@ -146,6 +146,15 @@ function cards_ct_click(nid) {
     if(typeof pycmd !== 'undefined') pycmd("cards_ct_click" + nid);
 }
 
+// Extraction robuste du NID depuis un badge (data-nid > span.edn-nid > innerText)
+function _ednGetNid(el) {
+    if (!el) return '';
+    if (el.dataset && el.dataset.nid) return el.dataset.nid;
+    var hiddenSpan = el.querySelector && el.querySelector('.edn-nid');
+    if (hiddenSpan) return hiddenSpan.textContent.trim();
+    return el.innerText ? el.innerText.trim() : '';
+}
+
 // -- Aperçu des cartes liées au survol -- (guard : enregistrement unique des listeners) --
 
 // -- Raccourcis clavier badges liés (mis à jour à chaque carte) --
@@ -213,8 +222,10 @@ if (!window._ednListenersAttached) {
                 window._edn_hover_target = targetBadge;
                 window._edn_parent_badge = targetBadge;
                 window._ednPreviewHistory = [];
-                var nid = targetBadge.dataset.nid || targetBadge.innerText.trim();
+                var nid = _ednGetNid(targetBadge);
                 window._ednPositionLocked = false;
+                // Activer l'indicateur de scroll intelligent pour la preview
+                window._edn_needs_scroll = true;
                 if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
                 else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid);
             }
@@ -259,10 +270,10 @@ if (!window._ednListenersAttached) {
             
             // Si un badge preview est sélectionné et différent du parent → ouvrir sa preview
             if (selectedNode && selectedNode !== window._edn_parent_badge) {
-                var nid3 = selectedNode.dataset.nid || selectedNode.innerText.trim();
+                var nid3 = _ednGetNid(selectedNode);
                 // Sauvegarder l'historique pour Z
                 if (window._edn_hover_target) {
-                    var currentNid = window._edn_hover_target.dataset.nid || (window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '');
+                    var currentNid = _ednGetNid(window._edn_hover_target);
                     if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
                         window._ednPreviewHistory.push(currentNid);
                     }
@@ -390,7 +401,7 @@ if (!window._ednListenersAttached) {
         e.stopImmediatePropagation();
         if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
         window._ednPreviewBadgeClicked = true;
-        var nid = e.target.dataset.nid || e.target.innerText.trim();
+        var nid = _ednGetNid(e.target);
         if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
         else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
     }, true); // capture phase = fires before any other click handler
@@ -402,7 +413,7 @@ if (!window._ednListenersAttached) {
             if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
             window._ednPreviewBadgeClicked = false;
             var target = e.target;
-            var nid = target.dataset.nid || target.innerText.trim();
+            var nid = _ednGetNid(target);
 
             // Badge inside the preview box: hover-navigate with generous delay (250ms)
             // so the user has time to click before the preview changes.
@@ -411,7 +422,7 @@ if (!window._ednListenersAttached) {
                     if (window._ednPreviewBadgeClicked) return; // click won the race
                     // Save history for Z-back
                     if (window._edn_hover_target) {
-                        var currentNid = window._edn_hover_target.innerText ? window._edn_hover_target.innerText.trim() : '';
+                        var currentNid = _ednGetNid(window._edn_hover_target);
                         if (!window._ednPreviewHistory) window._ednPreviewHistory = [];
                         if (currentNid && window._ednPreviewHistory.indexOf(currentNid) === -1) {
                             window._ednPreviewHistory.push(currentNid);
@@ -531,11 +542,22 @@ if (!window._ednListenersAttached) {
             }
         }
         
+        var shouldScroll = window._edn_needs_scroll;
+        window._edn_needs_scroll = false;
+
         // Étape 1 : ajustement rapide de la hauteur (avant MathJax)
         requestAnimationFrame(function() {
             var contentHeight = box.scrollHeight;
             var maxAllowed = window.innerHeight * 0.6;
             box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
+            
+            if (shouldScroll) {
+                var rect = box.getBoundingClientRect();
+                var overflow = rect.bottom - window.innerHeight + 10;
+                if (overflow > 0) {
+                    window.scrollBy({top: overflow, behavior: 'smooth'});
+                }
+            }
         });
         
         // MathJax typesetting avec retry : on boucle jusqu'à ce que MathJax soit prêt
@@ -549,6 +571,14 @@ if (!window._ednListenersAttached) {
                         var contentHeight = box.scrollHeight;
                         var maxAllowed = window.innerHeight * 0.6;
                         box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
+                        
+                        if (shouldScroll) {
+                            var rect = box.getBoundingClientRect();
+                            var overflow = rect.bottom - window.innerHeight + 10;
+                            if (overflow > 0) {
+                                window.scrollBy({top: overflow, behavior: 'smooth'});
+                            }
+                        }
                     }).catch(function(){});
                 } catch(e) {}
             } else if (attempt < 15) {
@@ -747,21 +777,22 @@ def on_js_message_reviewer(handled, message, context):
                     #edn-preview-box hr { display: none !important; }
                     #edn-preview-box .edn-preview-isolated > *:last-child { margin-bottom: 0 !important; padding-bottom: 0 !important; }
                     #edn-preview-box .edn-preview-isolated { overflow: hidden; padding: 0 !important; }
-                    #edn-preview-box .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 14px !important; line-height: 1.3 !important; max-width: 100% !important; text-align: left !important; }
+                    #edn-preview-box .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 18px !important; line-height: 1.35 !important; max-width: 100% !important; text-align: left !important; }
                     #edn-preview-box a { font-size: 0.85em !important; }
                     #edn-preview-box .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
                     #edn-preview-box div[class*='section'] { display: flex !important; }
                     #edn-preview-box .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
-                    #edn-preview-box .items ul, #edn-preview-box .items ol { padding-top: 5px !important; padding-bottom: 5px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
-                    #edn-preview-box .items li { padding-top: 1px !important; padding-bottom: 1px !important; }
-                    #edn-preview-box .bar { flex: 0 0 24px !important; width: 24px !important; min-height: 24px !important; margin: 0 !important; padding: 0 !important; background-size: 18px !important; border-right-width: 1px !important; }
+                    #edn-preview-box .items ul, #edn-preview-box .items ol { padding-top: 6px !important; padding-bottom: 6px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
+                    #edn-preview-box .items li { padding-top: 2px !important; padding-bottom: 2px !important; }
+                    #edn-preview-box .bar { flex: 0 0 31px !important; width: 31px !important; min-height: 31px !important; margin: 0 !important; padding: 0 !important; background-size: 23px !important; border-right-width: 1px !important; }
                     #edn-preview-box .barHider { display: none !important; }
                     #edn-preview-box br { line-height: 1px !important; margin: 0 !important; }
+                    #edn-preview-box .edn-nid { display: none !important; }
                     #edn-preview-box .clickable_cards {
-                        font-size: 11px !important;
-                        height: 11px !important;
-                        line-height: 11px !important;
-                        padding: 3px !important;
+                        font-size: 14px !important;
+                        height: auto !important;
+                        line-height: 14px !important;
+                        padding: 3px 5px !important;
                         margin: 3px !important;
                         cursor: pointer;
                     }
@@ -1177,7 +1208,14 @@ def _do_editor_init(editor: Editor):
                 if (window._ednHideTimer) { clearTimeout(window._ednHideTimer); window._ednHideTimer = null; }
                 if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
                 var target = e.target;
-                var nid = target.dataset.nid || target.innerText.trim();
+                // Extraction robuste du NID (data-nid > span.edn-nid > innerText)
+                function _getN(el) {
+                    if (el.dataset && el.dataset.nid) return el.dataset.nid;
+                    var s = el.querySelector && el.querySelector('.edn-nid');
+                    if (s) return s.textContent.trim();
+                    return el.innerText ? el.innerText.trim() : '';
+                }
+                var nid = _getN(target);
                 window._ednHoverTimer = setTimeout(function() {
                     window._edn_hover_target = target;
                     if (typeof pycmd !== 'undefined') pycmd("cards_ct_hover:" + nid);
@@ -1518,14 +1556,22 @@ class LinkInserter:
             tooltip(f"{len(items)} liens créés")
 
     def insert_link_with_text(self, nid, display_text):
-        """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid.
+        """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid
+        ET dans un <span class="edn-nid"> invisible. Ce double stockage garantit que le NID
+        survive au sanitizer HTML d'Anki qui supprime parfois data-* et onclick.
         
         Contrairement à insert_link(), remplace le texte sélectionné par le badge.
         Le marker edn-cursor-marker est déjà posé Là où se trouvait la sélection.
         """
         safe_text = display_text.replace('`', '\\`').replace('"', '&quot;')
         safe_nid = str(nid)
-        html = f'<kbd class="clickable_cards" tabindex="0" data-nid="{safe_nid}" onclick="cards_ct_click(\'{safe_nid}\')" ondblclick="cards_ct_click(\'{safe_nid}\')">{safe_text}</kbd>&nbsp;'
+        # Le span .edn-nid est invisible (display:none CSS) mais survit au sanitizer Anki
+        html = (
+            f'<kbd class="clickable_cards" tabindex="0" data-nid="{safe_nid}"'
+            f' onclick="cards_ct_click(\'{safe_nid}\')" ondblclick="cards_ct_click(\'{safe_nid}\')"'
+            f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{safe_nid}</span>'
+            f'{safe_text}</kbd>&nbsp;'
+        )
         # Réutilise la même logique d'insertion que insert_link()
         self.insert_link([(safe_nid, None)], override_html=html)
         tooltip(f"Lien '{display_text}' → carte {nid}")
@@ -1650,13 +1696,66 @@ class LinkedCardsDialog(QDialog):
                 });
                 changedEditables.forEach(function(editable) {
                     try {
-                        editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                        // RAF pour laisser le DOM se stabiliser avant de notifier Anki
+                        // (évite le repliement du champ "Cartes liées" causé par un re-parse prématuré)
+                        requestAnimationFrame(function() {
+                            try {
+                                editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                            } catch(e) {}
+                        });
                     } catch(e) {}
                 });
             })();
         """)
     @perf_log
     def do_search(self, query):
+        query = query.strip()
+        
+        # Détection de NIDs multiples (ex: "1575893780795 1572425651952")
+        nid_matches = re.findall(r'\b(\d{10,})\b', query)
+        
+        if nid_matches:
+            # Mode NID : rechercher chaque NID séparément
+            if len(nid_matches) == 1 and query == nid_matches[0]:
+                pass  # NID seul → utilise la recherche standard plus bas
+            else:
+                self.results_table.setRowCount(0)
+                count = 0
+                try:
+                    seen_nids = set()
+                    for n in nid_matches:
+                        try:
+                            found = mw.col.find_notes(f"nid:{n}")
+                            for nid in found:
+                                if nid in seen_nids or count >= 50:
+                                    break
+                                seen_nids.add(nid)
+                                try:
+                                    note = mw.col.get_note(nid)
+                                    recto = note.fields[0] if note.fields else ""
+                                    recto_clean = strip_html(recto)[:240] or "[Vide]"
+                                    row = self.results_table.rowCount()
+                                    self.results_table.insertRow(row)
+                                    i_recto = QTableWidgetItem(recto_clean)
+                                    i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': str(nid), 'recto': recto_clean})
+                                    self.results_table.setItem(row, 0, i_recto)
+                                    self.results_table.setItem(row, 1, QTableWidgetItem(str(nid)))
+                                    btn = self._make_voir_button(str(nid))
+                                    self.results_table.setCellWidget(row, 2, btn)
+                                    count += 1
+                                except:
+                                    continue
+                        except:
+                            continue
+                except Exception as e:
+                    self.results_label.setText(str(e))
+                    return
+                self.results_label.setText(f"{count} résultats (recherche NID)")
+                if not hasattr(self, '_scroll_connected'):
+                    self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
+                    self._scroll_connected = True
+                return
+        
         if len(query) < 2:
             self.results_table.setRowCount(0)
             return
@@ -1681,36 +1780,7 @@ class LinkedCardsDialog(QDialog):
                     
                     self.results_table.setItem(row, 1, QTableWidgetItem(str(nid)))
                     
-                    class HoverButton(QPushButton):
-                        def __init__(self, text, nid, dialog_parent):
-                            super().__init__(text)
-                            self.nid = nid
-                            self.dialog_parent = dialog_parent
-                            self.setCursor(Qt.CursorShape.PointingHandCursor)
-                            self.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; border-radius: 4px;")
-                            self.clicked.connect(self.on_click)
-                            
-                        def on_click(self):
-                            # Sur click, on ouvre la carte dans le navigateur Anki
-                            # Le GUI reste ouvert pour continuer la navigation
-                            from aqt import dialogs, mw
-                            browser = dialogs.open("Browser", mw)
-                            browser.search_for(f"nid:{self.nid}")
-                            self.dialog_parent.hide_preview_popup()
-
-                        def enterEvent(self, event):
-                            self.dialog_parent._preview_current_widget = self
-                            self.dialog_parent.show_preview_popup(self.nid, position_widget=self)
-                            super().enterEvent(event)
-                            
-                        def leaveEvent(self, event):
-                            # On ne cache pas immédiatement pour permettre le survol de la popup
-                            # La popup se cachera via les événements de survol du dialogue si besoin
-                            from aqt.qt import QTimer
-                            QTimer.singleShot(150, lambda: self.dialog_parent.check_hide_preview())
-                            super().leaveEvent(event)
-
-                    btn = HoverButton("Voir", str(nid), self)
+                    btn = self._make_voir_button(str(nid))
                     self.results_table.setCellWidget(row, 2, btn)
                     
                     count += 1
@@ -1723,6 +1793,37 @@ class LinkedCardsDialog(QDialog):
         if not hasattr(self, '_scroll_connected'):
             self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
             self._scroll_connected = True
+
+    def _make_voir_button(self, nid):
+        """Crée le bouton 'Voir' pour une ligne de résultats."""
+        dialog_parent = self
+        
+        class HoverButton(QPushButton):
+            def __init__(self, text, nid, dlg):
+                super().__init__(text)
+                self.nid = nid
+                self.dialog_parent = dlg
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; border-radius: 4px;")
+                self.clicked.connect(self.on_click)
+                
+            def on_click(self):
+                from aqt import dialogs, mw
+                browser = dialogs.open("Browser", mw)
+                browser.search_for(f"nid:{self.nid}")
+                self.dialog_parent.hide_preview_popup()
+
+            def enterEvent(self, event):
+                self.dialog_parent._preview_current_widget = self
+                self.dialog_parent.show_preview_popup(self.nid, position_widget=self)
+                super().enterEvent(event)
+                
+            def leaveEvent(self, event):
+                from aqt.qt import QTimer
+                QTimer.singleShot(150, lambda: self.dialog_parent.check_hide_preview())
+                super().leaveEvent(event)
+        
+        return HoverButton("Voir", nid, dialog_parent)
 
     def _on_table_scroll(self, value):
         if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
@@ -1789,8 +1890,8 @@ class LinkedCardsDialog(QDialog):
                 dlg.setObjectName("PreviewPopup")
                 dlg.setWindowTitle("Apercu")
                 dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-                dlg.setMinimumSize(450, 100)
-                dlg.setMaximumSize(600, 520)
+                dlg.setMinimumSize(500, 150)
+                dlg.setMaximumSize(680, 650)
                 dlg.setStyleSheet("#PreviewPopup { border: 2px solid #007acc; background: white; border-radius: 8px; }")
 
                 v = QVBoxLayout(dlg)
@@ -1823,21 +1924,22 @@ class LinkedCardsDialog(QDialog):
             css_link = '<link rel="stylesheet" href="/_addons/' + addon_package + '/user_files/clickable_cards.css">'
             scoped_css = """
             <style>
-                body { margin: 2px; font-size: 12px; overflow-x: hidden; padding: 0 !important; }
+                body { margin: 2px; font-size: 13px; overflow-x: hidden; padding: 0 !important; }
                 span[id*='FSRS'] { display: none !important; }
                 hr { display: none !important; }
+                .edn-nid { display: none !important; }
                 .card > *:last-child { margin-bottom: 0 !important; padding-bottom: 0 !important; }
-                .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 14px !important; line-height: 1.3 !important; max-width: 100% !important; text-align: left !important; }
+                .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 5px !important; font-size: 16px !important; line-height: 1.35 !important; max-width: 100% !important; text-align: left !important; }
                 a { font-size: 0.85em !important; }
                 .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
                 div[class*='section'] { display: flex !important; }
                 .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
                 .items ul, .items ol { padding-top: 5px !important; padding-bottom: 5px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                 .items li { padding-top: 1px !important; padding-bottom: 1px !important; }
-                .bar { flex: 0 0 24px !important; width: 24px !important; min-height: 24px !important; margin: 0 !important; padding: 0 !important; background-size: 18px !important; border-right-width: 1px !important; }
+                .bar { flex: 0 0 28px !important; width: 28px !important; min-height: 28px !important; margin: 0 !important; padding: 0 !important; background-size: 20px !important; border-right-width: 1px !important; }
                 .barHider { display: none !important; }
                 br { line-height: 1px !important; margin: 0 !important; }
-                .clickable_cards { font-size: 11px !important; height: 11px !important; line-height: 11px !important; padding: 3px !important; margin: 3px !important; cursor: pointer; }
+                .clickable_cards { font-size: 13px !important; height: auto !important; line-height: 13px !important; padding: 3px 5px !important; margin: 3px !important; cursor: pointer; }
                 .items.cartesLiees { flex-direction: row !important; flex-wrap: wrap !important; align-items: center !important; justify-content: flex-start !important; margin-left: 0 !important; }
             </style>
             """
@@ -1846,21 +1948,39 @@ class LinkedCardsDialog(QDialog):
             <script>
             document.addEventListener("mouseover", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.dataset.nid || e.target.innerText.trim();
+                    function _gn(el) {
+                        if (el.dataset && el.dataset.nid) return el.dataset.nid;
+                        var s = el.querySelector && el.querySelector('.edn-nid');
+                        if (s) return s.textContent.trim();
+                        return el.innerText ? el.innerText.trim() : '';
+                    }
+                    var nid = _gn(e.target);
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
                     e.target.style.outline = '2px solid #007acc';
                 }
             });
             document.addEventListener("mouseout", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.dataset.nid || e.target.innerText.trim();
+                    function _gn2(el) {
+                        if (el.dataset && el.dataset.nid) return el.dataset.nid;
+                        var s = el.querySelector && el.querySelector('.edn-nid');
+                        if (s) return s.textContent.trim();
+                        return el.innerText ? el.innerText.trim() : '';
+                    }
+                    var nid = _gn2(e.target);
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:' + nid);
                     e.target.style.outline = '';
                 }
             });
             document.addEventListener("click", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = e.target.dataset.nid || e.target.innerText.trim();
+                    function _gn3(el) {
+                        if (el.dataset && el.dataset.nid) return el.dataset.nid;
+                        var s = el.querySelector && el.querySelector('.edn-nid');
+                        if (s) return s.textContent.trim();
+                        return el.innerText ? el.innerText.trim() : '';
+                    }
+                    var nid = _gn3(e.target);
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
                 }
             });
@@ -1882,7 +2002,13 @@ class LinkedCardsDialog(QDialog):
                     // Si une sélection existe ET qu'elle n'est pas déjà celle survolée/ouverte, on l'ouvre
                     if(sel) {
                         e.preventDefault();
-                        var nid = sel.innerText.trim();
+                        function _gnK(el) {
+                            if (el.dataset && el.dataset.nid) return el.dataset.nid;
+                            var s = el.querySelector && el.querySelector('.edn-nid');
+                            if (s) return s.textContent.trim();
+                            return el.innerText ? el.innerText.trim() : '';
+                        }
+                        var nid = _gnK(sel);
                         if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
                         else if(typeof bridgeCommand !== 'undefined') bridgeCommand('gui_preview_hover:' + nid);
                     } else {
@@ -1908,14 +2034,15 @@ class LinkedCardsDialog(QDialog):
             dlg.show()
             dlg.raise_()
             
-            # Ajustement rapide de la hauteur sans attendre MathJax
-            dlg.resize(dlg.width(), 100)
+            # Dimensionnement initial basé sur une estimation de la hauteur du contenu
+            # pour éviter les saccades : on fixe 500px par défaut, puis on ajuste
+            dlg.resize(dlg.width(), 500)
             from aqt.qt import QTimer
 
             def _quick_resize():
                 try:
                     web.evalWithCallback(
-                        "document.documentElement.scrollHeight;",
+                        "Math.min(document.documentElement.scrollHeight + 20, 640);",
                         lambda h: self._adjust_preview_height(dlg, h)
                     )
                 except Exception:
@@ -1954,10 +2081,10 @@ class LinkedCardsDialog(QDialog):
 
     def _adjust_preview_height(self, dlg, h):
         if h and h > 0:
-            new_height = min(520, max(100, h + 20))
+            new_height = min(640, max(150, int(h) + 20))
             dlg.resize(dlg.width(), new_height)
         else:
-            dlg.resize(dlg.width(), 100)
+            dlg.resize(dlg.width(), 300)
 
     def eventFilter(self, obj, event):
         if hasattr(self, '_preview_dlg') and obj == self._preview_dlg:
@@ -2015,24 +2142,45 @@ class LinkedCardsDialog(QDialog):
         rows = self.results_table.selectionModel().selectedRows()
         if not rows: return
         
-        items = []
+        items_raw = []
         for row in rows:
             data = self.results_table.item(row.row(), 0).data(Qt.ItemDataRole.UserRole)
-            items.append((data['nid'], data['recto']))
+            items_raw.append((data['nid'], data['recto']))
             
-        if items:
-            self._is_inserting = True
-            self.close()
-            # Mode hyperlien : texte visible = mot(s) sélectionné(s), NID dans data-nid
-            if self.selected_text:
-                if len(items) > 1:
-                    tooltip("Mode hyperlien : 1 seul lien possible. Seule la première carte sélectionnée sera utilisée.")
-                nid = items[0][0]
-                from aqt.qt import QTimer
-                QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text))
-            else:
+        if not items_raw:
+            return
+        
+        self._is_inserting = True
+        self.close()
+        
+        # Mode hyperlien : texte visible = mot(s) sélectionné(s), NID dans data-nid
+        if self.selected_text:
+            if len(items_raw) > 1:
+                tooltip("Mode hyperlien : 1 seul lien possible. Seule la première carte sélectionnée sera utilisée.")
+            nid = items_raw[0][0]
+            from aqt.qt import QTimer
+            QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text))
+        else:
+            # Vérifier si la ligne courante contient déjà un em dash (titre présent)
+            # Si oui, ne pas inclure le recto pour éviter le doublon
+            def _do_insert(has_dash):
+                if has_dash:
+                    # Ne pas inclure le recto : insérer uniquement les badges NID
+                    items = [(nid, None) for nid, _ in items_raw]
+                else:
+                    items = items_raw
                 from aqt.qt import QTimer
                 QTimer.singleShot(0, lambda: self.inserter.insert_link(items))
+            
+            try:
+                self.editor.web.evalWithCallback(
+                    "!!(window._ednCurrentLineHasDash);",
+                    _do_insert
+                )
+            except Exception:
+                # Fallback si l'éditeur n'est plus disponible
+                from aqt.qt import QTimer
+                QTimer.singleShot(0, lambda: self.inserter.insert_link(items_raw))
 
 def open_search_dialog(editor, selected_text=""):
     global _active_dialog
@@ -2107,6 +2255,27 @@ def open_search_dialog(editor, selected_text=""):
                     break;
                 }
             }
+
+            // Détecter si la ligne courante contient déjà un titre (em dash — ou &mdash; ou &nbsp;—)
+            // Si oui, on n'ajoutera pas le recto lors de l'insertion
+            window._ednCurrentLineHasDash = false;
+            try {
+                if (window._ednSavedRange) {
+                    let container = window._ednSavedRange.startContainer;
+                    // Remonter jusqu'à l'élément de bloc (li, p, div, br-boundary)
+                    let lineNode = container;
+                    let lineText = '';
+                    if (lineNode && lineNode.nodeType === 3) {
+                        // Text node : prendre le parent
+                        lineNode = lineNode.parentNode;
+                    }
+                    if (lineNode) {
+                        lineText = lineNode.textContent || lineNode.innerText || '';
+                        // Check for em dash character or HTML entity
+                        window._ednCurrentLineHasDash = lineText.includes('—') || lineText.includes('\u2014');
+                    }
+                }
+            } catch(e) {}
         })();
     """)
 
