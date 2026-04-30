@@ -279,6 +279,8 @@ if (!window._ednListenersAttached) {
                     }
                 }
                 window._edn_hover_target = selectedNode;
+                // Activer le scroll intelligent aussi pour r (preview in preview)
+                window._edn_needs_scroll = true;
                 if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid3);
                 else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_hover:' + nid3);
                 return;
@@ -310,6 +312,9 @@ if (!window._ednListenersAttached) {
                 window._edn_hover_target = null;
                 window._ednPositionLocked = false;
                 window._ednPreviewIndex = -1;
+                // Retirer le spacer de scroll
+                var spacer = document.getElementById('edn-scroll-spacer');
+                if (spacer) spacer.style.height = '0px';
             }
             return;
         }
@@ -325,6 +330,9 @@ if (!window._ednListenersAttached) {
                 window._ednPositionLocked = false;
                 window._ednPreviewIndex = -1;
                 window._ednPreviewHistory = [];
+                // Retirer le spacer de scroll
+                var spacer = document.getElementById('edn-scroll-spacer');
+                if (spacer) spacer.style.height = '0px';
             }
             return;
         }
@@ -376,6 +384,8 @@ if (!window._ednListenersAttached) {
                     window._edn_parent_badge = null;
                     window._ednPositionLocked = false;
                     window._ednHideTimer = null;
+                    var spacer = document.getElementById('edn-scroll-spacer');
+                    if (spacer) spacer.style.height = '0px';
                 }, 80);
             });
         }
@@ -461,6 +471,8 @@ if (!window._ednListenersAttached) {
                 window._edn_parent_badge = null;
                 window._ednPositionLocked = false;
                 window._ednHideTimer = null;
+                var spacer = document.getElementById('edn-scroll-spacer');
+                if (spacer) spacer.style.height = '0px';
             }, 80);
         }
     });
@@ -472,6 +484,8 @@ if (!window._ednListenersAttached) {
             window._edn_hover_target = null;
             window._edn_parent_badge = null;
             window._ednPositionLocked = false;
+            var spacer = document.getElementById('edn-scroll-spacer');
+            if (spacer) spacer.style.height = '0px';
         }
     });
 
@@ -555,6 +569,15 @@ if (!window._ednListenersAttached) {
                 var rect = box.getBoundingClientRect();
                 var overflow = rect.bottom - window.innerHeight + 10;
                 if (overflow > 0) {
+                    // Ajouter un spacer en bas de la carte mère pour pouvoir scroller
+                    var spacer = document.getElementById('edn-scroll-spacer');
+                    if (!spacer) {
+                        spacer = document.createElement('div');
+                        spacer.id = 'edn-scroll-spacer';
+                        spacer.style.cssText = 'height:0px;width:100%;pointer-events:none;';
+                        document.body.appendChild(spacer);
+                    }
+                    spacer.style.height = (overflow + 50) + 'px';
                     window.scrollBy({top: overflow, behavior: 'smooth'});
                 }
             }
@@ -576,6 +599,14 @@ if (!window._ednListenersAttached) {
                             var rect = box.getBoundingClientRect();
                             var overflow = rect.bottom - window.innerHeight + 10;
                             if (overflow > 0) {
+                                var spacer = document.getElementById('edn-scroll-spacer');
+                                if (!spacer) {
+                                    spacer = document.createElement('div');
+                                    spacer.id = 'edn-scroll-spacer';
+                                    spacer.style.cssText = 'height:0px;width:100%;pointer-events:none;';
+                                    document.body.appendChild(spacer);
+                                }
+                                spacer.style.height = (overflow + 50) + 'px';
                                 window.scrollBy({top: overflow, behavior: 'smooth'});
                             }
                         }
@@ -611,6 +642,10 @@ if (!window._ednListenersAttached) {
 
 def on_card_render(output, context):
     script = build_add_to_card_script()
+    # Nettoyer les badges <kbd> vides (bug: lien vide après saut de ligne)
+    empty_kbd_pattern = r'<kbd\s+class="clickable_cards"[^>]*>\s*</kbd>'
+    output.question_text = re.sub(empty_kbd_pattern, '', output.question_text)
+    output.answer_text = re.sub(empty_kbd_pattern, '', output.answer_text)
     output.question_text += script
     output.answer_text += script
 
@@ -782,8 +817,9 @@ def on_js_message_reviewer(handled, message, context):
                     #edn-preview-box .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
                     #edn-preview-box div[class*='section'] { display: flex !important; }
                     #edn-preview-box .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
-                    #edn-preview-box .items ul, #edn-preview-box .items ol { padding-top: 6px !important; padding-bottom: 6px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
-                    #edn-preview-box .items li { padding-top: 2px !important; padding-bottom: 2px !important; }
+                    #edn-preview-box .items ul, #edn-preview-box .items ol { padding-top: 2px !important; padding-bottom: 2px !important; margin-top: 0 !important; margin-bottom: 0 !important; padding-left: 18px !important; }
+                    #edn-preview-box .items li { padding-top: 0px !important; padding-bottom: 0px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
+                    #edn-preview-box .items ul ul, #edn-preview-box .items ol ol, #edn-preview-box .items ul ol, #edn-preview-box .items ol ul { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                     #edn-preview-box .bar { flex: 0 0 31px !important; width: 31px !important; min-height: 31px !important; margin: 0 !important; padding: 0 !important; background-size: 23px !important; border-right-width: 1px !important; }
                     #edn-preview-box .barHider { display: none !important; }
                     #edn-preview-box br { line-height: 1px !important; margin: 0 !important; }
@@ -1603,10 +1639,19 @@ class LinkedCardsDialog(QDialog):
             layout.addWidget(hint)
         
         self.search_bar = QLineEdit()
-        self.search_bar.setPlaceholderText("Rechercher dans les cartes...")
+        self.search_bar.setPlaceholderText("Rechercher dans les cartes... (NID, texte, ou tag::...)")
         self.search_bar.textChanged.connect(self.do_search)
         self.search_bar.returnPressed.connect(self.insert_selected)
         layout.addWidget(self.search_bar)
+        
+        # Options de recherche
+        search_opts = QHBoxLayout()
+        self.recto_only_cb = QCheckBox("Uniquement le recto")
+        self.recto_only_cb.setToolTip("Afficher uniquement les cartes dont le recto contient la recherche")
+        self.recto_only_cb.stateChanged.connect(lambda: self.do_search(self.search_bar.text()))
+        search_opts.addWidget(self.recto_only_cb)
+        search_opts.addStretch()
+        layout.addLayout(search_opts)
         
         self.results_label = QLabel("Tapez pour rechercher...")
         layout.addWidget(self.results_label)
@@ -1710,51 +1755,50 @@ class LinkedCardsDialog(QDialog):
     @perf_log
     def do_search(self, query):
         query = query.strip()
+        recto_only = self.recto_only_cb.isChecked()
         
         # Détection de NIDs multiples (ex: "1575893780795 1572425651952")
+        # Aussi accepter un NID seul sans préfixe 'nid:'
         nid_matches = re.findall(r'\b(\d{10,})\b', query)
         
         if nid_matches:
-            # Mode NID : rechercher chaque NID séparément
-            if len(nid_matches) == 1 and query == nid_matches[0]:
-                pass  # NID seul → utilise la recherche standard plus bas
-            else:
-                self.results_table.setRowCount(0)
-                count = 0
-                try:
-                    seen_nids = set()
-                    for n in nid_matches:
-                        try:
-                            found = mw.col.find_notes(f"nid:{n}")
-                            for nid in found:
-                                if nid in seen_nids or count >= 50:
-                                    break
-                                seen_nids.add(nid)
-                                try:
-                                    note = mw.col.get_note(nid)
-                                    recto = note.fields[0] if note.fields else ""
-                                    recto_clean = strip_html(recto)[:240] or "[Vide]"
-                                    row = self.results_table.rowCount()
-                                    self.results_table.insertRow(row)
-                                    i_recto = QTableWidgetItem(recto_clean)
-                                    i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': str(nid), 'recto': recto_clean})
-                                    self.results_table.setItem(row, 0, i_recto)
-                                    self.results_table.setItem(row, 1, QTableWidgetItem(str(nid)))
-                                    btn = self._make_voir_button(str(nid))
-                                    self.results_table.setCellWidget(row, 2, btn)
-                                    count += 1
-                                except:
-                                    continue
-                        except:
-                            continue
-                except Exception as e:
-                    self.results_label.setText(str(e))
-                    return
-                self.results_label.setText(f"{count} résultats (recherche NID)")
-                if not hasattr(self, '_scroll_connected'):
-                    self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
-                    self._scroll_connected = True
+            # Mode NID : rechercher chaque NID séparément (accepte NID sans 'nid:' prefix)
+            self.results_table.setRowCount(0)
+            count = 0
+            try:
+                seen_nids = set()
+                for n in nid_matches:
+                    try:
+                        found = mw.col.find_notes(f"nid:{n}")
+                        for nid in found:
+                            if nid in seen_nids or count >= 50:
+                                break
+                            seen_nids.add(nid)
+                            try:
+                                note = mw.col.get_note(nid)
+                                recto = note.fields[0] if note.fields else ""
+                                recto_clean = strip_html(recto)[:240] or "[Vide]"
+                                row = self.results_table.rowCount()
+                                self.results_table.insertRow(row)
+                                i_recto = QTableWidgetItem(recto_clean)
+                                i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': str(nid), 'recto': recto_clean})
+                                self.results_table.setItem(row, 0, i_recto)
+                                self.results_table.setItem(row, 1, QTableWidgetItem(str(nid)))
+                                btn = self._make_voir_button(str(nid))
+                                self.results_table.setCellWidget(row, 2, btn)
+                                count += 1
+                            except:
+                                continue
+                    except:
+                        continue
+            except Exception as e:
+                self.results_label.setText(str(e))
                 return
+            self.results_label.setText(f"{count} résultats (recherche NID)")
+            if not hasattr(self, '_scroll_connected'):
+                self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
+                self._scroll_connected = True
+            return
         
         if len(query) < 2:
             self.results_table.setRowCount(0)
@@ -1762,7 +1806,15 @@ class LinkedCardsDialog(QDialog):
             
         self.results_table.setRowCount(0)
         try:
-            nids = mw.col.find_notes(f"*{query}*")
+            # Recherche par tag:: → convertir en tag:
+            if query.startswith('tag::'):
+                search_query = 'tag:' + query[5:]
+            elif query.startswith('tag:'):
+                search_query = query
+            else:
+                search_query = f"*{query}*"
+            
+            nids = mw.col.find_notes(search_query)
             count = 0
             for nid in nids:
                 if count >= 50: break
@@ -1770,6 +1822,12 @@ class LinkedCardsDialog(QDialog):
                     note = mw.col.get_note(nid)
                     recto = note.fields[0] if note.fields else ""
                     recto_clean = strip_html(recto)[:240] or "[Vide]"
+                    
+                    # Filtre "uniquement le recto" : skip si le recto ne contient pas la requête
+                    if recto_only and not query.startswith('tag'):
+                        search_lower = query.lower()
+                        if search_lower not in recto_clean.lower():
+                            continue
                     
                     row = self.results_table.rowCount()
                     self.results_table.insertRow(row)
@@ -1934,8 +1992,9 @@ class LinkedCardsDialog(QDialog):
                 .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
                 div[class*='section'] { display: flex !important; }
                 .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; }
-                .items ul, .items ol { padding-top: 5px !important; padding-bottom: 5px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
-                .items li { padding-top: 1px !important; padding-bottom: 1px !important; }
+                .items ul, .items ol { padding-top: 2px !important; padding-bottom: 2px !important; margin-top: 0 !important; margin-bottom: 0 !important; padding-left: 18px !important; }
+                .items li { padding-top: 0px !important; padding-bottom: 0px !important; margin-top: 0 !important; margin-bottom: 0 !important; }
+                .items ul ul, .items ol ol, .items ul ol, .items ol ul { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                 .bar { flex: 0 0 28px !important; width: 28px !important; min-height: 28px !important; margin: 0 !important; padding: 0 !important; background-size: 20px !important; border-right-width: 1px !important; }
                 .barHider { display: none !important; }
                 br { line-height: 1px !important; margin: 0 !important; }
@@ -2256,23 +2315,54 @@ def open_search_dialog(editor, selected_text=""):
                 }
             }
 
-            // Détecter si la ligne courante contient déjà un titre (em dash — ou &mdash; ou &nbsp;—)
+            // Détecter si la LIGNE courante (entre deux <br>) contient déjà un titre (em dash —)
             // Si oui, on n'ajoutera pas le recto lors de l'insertion
             window._ednCurrentLineHasDash = false;
             try {
                 if (window._ednSavedRange) {
                     let container = window._ednSavedRange.startContainer;
-                    // Remonter jusqu'à l'élément de bloc (li, p, div, br-boundary)
-                    let lineNode = container;
+                    // Extraire uniquement le texte de la ligne courante (entre <br>)
+                    // En parcourant les siblings avant et après le curseur
                     let lineText = '';
-                    if (lineNode && lineNode.nodeType === 3) {
-                        // Text node : prendre le parent
-                        lineNode = lineNode.parentNode;
+                    let node = container;
+                    if (node && node.nodeType === 3) {
+                        node = node.parentNode;
                     }
-                    if (lineNode) {
-                        lineText = lineNode.textContent || lineNode.innerText || '';
-                        // Check for em dash character or HTML entity
-                        window._ednCurrentLineHasDash = lineText.includes('—') || lineText.includes('\u2014');
+                    if (node) {
+                        // Collecter le texte de la ligne : remonter jusqu'au <br> ou début du parent
+                        let lineNodes = [];
+                        // Trouver le conteneur de bloc (le parent éditable direct)
+                        let blockParent = node;
+                        while (blockParent && blockParent.tagName !== 'ANKI-EDITABLE' && !blockParent.isContentEditable) {
+                            if (['LI', 'P', 'DIV'].indexOf(blockParent.tagName) >= 0) break;
+                            blockParent = blockParent.parentNode;
+                        }
+                        if (blockParent) {
+                            // Parcourir tous les childNodes du bloc et extraire la ligne contenant le curseur
+                            let children = Array.from(blockParent.childNodes);
+                            let cursorIdx = -1;
+                            // Trouver l'index du noeud contenant le curseur
+                            let cursorNode = window._ednSavedRange.startContainer;
+                            for (let i = 0; i < children.length; i++) {
+                                if (children[i] === cursorNode || children[i].contains(cursorNode) || children[i] === node) {
+                                    cursorIdx = i;
+                                    break;
+                                }
+                            }
+                            // Collecter le texte en arrière jusqu'au <br>
+                            let parts = [];
+                            for (let i = cursorIdx; i >= 0; i--) {
+                                if (children[i].tagName === 'BR') break;
+                                parts.unshift(children[i].textContent || '');
+                            }
+                            // Collecter le texte en avant jusqu'au <br>
+                            for (let i = cursorIdx + 1; i < children.length; i++) {
+                                if (children[i].tagName === 'BR') break;
+                                parts.push(children[i].textContent || '');
+                            }
+                            lineText = parts.join('');
+                        }
+                        window._ednCurrentLineHasDash = lineText.includes('\u2014') || lineText.includes('—');
                     }
                 }
             } catch(e) {}
