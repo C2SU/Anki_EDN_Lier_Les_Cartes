@@ -698,6 +698,8 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
                         }
                     }
                     window._edn_hover_target = selectedNode;
+                    // Activer le scroll intelligent pour r (preview in preview)
+                    window._edn_needs_scroll = true;
                     if (typeof pycmd !== 'undefined') pycmd('cards_ct_hover:' + nid);
                     return 'navigated';
                 }
