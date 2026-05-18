@@ -1022,7 +1022,7 @@ def copy_nid_from_editor(editor: Editor):
             f'{recto_escaped}&nbsp;—&nbsp;'
             f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
             f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-            f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+            f'><span class="edn-nid">{nid}</span></kbd>'
         )
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
@@ -1560,7 +1560,7 @@ class LinkInserter:
     def __init__(self, editor):
         self.editor = editor
         
-    def insert_link(self, items, override_html=None):
+    def insert_link(self, items, override_html=None, mirror_requested=False):
         is_direct_replacement = all(recto is None for _, recto in items)
         
         html_parts = []
@@ -1569,7 +1569,7 @@ class LinkInserter:
                 html_parts.append(
                     f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
                     f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+                    f'><span class="edn-nid">{nid}</span></kbd>'
                 )
             else:
                 recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
@@ -1577,7 +1577,7 @@ class LinkInserter:
                     f'{recto_escaped}&nbsp;—&nbsp;'
                     f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
                     f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+                    f'><span class="edn-nid">{nid}</span></kbd>'
                 )
 
                 
@@ -1752,7 +1752,8 @@ class LinkInserter:
         
         # --- Lien miroir : proposer de lier la carte source dans la carte cible ---
         config = mw.addonManager.getConfig(__name__) or {}
-        if config.get("mirror_link_enabled", True):
+        mirror_systematic = config.get("mirror_link_systematic", False)
+        if mirror_systematic or mirror_requested:
             source_note = self.editor.note
             if source_note and source_note.id:
                 for target_nid, _ in items:
@@ -1763,7 +1764,7 @@ class LinkInserter:
                     except Exception:
                         pass
 
-    def insert_link_with_text(self, nid, display_text):
+    def insert_link_with_text(self, nid, display_text, mirror_requested=False):
         """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid
         ET dans un <span class="edn-nid"> invisible. Ce double stockage garantit que le NID
         survive au sanitizer HTML d'Anki qui supprime parfois data-* et onclick.
@@ -1781,7 +1782,7 @@ class LinkInserter:
             f'{safe_text}</kbd>&nbsp;'
         )
         # Réutilise la même logique d'insertion que insert_link()
-        self.insert_link([(safe_nid, None)], override_html=html)
+        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested)
         tooltip(f"Lien '{display_text}' → carte {nid}")
 
 
@@ -1843,13 +1844,14 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
             target_recto = target_recto or "[Vide]"
             
             # Popup de confirmation
-            msg = QMessageBox(mw)
+            msg = QMessageBox(editor.widget if editor.widget else mw)
             msg.setWindowTitle("Lien miroir")
+            target_field_name = target_note.model()['flds'][fidx]['name']
             msg.setText(
                 f"Lier aussi la carte source dans la carte cible ?\n\n"
                 f"→ Ajouter un lien vers :\n"
                 f"   {source_recto}\n"
-                f"   dans la carte :\n"
+                f"   dans le champ [{target_field_name}] de la carte :\n"
                 f"   {target_recto}"
             )
             msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
@@ -1866,7 +1868,7 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
                     f'<br>{source_recto_escaped}&nbsp;\u2014&nbsp;'
                     f'<kbd class="clickable_cards" tabindex="0" data-nid="{source_nid}"'
                     f' onclick="cards_ct_click(\'{source_nid}\')" ondblclick="cards_ct_click(\'{source_nid}\')"'
-                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{source_nid}</span>{source_nid}</kbd>'
+                    f'><span class="edn-nid">{source_nid}</span></kbd>'
                 )
                 
                 target_note.fields[fidx] += badge_html
@@ -1922,6 +1924,13 @@ class LinkedCardsDialog(QDialog):
         self.recto_only_cb.setToolTip("Afficher uniquement les cartes dont le recto contient la recherche")
         self.recto_only_cb.stateChanged.connect(lambda: self.do_search(self.search_bar.text()))
         search_opts.addWidget(self.recto_only_cb)
+        
+        self.mirror_cb = QCheckBox("Lien miroir")
+        self.mirror_cb.setToolTip("Ajouter automatiquement un lien retour dans la carte cible (popup de confirmation)")
+        config = mw.addonManager.getConfig(__name__) or {}
+        self.mirror_cb.setChecked(config.get("mirror_link_systematic", False))
+        search_opts.addWidget(self.mirror_cb)
+        
         search_opts.addStretch()
         layout.addLayout(search_opts)
         
@@ -2413,7 +2422,7 @@ class LinkedCardsDialog(QDialog):
             def _quick_resize():
                 try:
                     web.evalWithCallback(
-                        "Math.min(document.documentElement.scrollHeight + 20, 640);",
+                        "var card = document.querySelector('.card'); var h = card ? card.scrollHeight + 30 : document.body.scrollHeight + 30; Math.min(h, 640);",
                         lambda h: self._adjust_preview_height(dlg, h)
                     )
                 except Exception:
@@ -2427,8 +2436,8 @@ class LinkedCardsDialog(QDialog):
                             "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
                             "MathJax.typesetPromise().then(function() {"
                             "  setTimeout(function() {"
-                            "    var h = Math.min(document.documentElement.scrollHeight + 20, 640);"
-                            "    if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);"
+                            "    var card = document.querySelector('.card'); var h = card ? card.scrollHeight + 30 : document.body.scrollHeight + 30;"
+                            "    if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + Math.min(h, 640));"
                             "  }, 50);"
                             "}).catch(function(){});"
                         )
@@ -2547,12 +2556,13 @@ class LinkedCardsDialog(QDialog):
         self.close()
         
         # Mode hyperlien : texte visible = mot(s) sélectionné(s), NID dans data-nid
+        mirror_req = getattr(self, 'mirror_cb', None) and self.mirror_cb.isChecked()
         if self.selected_text:
             if len(items_raw) > 1:
                 tooltip("Mode hyperlien : 1 seul lien possible. Seule la première carte sélectionnée sera utilisée.")
             nid = items_raw[0][0]
             from aqt.qt import QTimer
-            QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text))
+            QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text, mirror_requested=mirror_req))
         else:
             # Recalculer la détection du dash au moment de l'insertion (pas seulement à l'ouverture du GUI)
             # car l'utilisateur a pu déplacer son curseur entre-temps
@@ -2622,7 +2632,7 @@ class LinkedCardsDialog(QDialog):
                 else:
                     items = items_raw
                 from aqt.qt import QTimer
-                QTimer.singleShot(0, lambda: self.inserter.insert_link(items))
+                QTimer.singleShot(0, lambda: self.inserter.insert_link(items, mirror_requested=mirror_req))
             
             try:
                 self.editor.web.evalWithCallback(
@@ -2632,7 +2642,7 @@ class LinkedCardsDialog(QDialog):
             except Exception:
                 # Fallback si l'éditeur n'est plus disponible
                 from aqt.qt import QTimer
-                QTimer.singleShot(0, lambda: self.inserter.insert_link(items_raw))
+                QTimer.singleShot(0, lambda: self.inserter.insert_link(items_raw, mirror_requested=mirror_req))
 
 def open_search_dialog(editor, selected_text=""):
     global _active_dialog
@@ -2884,12 +2894,12 @@ class LinkedCardsConfigWidget(QWidget):
         m_layout = QVBoxLayout()
         group_mirror.setLayout(m_layout)
         
-        self.mirror_link_cb = QCheckBox("Proposer le lien miroir (lier A↔B automatiquement)")
+        self.mirror_link_cb = QCheckBox("Lien miroir systématique (activé par défaut)")
         self.mirror_link_cb.setToolTip(
-            "Quand vous liez la carte B dans la carte A, proposer automatiquement\n"
-            "d'ajouter un lien vers A dans le même champ de la carte B."
+            "Si coché, propose automatiquement le lien retour A↔B dans l'éditeur.\n"
+            "Sinon, vous devrez cocher la case dans la fenêtre de recherche."
         )
-        self.mirror_link_cb.setChecked(config.get("mirror_link_enabled", True))
+        self.mirror_link_cb.setChecked(config.get("mirror_link_systematic", False))
         m_layout.addWidget(self.mirror_link_cb)
         
         layout.addWidget(group_mirror)
@@ -2911,6 +2921,6 @@ class LinkedCardsConfigWidget(QWidget):
         hiddens = [box_id for box_id, cb in self.checkboxes.items() if cb.isChecked()]
         config["hidden_preview_sections"] = hiddens
         
-        config["mirror_link_enabled"] = self.mirror_link_cb.isChecked()
+        config["mirror_link_systematic"] = self.mirror_link_cb.isChecked()
         
         mw.addonManager.writeConfig(__name__, config) 
