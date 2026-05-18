@@ -10,5 +10,6 @@
         "commentsMegaContainer",
         "tagsMegaContainer"
     ],
-    "kbd_navigate": "Tab"
+    "kbd_navigate": "Tab",
+    "mirror_link_enabled": true
 }

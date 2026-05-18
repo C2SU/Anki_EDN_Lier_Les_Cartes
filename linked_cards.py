@@ -141,6 +141,31 @@ _add_to_card_script_body = """
     window._ednPreviewHistory = [];
     // Réinitialiser pour permettre la réinstallation du handler 'r' sur chaque carte
     window._ednReviewerRKeyInit = false;
+
+    // -- Fix badges sans onclick (sanitizer Anki supprime onclick/ondblclick) --
+    // Ajouter un delegated click handler sur TOUT le document pour les .clickable_cards
+    // qui n'ont pas d'onclick (= attribut supprimé par le sanitizer).
+    if (!window._ednDelegatedClickInit) {
+        window._ednDelegatedClickInit = true;
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            if (!t || !t.classList || !t.classList.contains('clickable_cards')) return;
+            // Si un handler onclick existe déjà, laisser faire
+            if (t.hasAttribute('onclick')) return;
+            // Extraire le NID
+            var nid = '';
+            if (t.dataset && t.dataset.nid) nid = t.dataset.nid;
+            else {
+                var s = t.querySelector && t.querySelector('.edn-nid');
+                if (s) nid = s.textContent.trim();
+                else nid = (t.innerText || '').trim().replace(/[^0-9]/g, '');
+            }
+            if (nid && nid.length > 9) {
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+            }
+        });
+    }
 })();
 function cards_ct_click(nid) {
     if(typeof pycmd !== 'undefined') pycmd("cards_ct_click" + nid);
@@ -530,30 +555,43 @@ if (!window._ednListenersAttached) {
         box.style.display = "block";
         box.style.overflowY = "auto";
         
-        // Ajuster la position : seulement si changement de cible majeure ou si non locké
-        if (window._edn_parent_badge) {
-            // Toujours positionner par rapport au badge parent (rouge)
-            var rect = window._edn_parent_badge.getBoundingClientRect();
-            var topPos = rect.top;
-            var leftPos = rect.right + 10;
+        // Fonction de positionnement intelligent avec ajustement vertical
+        function _ednPositionBox(anchorRect) {
+            if (anchorRect.top === 0 && anchorRect.bottom === 0) return;
+            var leftPos = anchorRect.right + 10;
             if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
             if (leftPos < 0) leftPos = 10;
-            if (!(rect.top === 0 && rect.bottom === 0)) {
-                box.style.top = topPos + "px";
-                box.style.left = leftPos + "px";
+            box.style.left = leftPos + "px";
+            
+            // Calculer la hauteur réelle du box (ou estimer)
+            var boxHeight = box.offsetHeight || box.scrollHeight || 300;
+            var topPos = anchorRect.top;
+            
+            // Si le box dépasse en bas de la fenêtre, repositionner
+            if (topPos + boxHeight > window.innerHeight - 10) {
+                // Option 1 : positionner en dessous du badge
+                var belowPos = anchorRect.bottom + 5;
+                if (belowPos + boxHeight <= window.innerHeight - 10) {
+                    topPos = belowPos;
+                } else {
+                    // Option 2 : remonter le box pour qu'il rentre dans la fenêtre
+                    topPos = Math.max(10, window.innerHeight - boxHeight - 10);
+                }
             }
+            // S'assurer que le top n'est jamais négatif
+            if (topPos < 0) topPos = 10;
+            box.style.top = topPos + "px";
+        }
+        
+        // Ajuster la position : seulement si changement de cible majeure ou si non locké
+        if (window._edn_parent_badge) {
+            var rect = window._edn_parent_badge.getBoundingClientRect();
+            _ednPositionBox(rect);
             window._ednPositionLocked = true;
         } else if (window._edn_hover_target && !window._ednPositionLocked) {
             var rect = window._edn_hover_target.getBoundingClientRect();
-            var topPos = rect.top;
-            var leftPos = rect.right + 10;
-            if (leftPos + 400 > window.innerWidth) { leftPos = window.innerWidth - 420; }
-            if (leftPos < 0) leftPos = 10;
-            if (!(rect.top === 0 && rect.bottom === 0)) {
-                box.style.top = topPos + "px";
-                box.style.left = leftPos + "px";
-                window._ednPositionLocked = true;
-            }
+            _ednPositionBox(rect);
+            window._ednPositionLocked = true;
         }
         
         var shouldScroll = window._edn_needs_scroll;
@@ -640,12 +678,30 @@ if (!window._ednListenersAttached) {
 
 
 
+def _clean_kbd_html(html_text):
+    """Nettoie le HTML des badges <kbd> : supprime les vides, corrige les imbriqués."""
+    # 1. Supprimer les <kbd> vides (y compris ceux avec seulement espaces/br)
+    empty_kbd = r'<kbd\s+class="clickable_cards"[^>]*>(?:\s|<br\s*/?>)*</kbd>'
+    html_text = re.sub(empty_kbd, '', html_text)
+    
+    # 2. Corriger les <kbd> imbriqués : <kbd ...>Titre — <kbd ...>NID</kbd> </kbd>
+    # → extraire et aplatir en : Titre — <kbd ...>NID</kbd>
+    nested_kbd = r'<kbd\s+class="clickable_cards"[^>]*>([^<]*(?:<(?!kbd)[^>]*>[^<]*)*)<kbd\s+class="clickable_cards"([^>]*)>(\d{10,})</kbd>\s*</kbd>'
+    html_text = re.sub(nested_kbd, r'\1<kbd class="clickable_cards"\2>\3</kbd>', html_text)
+    
+    # 3. Supprimer les <kbd> vides résiduels (après nettoyage des imbriqués)
+    html_text = re.sub(empty_kbd, '', html_text)
+    
+    # 4. Nettoyer les <br> orphelins en début de contenu ou après un <br><kbd vide>
+    html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
+    
+    return html_text
+
 def on_card_render(output, context):
     script = build_add_to_card_script()
-    # Nettoyer les badges <kbd> vides (bug: lien vide après saut de ligne)
-    empty_kbd_pattern = r'<kbd\s+class="clickable_cards"[^>]*>\s*</kbd>'
-    output.question_text = re.sub(empty_kbd_pattern, '', output.question_text)
-    output.answer_text = re.sub(empty_kbd_pattern, '', output.answer_text)
+    # Nettoyer les badges <kbd> vides et imbriqués
+    output.question_text = _clean_kbd_html(output.question_text)
+    output.answer_text = _clean_kbd_html(output.answer_text)
     output.question_text += script
     output.answer_text += script
 
@@ -824,7 +880,7 @@ def on_js_message_reviewer(handled, message, context):
                     #edn-preview-box .items ul ul, #edn-preview-box .items ol ol, #edn-preview-box .items ul ol, #edn-preview-box .items ol ul { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                     #edn-preview-box .bar { flex: 0 0 31px !important; width: 31px !important; min-height: 31px !important; margin: 0 !important; padding: 0 !important; background-size: 23px !important; border-right-width: 1px !important; }
                     #edn-preview-box .barHider { display: none !important; }
-                    #edn-preview-box br { line-height: 1px !important; margin: 0 !important; }
+                    #edn-preview-box br { display: block !important; content: '' !important; margin: 2px 0 !important; }
                     #edn-preview-box .edn-nid { display: none !important; }
                     #edn-preview-box .clickable_cards {
                         font-size: 14px !important;
@@ -951,8 +1007,28 @@ def copy_nid_from_browser(browser: Browser):
 
 def copy_nid_from_editor(editor: Editor):
     if editor.note and editor.note.id:
-        QApplication.clipboard().setText(str(editor.note.id))
-        tooltip(f"NID copié: {editor.note.id}")
+        nid = str(editor.note.id)
+        recto = ""
+        try:
+            recto = strip_html(editor.note.fields[0])[:240] if editor.note.fields else ""
+        except:
+            pass
+        recto = recto or "[Vide]"
+        recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
+        # HTML riche : recto visible dans le badge, NID uniquement dans data-nid + span caché
+        # Le texte visible du <kbd> est le recto (pas le NID) pour éviter la duplication
+        # quand le HTML est collé puis converti en texte brut par Anki
+        html = (
+            f'{recto_escaped}&nbsp;—&nbsp;'
+            f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
+            f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
+            f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+        )
+        mime = QMimeData()
+        mime.setText(f"{recto} — {nid}")
+        mime.setHtml(html)
+        QApplication.clipboard().setMimeData(mime)
+        tooltip(f"NID copié: {recto} — {nid}")
 
 def add_to_browser_context_menu(browser: Browser, menu: QMenu):
     if hasattr(browser, 'edn_copy_nid_action'):
@@ -1083,7 +1159,80 @@ def _on_selection_check(editor, result):
     if matches:
         nid = matches[0]
         if len(nid) > 9: # timestamp check roughly
-            create_link_for_nid(editor, nid, with_recto=True)
+            # Vérifier le contexte de la ligne pour décider du comportement :
+            # - Ligne vide / NID seul → incruster recto automatiquement
+            # - Ligne avec dash "—" → juste transformer en hyperlien (pas de recto)
+            # - Ligne avec du texte (sans dash) → incruster recto
+            def _check_line_context(line_info):
+                try:
+                    info = json.loads(line_info) if isinstance(line_info, str) else {}
+                except:
+                    info = {}
+                has_dash = info.get('hasDash', False)
+                is_empty = info.get('isEmpty', False)
+                
+                if has_dash:
+                    # La ligne a déjà un titre avec dash → juste le NID en hyperlien
+                    create_link_for_nid(editor, nid, with_recto=False)
+                else:
+                    # Ligne vide ou sans dash → incruster le recto
+                    create_link_for_nid(editor, nid, with_recto=True)
+            
+            # Interroger le JS pour connaître le contexte de la ligne
+            try:
+                editor.web.evalWithCallback("""
+                    (function() {
+                        var result = {hasDash: false, isEmpty: false};
+                        try {
+                            var active = document.activeElement;
+                            var sel = null;
+                            if (active && active.shadowRoot) sel = active.shadowRoot.getSelection();
+                            else sel = window.getSelection();
+                            
+                            var range = (window._ednSavedRange) ? window._ednSavedRange : (sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null);
+                            if (range) {
+                                var container = range.startContainer;
+                                var node = container;
+                                if (node && node.nodeType === 3) node = node.parentNode;
+                                if (node) {
+                                    var blockParent = node;
+                                    while (blockParent && blockParent.tagName !== 'ANKI-EDITABLE' && !blockParent.isContentEditable) {
+                                        if (['LI', 'P', 'DIV'].indexOf(blockParent.tagName) >= 0) break;
+                                        blockParent = blockParent.parentNode;
+                                    }
+                                    if (blockParent) {
+                                        var children = Array.from(blockParent.childNodes);
+                                        var cursorNode = range.startContainer;
+                                        var cursorIdx = -1;
+                                        for (var i = 0; i < children.length; i++) {
+                                            if (children[i] === cursorNode || children[i].contains(cursorNode) || children[i] === node) {
+                                                cursorIdx = i; break;
+                                            }
+                                        }
+                                        var parts = [];
+                                        for (var i = cursorIdx; i >= 0; i--) {
+                                            if (children[i].tagName === 'BR') break;
+                                            parts.unshift(children[i].textContent || '');
+                                        }
+                                        for (var i = cursorIdx + 1; i < children.length; i++) {
+                                            if (children[i].tagName === 'BR') break;
+                                            parts.push(children[i].textContent || '');
+                                        }
+                                        var lineText = parts.join('').trim();
+                                        result.hasDash = lineText.includes('\u2014') || lineText.includes('\u2014');
+                                        // isEmpty = la ligne ne contient que le NID (ou est vide)
+                                        var stripped = lineText.replace(/\d{10,}/g, '').trim();
+                                        result.isEmpty = stripped.length === 0;
+                                    }
+                                }
+                            }
+                        } catch(e) {}
+                        return JSON.stringify(result);
+                    })();
+                """, _check_line_context)
+            except:
+                # Fallback : toujours incruster le recto
+                create_link_for_nid(editor, nid, with_recto=True)
             return
     
     # Texte non-NID sélectionné ? Le sauvegarder pour le passage au GUI
@@ -1417,11 +1566,19 @@ class LinkInserter:
         html_parts = []
         for nid, recto in items:
             if recto is None:
-                html_parts.append(f'<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
-
+                html_parts.append(
+                    f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
+                    f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
+                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+                )
             else:
                 recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
-                html_parts.append(f'{recto_escaped}&nbsp;—&nbsp;<kbd class="clickable_cards" tabindex="0" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')">{nid}</kbd>')
+                html_parts.append(
+                    f'{recto_escaped}&nbsp;—&nbsp;'
+                    f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
+                    f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
+                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{nid}</span>{nid}</kbd>'
+                )
 
                 
         html = "<br>".join(html_parts)
@@ -1592,6 +1749,19 @@ class LinkInserter:
             tooltip(f"Lien créé vers {items[0][0]}")
         else:
             tooltip(f"{len(items)} liens créés")
+        
+        # --- Lien miroir : proposer de lier la carte source dans la carte cible ---
+        config = mw.addonManager.getConfig(__name__) or {}
+        if config.get("mirror_link_enabled", True):
+            source_note = self.editor.note
+            if source_note and source_note.id:
+                for target_nid, _ in items:
+                    try:
+                        QTimer.singleShot(200, lambda tn=target_nid: _propose_mirror_link(
+                            self.editor, source_note, tn
+                        ))
+                    except Exception:
+                        pass
 
     def insert_link_with_text(self, nid, display_text):
         """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid
@@ -1613,6 +1783,106 @@ class LinkInserter:
         # Réutilise la même logique d'insertion que insert_link()
         self.insert_link([(safe_nid, None)], override_html=html)
         tooltip(f"Lien '{display_text}' → carte {nid}")
+
+
+def _propose_mirror_link(editor, source_note, target_nid_str):
+    """Propose de lier la carte source dans la carte cible (lien miroir).
+    
+    Quand l'utilisateur lie la carte B dans un champ de la carte A,
+    cette fonction propose d'ajouter automatiquement un badge vers A
+    dans le même champ de la carte B.
+    """
+    try:
+        target_nid = int(target_nid_str)
+        target_note = mw.col.get_note(target_nid)
+        source_nid = str(source_note.id)
+        
+        # Déterminer dans quel champ on a inséré le lien
+        # On cherche le champ courant de l'éditeur (sauvegardé par le JS)
+        field_idx = -1
+        
+        def _got_field_idx(idx_str):
+            nonlocal field_idx
+            try:
+                field_idx = int(idx_str) if idx_str and idx_str != 'null' else -1
+            except:
+                field_idx = -1
+            _do_mirror(field_idx)
+        
+        def _do_mirror(fidx):
+            # Si on ne trouve pas le champ, utiliser le dernier champ (Cartes liées typiquement)
+            if fidx < 0:
+                fidx = len(target_note.fields) - 1
+            
+            # Vérifier que le champ existe dans la note cible
+            if fidx >= len(target_note.fields):
+                fidx = len(target_note.fields) - 1
+            
+            if fidx < 0:
+                return
+            
+            # Vérifier si le lien miroir existe déjà dans la note cible
+            target_field_html = target_note.fields[fidx]
+            if source_nid in target_field_html:
+                # Le lien miroir existe déjà
+                return
+            
+            # Récupérer le recto de la note source pour l'affichage dans la popup
+            source_recto = ""
+            try:
+                source_recto = strip_html(source_note.fields[0])[:80] if source_note.fields else ""
+            except:
+                pass
+            source_recto = source_recto or "[Vide]"
+            
+            target_recto = ""
+            try:
+                target_recto = strip_html(target_note.fields[0])[:80] if target_note.fields else ""
+            except:
+                pass
+            target_recto = target_recto or "[Vide]"
+            
+            # Popup de confirmation
+            msg = QMessageBox(mw)
+            msg.setWindowTitle("Lien miroir")
+            msg.setText(
+                f"Lier aussi la carte source dans la carte cible ?\n\n"
+                f"→ Ajouter un lien vers :\n"
+                f"   {source_recto}\n"
+                f"   dans la carte :\n"
+                f"   {target_recto}"
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            msg.setDefaultButton(QMessageBox.StandardButton.Ok)
+            
+            result = msg.exec()
+            if result == QMessageBox.StandardButton.Ok:
+                # Insérer le badge dans le champ de la note cible
+                source_recto_badge = strip_html(source_note.fields[0])[:240] if source_note.fields else "[Vide]"
+                source_recto_badge = source_recto_badge or "[Vide]"
+                source_recto_escaped = source_recto_badge.replace('"', '&quot;').replace("'", "\\'")
+                
+                badge_html = (
+                    f'<br>{source_recto_escaped}&nbsp;\u2014&nbsp;'
+                    f'<kbd class="clickable_cards" tabindex="0" data-nid="{source_nid}"'
+                    f' onclick="cards_ct_click(\'{source_nid}\')" ondblclick="cards_ct_click(\'{source_nid}\')"'
+                    f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{source_nid}</span>{source_nid}</kbd>'
+                )
+                
+                target_note.fields[fidx] += badge_html
+                mw.col.update_note(target_note)
+                tooltip(f"Lien miroir créé dans la carte {target_nid_str}")
+        
+        # Récupérer l'index du champ actif depuis le JS
+        try:
+            editor.web.evalWithCallback(
+                "(typeof window._ednSavedFieldIndex !== 'undefined') ? window._ednSavedFieldIndex : -1;",
+                _got_field_idx
+            )
+        except Exception:
+            _do_mirror(-1)
+    except Exception as e:
+        log(f"Mirror link error: {e}")
 
 
 class LinkedCardsDialog(QDialog):
@@ -1697,7 +1967,10 @@ class LinkedCardsDialog(QDialog):
 
     def _cleanup_on_close(self):
         # Fermer la preview popup si elle est ouverte
-        self.hide_preview_popup()
+        try:
+            self.hide_preview_popup()
+        except:
+            pass
         if hasattr(self, '_preview_web') and self._preview_web:
             try:
                 self._preview_web.cleanup()
@@ -1705,55 +1978,75 @@ class LinkedCardsDialog(QDialog):
                 pass
             self._preview_web = None
         if hasattr(self, '_preview_dlg') and self._preview_dlg:
-            self._preview_dlg.deleteLater()
+            try:
+                self._preview_dlg.deleteLater()
+            except:
+                pass
             self._preview_dlg = None
         if getattr(self, '_is_inserting', False):
             return
-        # Clean up the marker on close if it was not consumed string link insertion.
-        self.editor.web.eval("""
-            (function() {
-                function findAllMarkers(root, found) {
-                    if (!root) return;
-                    if (root.querySelectorAll) {
-                        let ms = root.querySelectorAll('[id="edn-cursor-marker"]');
-                        for (let i = 0; i < ms.length; i++) {
-                            if (!found.includes(ms[i])) found.push(ms[i]);
+        # Clean up the marker on close if it was not consumed by link insertion.
+        # Guard against editor/web being None (editor destroyed before dialog close)
+        if not self.editor or not self.editor.web:
+            return
+        try:
+            self.editor.web.eval("""
+                (function() {
+                    // Nettoyage agressif : chercher dans TOUS les shadow roots récursivement
+                    function findAllMarkers(root, found, visited) {
+                        if (!root || visited.has(root)) return;
+                        visited.add(root);
+                        if (root.querySelectorAll) {
+                            let ms = root.querySelectorAll('[id="edn-cursor-marker"]');
+                            for (let i = 0; i < ms.length; i++) {
+                                if (!found.includes(ms[i])) found.push(ms[i]);
+                            }
+                        }
+                        if (root.shadowRoot) findAllMarkers(root.shadowRoot, found, visited);
+                        if (root.children) {
+                            for (let i = 0; i < root.children.length; i++) findAllMarkers(root.children[i], found, visited);
+                        }
+                        // Chercher aussi dans les nested anki-editable
+                        if (root.querySelectorAll) {
+                            root.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
+                                findAllMarkers(el, found, visited);
+                                if (el.shadowRoot) findAllMarkers(el.shadowRoot, found, visited);
+                            });
                         }
                     }
-                    if (root.shadowRoot) findAllMarkers(root.shadowRoot, found);
-                    if (root.children) {
-                        for (let i = 0; i < root.children.length; i++) findAllMarkers(root.children[i], found);
-                    }
-                }
-                let markers = [];
-                findAllMarkers(document.body, markers);
-                document.querySelectorAll('anki-editable, anki-editor').forEach(el => findAllMarkers(el, markers));
-                
-                let changedEditables = new Set();
-                markers.forEach(function(m) { 
-                    try { 
-                        let rootNode = m.getRootNode ? m.getRootNode() : null;
-                        let host = rootNode && rootNode.host ? rootNode.host : null;
-                        let editable = m.closest ? m.closest('anki-editable') : null;
-                        if (!editable && host && host.tagName === 'ANKI-EDITABLE') editable = host;
-                        if (editable) changedEditables.add(editable);
-                        
-                        if (m.parentNode) m.parentNode.removeChild(m); 
-                    } catch(e) {} 
-                });
-                changedEditables.forEach(function(editable) {
-                    try {
-                        // RAF pour laisser le DOM se stabiliser avant de notifier Anki
-                        // (évite le repliement du champ "Cartes liées" causé par un re-parse prématuré)
-                        requestAnimationFrame(function() {
-                            try {
-                                editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-                            } catch(e) {}
-                        });
-                    } catch(e) {}
-                });
-            })();
-        """)
+                    let markers = [];
+                    let visited = new Set();
+                    findAllMarkers(document.body, markers, visited);
+                    document.querySelectorAll('anki-editable, anki-editor').forEach(el => findAllMarkers(el, markers, visited));
+                    
+                    let changedEditables = new Set();
+                    markers.forEach(function(m) { 
+                        try { 
+                            let rootNode = m.getRootNode ? m.getRootNode() : null;
+                            let host = rootNode && rootNode.host ? rootNode.host : null;
+                            let editable = m.closest ? m.closest('anki-editable') : null;
+                            if (!editable && host && host.tagName === 'ANKI-EDITABLE') editable = host;
+                            if (editable) changedEditables.add(editable);
+                            
+                            if (m.parentNode) m.parentNode.removeChild(m); 
+                        } catch(e) {} 
+                    });
+                    changedEditables.forEach(function(editable) {
+                        try {
+                            // RAF pour laisser le DOM se stabiliser avant de notifier Anki
+                            // (évite le repliement du champ "Cartes liées" causé par un re-parse prématuré)
+                            requestAnimationFrame(function() {
+                                try {
+                                    editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                                } catch(e) {}
+                            });
+                        } catch(e) {}
+                    });
+                })();
+            """)
+        except Exception:
+            pass
+
     @perf_log
     def do_search(self, query):
         query = query.strip()
@@ -1825,10 +2118,12 @@ class LinkedCardsDialog(QDialog):
                     recto = note.fields[0] if note.fields else ""
                     recto_clean = strip_html(recto)[:240] or "[Vide]"
                     
-                    # Filtre "uniquement le recto" : skip si le recto ne contient pas la requête
+                    # Filtre "uniquement le recto" : chaque mot de la recherche doit être présent
+                    # dans le recto, mais pas nécessairement dans le même ordre
                     if recto_only and not query.startswith('tag'):
-                        search_lower = query.lower()
-                        if search_lower not in recto_clean.lower():
+                        search_words = query.lower().split()
+                        recto_lower = recto_clean.lower()
+                        if not all(word in recto_lower for word in search_words):
                             continue
                     
                     row = self.results_table.rowCount()
@@ -1880,8 +2175,23 @@ class LinkedCardsDialog(QDialog):
                 
             def leaveEvent(self, event):
                 from aqt.qt import QTimer
-                QTimer.singleShot(150, lambda: self.dialog_parent.check_hide_preview())
-                super().leaveEvent(event)
+                try:
+                    dlg = self.dialog_parent
+                    QTimer.singleShot(150, lambda: self._safe_check_hide())
+                except RuntimeError:
+                    pass
+                try:
+                    super().leaveEvent(event)
+                except RuntimeError:
+                    pass
+
+            def _safe_check_hide(self):
+                """Wrapper sûr pour check_hide_preview, protège contre les widgets Qt détruits."""
+                try:
+                    self.objectName() # throws RuntimeError if deleted
+                    self.dialog_parent.check_hide_preview()
+                except (RuntimeError, Exception):
+                    pass
         
         return HoverButton("Voir", nid, dialog_parent)
 
@@ -1999,7 +2309,7 @@ class LinkedCardsDialog(QDialog):
                 .items ul ul, .items ol ol, .items ul ol, .items ol ul { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
                 .bar { flex: 0 0 28px !important; width: 28px !important; min-height: 28px !important; margin: 0 !important; padding: 0 !important; background-size: 20px !important; border-right-width: 1px !important; }
                 .barHider { display: none !important; }
-                br { line-height: 1px !important; margin: 0 !important; }
+                br { display: block !important; content: '' !important; margin: 2px 0 !important; }
                 .clickable_cards { font-size: 13px !important; height: auto !important; line-height: 13px !important; padding: 3px 5px !important; margin: 3px !important; cursor: pointer; }
                 .items.cartesLiees { flex-direction: row !important; flex-wrap: wrap !important; align-items: center !important; justify-content: flex-start !important; margin-left: 0 !important; }
             </style>
@@ -2095,9 +2405,9 @@ class LinkedCardsDialog(QDialog):
             dlg.show()
             dlg.raise_()
             
-            # Dimensionnement initial basé sur une estimation de la hauteur du contenu
-            # pour éviter les saccades : on fixe 500px par défaut, puis on ajuste
-            dlg.resize(dlg.width(), 500)
+            # Dimensionnement initial : commencer petit pour éviter les saccades
+            # puis auto-resize rapidement via _quick_resize
+            dlg.resize(dlg.width(), 200)
             from aqt.qt import QTimer
 
             def _quick_resize():
@@ -2115,10 +2425,17 @@ class LinkedCardsDialog(QDialog):
                     if ready:
                         web.eval(
                             "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
-                            "MathJax.typesetPromise().catch(function(){});"
+                            "MathJax.typesetPromise().then(function() {"
+                            "  setTimeout(function() {"
+                            "    var h = Math.min(document.documentElement.scrollHeight + 20, 640);"
+                            "    if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);"
+                            "  }, 50);"
+                            "}).catch(function(){});"
                         )
                         # Réajuster la hauteur 150ms après le typeset
                         QTimer.singleShot(150, _quick_resize)
+                        # Réajustement tardif pour les formules complexes
+                        QTimer.singleShot(500, _quick_resize)
                     elif attempts < 15:
                         QTimer.singleShot(100, lambda: _try_typeset(attempts + 1))
                     else:
@@ -2132,10 +2449,13 @@ class LinkedCardsDialog(QDialog):
                 except Exception:
                     _quick_resize()
 
-            # Ajustement initial rapide (~50ms)
-            QTimer.singleShot(50, _quick_resize)
+            # Ajustements initiaux : rapide (30ms), moyen (100ms), tardif (300ms)
+            QTimer.singleShot(30, _quick_resize)
+            QTimer.singleShot(100, _quick_resize)
             # Lancement du typeset MathJax
             QTimer.singleShot(100, lambda: _try_typeset())
+            # Ajustement final tardif pour les contenus lents
+            QTimer.singleShot(500, _quick_resize)
         except Exception as ex:
             from aqt.utils import tooltip
             tooltip("Erreur preview : " + str(ex))
@@ -2148,21 +2468,33 @@ class LinkedCardsDialog(QDialog):
             dlg.resize(dlg.width(), 300)
 
     def eventFilter(self, obj, event):
-        if hasattr(self, '_preview_dlg') and obj == self._preview_dlg:
-            if event.type() == QEvent.Type.Leave:
-                from aqt.qt import QTimer
-                QTimer.singleShot(150, lambda: self.check_hide_preview())
+        try:
+            if hasattr(self, '_preview_dlg') and obj == self._preview_dlg:
+                if event.type() == QEvent.Type.Leave:
+                    from aqt.qt import QTimer
+                    QTimer.singleShot(150, lambda: self.check_hide_preview())
+        except RuntimeError:
+            pass
         return super().eventFilter(obj, event)
 
     def check_hide_preview(self):
-        if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
-            # Si la souris est sur le bouton ou sur le dlg, on ne cache pas
-            pos = QCursor.pos()
-            if self._preview_dlg.geometry().contains(pos):
-                return
-            if hasattr(self, '_preview_current_widget') and self._preview_current_widget and self._preview_current_widget.geometry().contains(self._preview_current_widget.parentWidget().mapFromGlobal(pos)):
-                return
-            self.hide_preview_popup()
+        try:
+            if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
+                pos = QCursor.pos()
+                if self._preview_dlg.geometry().contains(pos):
+                    return
+                # Protection contre les widgets Qt détruits (HoverButton recyclé)
+                if hasattr(self, '_preview_current_widget') and self._preview_current_widget:
+                    try:
+                        self._preview_current_widget.objectName() # throws RuntimeError if deleted
+                        parent_w = self._preview_current_widget.parentWidget()
+                        if parent_w and self._preview_current_widget.geometry().contains(parent_w.mapFromGlobal(pos)):
+                            return
+                    except (RuntimeError, Exception):
+                        self._preview_current_widget = None
+                self.hide_preview_popup()
+        except RuntimeError:
+            pass
 
     def show_nested_preview(self, nid):
         # Pour les nested links, on remplace temporairement le NID
@@ -2222,8 +2554,67 @@ class LinkedCardsDialog(QDialog):
             from aqt.qt import QTimer
             QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text))
         else:
-            # Vérifier si la ligne courante contient déjà un em dash (titre présent)
-            # Si oui, ne pas inclure le recto pour éviter le doublon
+            # Recalculer la détection du dash au moment de l'insertion (pas seulement à l'ouverture du GUI)
+            # car l'utilisateur a pu déplacer son curseur entre-temps
+            _dash_detection_js = """
+            (function() {
+                try {
+                    var marker = null;
+                    // Chercher le marker dans tous les shadow roots
+                    function findMarker(root) {
+                        if (!root) return null;
+                        if (root.querySelector) {
+                            var m = root.querySelector('[id="edn-cursor-marker"]');
+                            if (m) return m;
+                        }
+                        if (root.shadowRoot) { var m = findMarker(root.shadowRoot); if (m) return m; }
+                        if (root.children) {
+                            for (var i = 0; i < root.children.length; i++) {
+                                var m = findMarker(root.children[i]); if (m) return m;
+                            }
+                        }
+                        return null;
+                    }
+                    marker = findMarker(document.body);
+                    if (!marker) {
+                        document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
+                            if (!marker) marker = findMarker(el);
+                        });
+                    }
+                    if (!marker) return false;
+                    
+                    // Trouver le bloc parent et extraire le texte de la ligne
+                    var node = marker.parentNode;
+                    if (!node) return false;
+                    var blockParent = node;
+                    while (blockParent && blockParent.tagName !== 'ANKI-EDITABLE' && !blockParent.isContentEditable) {
+                        if (['LI', 'P', 'DIV'].indexOf(blockParent.tagName) >= 0) break;
+                        blockParent = blockParent.parentNode;
+                    }
+                    if (!blockParent) return false;
+                    
+                    var children = Array.from(blockParent.childNodes);
+                    var cursorIdx = -1;
+                    for (var i = 0; i < children.length; i++) {
+                        if (children[i] === marker || children[i].contains(marker)) {
+                            cursorIdx = i; break;
+                        }
+                    }
+                    var parts = [];
+                    for (var i = cursorIdx; i >= 0; i--) {
+                        if (children[i].tagName === 'BR') break;
+                        parts.unshift(children[i].textContent || '');
+                    }
+                    for (var i = cursorIdx + 1; i < children.length; i++) {
+                        if (children[i].tagName === 'BR') break;
+                        parts.push(children[i].textContent || '');
+                    }
+                    var lineText = parts.join('');
+                    return lineText.includes('\u2014') || lineText.includes('—');
+                } catch(e) { return false; }
+            })();
+            """
+            
             def _do_insert(has_dash):
                 if has_dash:
                     # Ne pas inclure le recto : insérer uniquement les badges NID
@@ -2235,7 +2626,7 @@ class LinkedCardsDialog(QDialog):
             
             try:
                 self.editor.web.evalWithCallback(
-                    "!!(window._ednCurrentLineHasDash);",
+                    _dash_detection_js,
                     _do_insert
                 )
             except Exception:
@@ -2487,6 +2878,21 @@ class LinkedCardsConfigWidget(QWidget):
             self.checkboxes[box_id] = cb
             
         layout.addWidget(group_blacklist)
+        
+        # --- Lien miroir ---
+        group_mirror = QGroupBox("Lien miroir")
+        m_layout = QVBoxLayout()
+        group_mirror.setLayout(m_layout)
+        
+        self.mirror_link_cb = QCheckBox("Proposer le lien miroir (lier A↔B automatiquement)")
+        self.mirror_link_cb.setToolTip(
+            "Quand vous liez la carte B dans la carte A, proposer automatiquement\n"
+            "d'ajouter un lien vers A dans le même champ de la carte B."
+        )
+        self.mirror_link_cb.setChecked(config.get("mirror_link_enabled", True))
+        m_layout.addWidget(self.mirror_link_cb)
+        
+        layout.addWidget(group_mirror)
         layout.addStretch()
 
     def save_config(self):
@@ -2504,5 +2910,7 @@ class LinkedCardsConfigWidget(QWidget):
         
         hiddens = [box_id for box_id, cb in self.checkboxes.items() if cb.isChecked()]
         config["hidden_preview_sections"] = hiddens
+        
+        config["mirror_link_enabled"] = self.mirror_link_cb.isChecked()
         
         mw.addonManager.writeConfig(__name__, config) 
