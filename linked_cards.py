@@ -778,6 +778,37 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
             mw.reviewer.web.evalWithCallback(r_action_js, _js_callback)
         
         shortcuts.append(('r', _edn_r_key_handler))
+    
+    # Ctrl+Alt+C dans le reviewer : copier le NID de la carte en cours
+    shortcut_copy = get_shortcut("linked_cards_copy", "Ctrl+Alt+C")
+    def _copy_nid_from_reviewer():
+        """Copie le NID de la carte en cours de révision dans le clipboard."""
+        if not mw.reviewer or not mw.reviewer.card:
+            return
+        card = mw.reviewer.card
+        nid = str(card.nid)
+        recto = ""
+        try:
+            note = card.note()
+            recto = strip_html(note.fields[0])[:240] if note.fields else ""
+        except:
+            pass
+        recto = recto or "[Vide]"
+        recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
+        html = (
+            f'{recto_escaped}&nbsp;—&nbsp;'
+            f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
+            f' style="display:inline-block;border:2px solid #FFA630;border-radius:5px;padding:2px 6px;background:#f5f6f7;cursor:pointer;"'
+            f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
+            f'>{nid}<span class="edn-nid">{nid}</span></kbd>'
+        )
+        mime = QMimeData()
+        mime.setText(f"{recto} — {nid}")
+        mime.setHtml(html)
+        QApplication.clipboard().setMimeData(mime)
+        tooltip(f"NID copié (reviewer): {recto} — {nid}")
+    
+    shortcuts.append((shortcut_copy, _copy_nid_from_reviewer))
 
 
 def _on_reviewer_show_answer(card):
@@ -1014,15 +1045,16 @@ def copy_nid_from_editor(editor: Editor):
         except:
             pass
         recto = recto or "[Vide]"
-        recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
+        recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
         # HTML riche : recto visible dans le badge, NID uniquement dans data-nid + span caché
         # Le texte visible du <kbd> est le recto (pas le NID) pour éviter la duplication
         # quand le HTML est collé puis converti en texte brut par Anki
         html = (
             f'{recto_escaped}&nbsp;—&nbsp;'
             f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
+            f' style="display:inline-block;border:2px solid #FFA630;border-radius:5px;padding:2px 6px;background:#f5f6f7;cursor:pointer;"'
             f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-            f'><span class="edn-nid">{nid}</span></kbd>'
+            f'>{nid}<span class="edn-nid">{nid}</span></kbd>'
         )
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
@@ -1572,7 +1604,7 @@ class LinkInserter:
                     f'><span class="edn-nid">{nid}</span></kbd>'
                 )
             else:
-                recto_escaped = recto.replace('"', '&quot;').replace("'", "\\'")
+                recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
                 html_parts.append(
                     f'{recto_escaped}&nbsp;—&nbsp;'
                     f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
@@ -1811,8 +1843,33 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
             _do_mirror(field_idx)
         
         def _do_mirror(fidx):
-            # Si on ne trouve pas le champ, utiliser le dernier champ (Cartes liées typiquement)
+            # Chercher le bon champ dans la note cible
+            # 1. Si fidx est valide, récupérer le nom du champ source et chercher le même dans la cible
+            # 2. Sinon, chercher un champ nommé "Cartes liées"
+            # 3. En dernier recours, utiliser le dernier champ
+            target_fields = target_note.model()['flds']
+            
+            if fidx >= 0 and fidx < len(source_note.model()['flds']):
+                source_field_name = source_note.model()['flds'][fidx]['name']
+                # Chercher le même nom dans la cible
+                found = False
+                for i, fld in enumerate(target_fields):
+                    if fld['name'] == source_field_name:
+                        fidx = i
+                        found = True
+                        break
+                if not found:
+                    fidx = -1  # pas trouvé, on continue la recherche
+            
             if fidx < 0:
+                # Chercher un champ nommé "Cartes liées"
+                for i, fld in enumerate(target_fields):
+                    if fld['name'] == 'Cartes liées':
+                        fidx = i
+                        break
+            
+            if fidx < 0:
+                # Dernier recours : le dernier champ
                 fidx = len(target_note.fields) - 1
             
             # Vérifier que le champ existe dans la note cible
@@ -1862,7 +1919,7 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
                 # Insérer le badge dans le champ de la note cible
                 source_recto_badge = strip_html(source_note.fields[0])[:240] if source_note.fields else "[Vide]"
                 source_recto_badge = source_recto_badge or "[Vide]"
-                source_recto_escaped = source_recto_badge.replace('"', '&quot;').replace("'", "\\'")
+                source_recto_escaped = source_recto_badge.replace('"', '&quot;').replace("'", '&#39;')
                 
                 badge_html = (
                     f'<br>{source_recto_escaped}&nbsp;\u2014&nbsp;'
@@ -2271,7 +2328,7 @@ class LinkedCardsDialog(QDialog):
                 dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
                 dlg.setMinimumSize(500, 150)
                 dlg.setMaximumSize(680, 650)
-                dlg.setStyleSheet("#PreviewPopup { border: 2px solid #007acc; background: white; border-radius: 8px; }")
+                dlg.setStyleSheet("#PreviewPopup { border: 1px solid #ccc; background: white; border-radius: 8px; }")
 
                 v = QVBoxLayout(dlg)
                 v.setContentsMargins(4, 4, 4, 4)
@@ -2778,6 +2835,13 @@ def open_search_dialog(editor, selected_text=""):
     _active_dialog = LinkedCardsDialog(editor, selected_text=selected_text)
     _active_dialog.show()
     _active_dialog.activateWindow()
+    # Positionner la fenêtre sur la moitié gauche de l'écran
+    try:
+        screen = QApplication.primaryScreen().availableGeometry()
+        _active_dialog.move(screen.x(), screen.y())
+        _active_dialog.resize(screen.width() // 2, screen.height())
+    except Exception:
+        pass
 
 def open_search_dialog_from_menu():
     from aqt import mw
