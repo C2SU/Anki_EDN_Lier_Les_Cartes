@@ -32,7 +32,7 @@ kbd.clickable_cards:hover {
   z-index: 99999;
   max-width: 400px;
   max-height: 60vh;       /* limite la hauteur et évite le surplus en bas */
-  overflow: hidden;
+  overflow-y: auto;
   background-color: #f5f6f7;
   border: 2px solid #c0c1c5;
   border-radius: 5px;

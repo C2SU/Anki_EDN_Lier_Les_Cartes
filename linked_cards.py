@@ -598,16 +598,15 @@ if (!window._ednListenersAttached) {
         window._edn_needs_scroll = false;
 
         // Étape 1 : ajustement rapide de la hauteur (avant MathJax)
-        requestAnimationFrame(function() {
+        function _ednRecalcHeight(doScroll) {
             var contentHeight = box.scrollHeight;
             var maxAllowed = window.innerHeight * 0.6;
             box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
             
-            if (shouldScroll) {
+            if (doScroll) {
                 var rect = box.getBoundingClientRect();
                 var overflow = rect.bottom - window.innerHeight + 10;
                 if (overflow > 0) {
-                    // Ajouter un spacer en bas de la carte mère pour pouvoir scroller
                     var spacer = document.getElementById('edn-scroll-spacer');
                     if (!spacer) {
                         spacer = document.createElement('div');
@@ -619,7 +618,15 @@ if (!window._ednListenersAttached) {
                     window.scrollBy({top: overflow, behavior: 'smooth'});
                 }
             }
+        }
+        requestAnimationFrame(function() {
+            _ednRecalcHeight(shouldScroll);
         });
+        // Étape 1b : recalcul retardé pour les previews complexes (preview-in-preview)
+        // Le CSS flex layout peut ne pas être résolu au premier requestAnimationFrame
+        setTimeout(function() {
+            _ednRecalcHeight(false);
+        }, 150);
         
         // MathJax typesetting avec retry : on boucle jusqu'à ce que MathJax soit prêt
         // (max ~1.5 s, toutes les 100 ms), puis on retraite le contenu du box.
@@ -629,25 +636,7 @@ if (!window._ednListenersAttached) {
                     if (MathJax.typesetClear) { MathJax.typesetClear([box]); }
                     MathJax.typesetPromise([box]).then(function() {
                         // Réajuster la hauteur après rendu LaTeX
-                        var contentHeight = box.scrollHeight;
-                        var maxAllowed = window.innerHeight * 0.6;
-                        box.style.maxHeight = Math.min(contentHeight + 10, maxAllowed) + "px";
-                        
-                        if (shouldScroll) {
-                            var rect = box.getBoundingClientRect();
-                            var overflow = rect.bottom - window.innerHeight + 10;
-                            if (overflow > 0) {
-                                var spacer = document.getElementById('edn-scroll-spacer');
-                                if (!spacer) {
-                                    spacer = document.createElement('div');
-                                    spacer.id = 'edn-scroll-spacer';
-                                    spacer.style.cssText = 'height:0px;width:100%;pointer-events:none;';
-                                    document.body.appendChild(spacer);
-                                }
-                                spacer.style.height = (overflow + 50) + 'px';
-                                window.scrollBy({top: overflow, behavior: 'smooth'});
-                            }
-                        }
+                        _ednRecalcHeight(shouldScroll);
                     }).catch(function(){});
                 } catch(e) {}
             } else if (attempt < 15) {
@@ -1372,6 +1361,51 @@ def _do_editor_init(editor: Editor):
                 }
             }
         }, true);
+
+        // Post-paste repair: after Anki sanitizes HTML, restore onclick on badges
+        // This handles the case where user pastes HTML (Ctrl+V after Ctrl+Alt+C)
+        // and Anki strips onclick/ondblclick attributes from <kbd> elements
+        document.addEventListener('paste', function(e) {
+            setTimeout(function() {
+                document.querySelectorAll('.clickable_cards:not([onclick])').forEach(function(kbd) {
+                    var nid = '';
+                    if (kbd.dataset && kbd.dataset.nid) nid = kbd.dataset.nid;
+                    else {
+                        var s = kbd.querySelector('.edn-nid');
+                        if (s) nid = s.textContent.trim();
+                        else nid = (kbd.innerText || '').trim().replace(/[^0-9]/g, '');
+                    }
+                    if (nid && nid.length > 9) {
+                        kbd.setAttribute('onclick', "cards_ct_click('" + nid + "')");
+                        kbd.setAttribute('ondblclick', "cards_ct_click('" + nid + "')");
+                        if (!kbd.getAttribute('data-nid')) kbd.setAttribute('data-nid', nid);
+                        if (!kbd.getAttribute('tabindex')) kbd.setAttribute('tabindex', '0');
+                    }
+                });
+            }, 150); // delay to let Anki process the paste & sanitize
+        }, false); // bubbling phase — runs after capture handler above
+
+        // Delegated click handler for badges in the editor
+        // (the reviewer has one in _add_to_card_script_body, but editor doesn't)
+        if (!window._ednEditorDelegatedClick) {
+            window._ednEditorDelegatedClick = true;
+            document.addEventListener('click', function(e) {
+                var t = e.target;
+                if (!t || !t.classList || !t.classList.contains('clickable_cards')) return;
+                if (t.hasAttribute('onclick')) return; // let native handler run
+                var nid = '';
+                if (t.dataset && t.dataset.nid) nid = t.dataset.nid;
+                else {
+                    var s = t.querySelector && t.querySelector('.edn-nid');
+                    if (s) nid = s.textContent.trim();
+                    else nid = (t.innerText || '').trim().replace(/[^0-9]/g, '');
+                }
+                if (nid && nid.length > 9) {
+                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
+                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+                }
+            });
+        }
 
         window._ednHoverTimer = null;
         window._ednHideTimer = null;
