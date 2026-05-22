@@ -177,7 +177,12 @@ function _ednGetNid(el) {
     if (el.dataset && el.dataset.nid) return el.dataset.nid;
     var hiddenSpan = el.querySelector && el.querySelector('.edn-nid');
     if (hiddenSpan) return hiddenSpan.textContent.trim();
-    return el.innerText ? el.innerText.trim() : '';
+    var oc = el.getAttribute('onclick');
+    if (oc) {
+        var m = oc.match(/\d{10,}/);
+        if (m) return m[0];
+    }
+    return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
 }
 
 // -- Aperçu des cartes liées au survol -- (guard : enregistrement unique des listeners) --
@@ -900,7 +905,7 @@ def on_js_message_reviewer(handled, message, context):
                     #edn-preview-box .bar { flex: 0 0 31px !important; width: 31px !important; min-height: 31px !important; margin: 0 !important; padding: 0 !important; background-size: 23px !important; border-right-width: 1px !important; }
                     #edn-preview-box .barHider { display: none !important; }
                     #edn-preview-box br { display: block !important; content: '' !important; margin: 2px 0 !important; }
-                    #edn-preview-box .edn-nid { display: none !important; }
+                    #edn-preview-box .edn-nid { display: inline !important; }
                     #edn-preview-box .clickable_cards {
                         font-size: 14px !important;
                         height: auto !important;
@@ -1487,7 +1492,12 @@ def _do_editor_init(editor: Editor):
                     if (el.dataset && el.dataset.nid) return el.dataset.nid;
                     var s = el.querySelector && el.querySelector('.edn-nid');
                     if (s) return s.textContent.trim();
-                    return el.innerText ? el.innerText.trim() : '';
+                    var oc = el.getAttribute('onclick');
+                    if (oc) {
+                        var m = oc.match(/\d{10,}/);
+                        if (m) return m[0];
+                    }
+                    return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
                 }
                 var nid = _getN(target);
                 window._ednHoverTimer = setTimeout(function() {
@@ -2032,15 +2042,31 @@ class LinkedCardsDialog(QDialog):
         
         # Options de recherche
         search_opts = QHBoxLayout()
+        config = mw.addonManager.getConfig(__name__) or {}
+        
         self.recto_only_cb = QCheckBox("Uniquement le recto")
         self.recto_only_cb.setToolTip("Afficher uniquement les cartes dont le recto contient la recherche")
-        self.recto_only_cb.stateChanged.connect(lambda: self.do_search(self.search_bar.text()))
+        self.recto_only_cb.setChecked(config.get("gui_recto_only_cb_state", False))
+        
+        def _on_recto_cb_changed(state):
+            cfg = mw.addonManager.getConfig(__name__) or {}
+            cfg["gui_recto_only_cb_state"] = bool(state)
+            mw.addonManager.writeConfig(__name__, cfg)
+            self.do_search(self.search_bar.text())
+            
+        self.recto_only_cb.stateChanged.connect(_on_recto_cb_changed)
         search_opts.addWidget(self.recto_only_cb)
         
         self.mirror_cb = QCheckBox("Lien miroir")
         self.mirror_cb.setToolTip("Ajouter automatiquement un lien retour dans la carte cible (popup de confirmation)")
-        config = mw.addonManager.getConfig(__name__) or {}
-        self.mirror_cb.setChecked(config.get("mirror_link_systematic", False))
+        self.mirror_cb.setChecked(config.get("gui_mirror_cb_state", config.get("mirror_link_systematic", False)))
+        
+        def _on_mirror_cb_changed(state):
+            cfg = mw.addonManager.getConfig(__name__) or {}
+            cfg["gui_mirror_cb_state"] = bool(state)
+            mw.addonManager.writeConfig(__name__, cfg)
+            
+        self.mirror_cb.stateChanged.connect(_on_mirror_cb_changed)
         search_opts.addWidget(self.mirror_cb)
         
         search_opts.addStretch()
@@ -2444,7 +2470,12 @@ class LinkedCardsDialog(QDialog):
                         if (el.dataset && el.dataset.nid) return el.dataset.nid;
                         var s = el.querySelector && el.querySelector('.edn-nid');
                         if (s) return s.textContent.trim();
-                        return el.innerText ? el.innerText.trim() : '';
+                        var oc = el.getAttribute('onclick');
+                        if (oc) {
+                            var m = oc.match(/\d{10,}/);
+                            if (m) return m[0];
+                        }
+                        return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
                     }
                     var nid = _gn(e.target);
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
@@ -2457,7 +2488,12 @@ class LinkedCardsDialog(QDialog):
                         if (el.dataset && el.dataset.nid) return el.dataset.nid;
                         var s = el.querySelector && el.querySelector('.edn-nid');
                         if (s) return s.textContent.trim();
-                        return el.innerText ? el.innerText.trim() : '';
+                        var oc = el.getAttribute('onclick');
+                        if (oc) {
+                            var m = oc.match(/\d{10,}/);
+                            if (m) return m[0];
+                        }
+                        return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
                     }
                     var nid = _gn2(e.target);
                     if(typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:' + nid);
