@@ -796,11 +796,10 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
         recto = recto or "[Vide]"
         recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
         html = (
-            f'{recto_escaped}&nbsp;—&nbsp;'
+            f'{recto_escaped} — '
             f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
-            f' style="display:inline-block;border:2px solid #FFA630;border-radius:5px;padding:2px 6px;background:#f5f6f7;cursor:pointer;"'
             f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-            f'>{nid}<span class="edn-nid">{nid}</span></kbd>'
+            f'><span class="edn-nid">{nid}</span></kbd>&nbsp;'
         )
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
@@ -872,7 +871,7 @@ def on_js_message_reviewer(handled, message, context):
                 
                 rendered_a = card.answer()
                 
-                isolated = re.sub(r'id=["\'](.*?)["\']', r'id="edn_preview_\1"', rendered_a)
+                isolated = re.sub(r'\bid=["\'](.*?)["\']', r'id="edn_preview_\1"', rendered_a)
                 isolated = re.sub(r"toggle\(['\"](.*?)['\"]\)", r"toggle('edn_preview_\1')", isolated)
                 isolated = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', isolated, flags=re.IGNORECASE)
                 isolated = re.sub(r'<style\b[^>]*>.*?</style>', '', isolated, flags=re.IGNORECASE | re.DOTALL)
@@ -1050,11 +1049,10 @@ def copy_nid_from_editor(editor: Editor):
         # Le texte visible du <kbd> est le recto (pas le NID) pour éviter la duplication
         # quand le HTML est collé puis converti en texte brut par Anki
         html = (
-            f'{recto_escaped}&nbsp;—&nbsp;'
+            f'{recto_escaped} — '
             f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"'
-            f' style="display:inline-block;border:2px solid #FFA630;border-radius:5px;padding:2px 6px;background:#f5f6f7;cursor:pointer;"'
             f' onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"'
-            f'>{nid}<span class="edn-nid">{nid}</span></kbd>'
+            f'><span class="edn-nid">{nid}</span></kbd>&nbsp;'
         )
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
@@ -1253,7 +1251,7 @@ def _on_selection_check(editor, result):
                                         var lineText = parts.join('').trim();
                                         result.hasDash = lineText.includes('\u2014') || lineText.includes('\u2014');
                                         // isEmpty = la ligne ne contient que le NID (ou est vide)
-                                        var stripped = lineText.replace(/\d{10,}/g, '').trim();
+                                        var stripped = lineText.replace(/\\d{10,}/g, '').trim();
                                         result.isEmpty = stripped.length === 0;
                                     }
                                 }
@@ -1359,6 +1357,22 @@ def _do_editor_init(editor: Editor):
         if (window._ednEditorHoverInit) return;
         window._ednEditorHoverInit = true;
 
+        document.addEventListener('paste', function(e) {
+            var text = (e.clipboardData || window.clipboardData).getData('text');
+            if (text) {
+                var match = text.trim().match(/^(.*?) [—–-] (\\d{10,})$/);
+                if (match) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    var recto = match[1].trim();
+                    var nid = match[2].trim();
+                    var rectoEscaped = recto.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+                    var html = rectoEscaped + ' — <kbd class="clickable_cards" tabindex="0" data-nid="' + nid + '" onclick="cards_ct_click(\'' + nid + '\')" ondblclick="cards_ct_click(\'' + nid + '\')"><span class="edn-nid">' + nid + '</span></kbd>&nbsp;';
+                    document.execCommand('insertHTML', false, html);
+                }
+            }
+        }, true);
+
         window._ednHoverTimer = null;
         window._ednHideTimer = null;
         window._ednPositionLocked = false;
@@ -1386,6 +1400,13 @@ def _do_editor_init(editor: Editor):
             }
             return box;
         };
+
+        if (!window.cards_ct_click) {
+            window.cards_ct_click = function(nid) {
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+            };
+        }
 
         window.show_edn_preview = function(html) {
             var box = window._ednGetOrCreateBox();
