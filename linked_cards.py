@@ -88,6 +88,10 @@ def init_linked_cards():
     # Hook reviewer to intercept 'r' key before Anki processes it
     gui_hooks.reviewer_did_show_answer.append(_on_reviewer_show_answer)
     
+    if hasattr(gui_hooks, 'previewer_will_show'):
+        gui_hooks.previewer_will_show.append(_setup_previewer_shortcuts)
+    
+    
     # Protection crash changement de thème
     gui_hooks.theme_did_change.append(_on_theme_changed)
     
@@ -1009,6 +1013,51 @@ def setup_browser_menu(browser: Browser):
     # Keep references to prevent GC
     browser._edn_sc_copy = sc_copy
     browser._edn_sc_search = sc_search
+    
+    _setup_browser_preview_shortcuts(browser)
+
+def _add_preview_shortcuts(window, webview):
+    from aqt.qt import QShortcut, QKeySequence, Qt
+    from .edn_menu import get_shortcut
+    kbd_open = get_shortcut("linked_cards_kbd_open", "n")
+    kbd_preview = get_shortcut("linked_cards_kbd_preview", "p")
+    kbd_navigate = get_shortcut("linked_cards_kbd_navigate", "r")
+    kbd_back = get_shortcut("linked_cards_kbd_back", "z")
+
+    def _dispatch(key):
+        if webview and hasattr(webview, "eval"):
+            try:
+                if hasattr(webview, "isVisible") and not webview.isVisible(): return
+                webview.eval(f"var e = new KeyboardEvent('keydown', {{'key': '{key}'}}); document.dispatchEvent(e);")
+            except Exception: pass
+
+    for key in [kbd_open, kbd_preview, kbd_navigate, kbd_back]:
+        if not key: continue
+        try:
+            sc = QShortcut(QKeySequence(key), window)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda k=key: _dispatch(k))
+            if not hasattr(window, '_edn_sc_preview_keys'):
+                window._edn_sc_preview_keys = []
+            window._edn_sc_preview_keys.append(sc)
+        except Exception: pass
+
+def _setup_browser_preview_shortcuts(browser):
+    try:
+        if hasattr(browser.form, 'previewWeb'):
+            _add_preview_shortcuts(browser, browser.form.previewWeb)
+    except Exception: pass
+
+def _setup_previewer_shortcuts(previewer):
+    try:
+        dialog = getattr(previewer, '_dialog', None)
+        if not dialog and hasattr(previewer, 'widget'): dialog = previewer.widget()
+        if not dialog: return
+        web = getattr(previewer, '_web', None)
+        if not web and hasattr(previewer, 'web'): web = previewer.web()
+        if not web: return
+        _add_preview_shortcuts(dialog, web)
+    except Exception: pass
 
 
 
@@ -1521,6 +1570,7 @@ def _do_editor_init(editor: Editor):
 
         document.addEventListener("mouseout", function(e) {
             if (e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                if (e.relatedTarget && e.target.contains(e.relatedTarget)) return;
                 var box = window._ednGetOrCreateBox();
                 if (box && box.contains(e.relatedTarget)) return;
                 if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
@@ -1923,10 +1973,10 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
             # 1. Si fidx est valide, récupérer le nom du champ source et chercher le même dans la cible
             # 2. Sinon, chercher un champ nommé "Cartes liées"
             # 3. En dernier recours, utiliser le dernier champ
-            target_fields = target_note.model()['flds']
+            target_fields = target_note.note_type()['flds']
             
-            if fidx >= 0 and fidx < len(source_note.model()['flds']):
-                source_field_name = source_note.model()['flds'][fidx]['name']
+            if fidx >= 0 and fidx < len(source_note.note_type()['flds']):
+                source_field_name = source_note.note_type()['flds'][fidx]['name']
                 # Chercher le même nom dans la cible
                 found = False
                 for i, fld in enumerate(target_fields):
@@ -1978,7 +2028,7 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
             # Popup de confirmation
             msg = QMessageBox(editor.widget if editor.widget else mw)
             msg.setWindowTitle("Lien miroir")
-            target_field_name = target_note.model()['flds'][fidx]['name']
+            target_field_name = target_note.note_type()['flds'][fidx]['name']
             msg.setText(
                 f"Lier aussi la carte source dans la carte cible ?\n\n"
                 f"→ Ajouter un lien vers :\n"
@@ -2505,6 +2555,7 @@ class LinkedCardsDialog(QDialog):
             });
             document.addEventListener("mouseout", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                    if (e.relatedTarget && e.target.contains(e.relatedTarget)) return;
                     function _gn2(el) {
                         if (el.dataset && el.dataset.nid) return el.dataset.nid;
                         var s = el.querySelector && el.querySelector('.edn-nid');
