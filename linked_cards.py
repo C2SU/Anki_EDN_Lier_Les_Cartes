@@ -126,7 +126,7 @@ def build_add_to_card_script():
 # Alias pour compatibilité (utilisé dans on_card_render)
 add_to_card_script = None  # will be built dynamically
 
-_add_to_card_script_body = """
+_add_to_card_script_body = r"""
 <script type="text/javascript">
 // -- Nettoyage au changement de carte --
 (function() {
@@ -888,6 +888,17 @@ def on_js_message_reviewer(handled, message, context):
                 # Ces sélecteurs ID sont uniques et ne risquent pas de polluer la carte principale
                 selectors.extend(["#edn_preview_FSRS_status"])
                 id_css = ", ".join(selectors) + " { display: none !important; }" if selectors else ""
+                
+                model_css = note.note_type().get('css', '')
+                icon_css_blocks = []
+                for match in re.finditer(r'([^{}]+)\s*\{([^}]*background(?:-image)?\s*:[^}]+)\}', model_css, re.IGNORECASE):
+                    css_selectors = match.group(1).strip()
+                    css_body = match.group(2).strip()
+                    if 'Icon' in css_selectors:
+                        scoped_selectors = ", ".join([f"#edn-preview-box {s.strip()}" for s in css_selectors.split(",")])
+                        icon_css_blocks.append(f"{scoped_selectors} {{{css_body}}}")
+                if icon_css_blocks:
+                    id_css += "\n" + "\n".join(icon_css_blocks)
                 # Ces sélecteurs génériques DOIVENT être scopés à #edn-preview-box
                 scoped_css = """
                     #edn-preview-box span[id*='FSRS'] { display: none !important; }
@@ -1346,7 +1357,7 @@ def _do_editor_init(editor: Editor):
     trigger_len = len(trigger)
     
     # Injecter les handlers hover preview dans l'éditeur (non disponibles via on_card_render)
-    js_hover = """
+    js_hover = r"""
     (function() {
         if (window._ednEditorHoverInit) return;
         window._ednEditorHoverInit = true;
@@ -1354,7 +1365,7 @@ def _do_editor_init(editor: Editor):
         document.addEventListener('paste', function(e) {
             var text = (e.clipboardData || window.clipboardData).getData('text');
             if (text) {
-                var match = text.trim().match(/^(.*?) [—–-] (\\d{10,})$/);
+                var match = text.trim().match(/^(.*?) [—–-] (\d{10,})$/);
                 if (match) {
                     e.preventDefault();
                     e.stopImmediatePropagation();
@@ -1549,7 +1560,7 @@ def _do_editor_init(editor: Editor):
     # Ajouter QShortcut sur la fenêtre parent de l'éditeur (plus fiable qu'editor_did_init_shortcuts seul)
     _setup_editor_window_shortcuts(editor)
     
-    js = f"""
+    js = rf"""
     (function() {{
         if (window._ednnidInit) return;
         window._ednnidInit = true;
@@ -1945,9 +1956,8 @@ def _propose_mirror_link(editor, source_note, target_nid_str):
                 return
             
             # Vérifier si le lien miroir existe déjà dans la note cible
-            target_field_html = target_note.fields[fidx]
-            if source_nid in target_field_html:
-                # Le lien miroir existe déjà
+            if any(source_nid in field for field in target_note.fields):
+                log(f"Lien miroir ignoré : la carte cible {target_nid_str} contient déjà un lien vers {source_nid}")
                 return
             
             # Récupérer le recto de la note source pour l'affichage dans la popup
@@ -2439,6 +2449,17 @@ class LinkedCardsDialog(QDialog):
 
             addon_package = mw.addonManager.addonFromModule(__name__)
             css_link = '<link rel="stylesheet" href="/_addons/' + addon_package + '/user_files/clickable_cards.css">'
+            
+            model_css = note.note_type().get('css', '')
+            icon_css_blocks = []
+            for match in re2.finditer(r'([^{}]+)\s*\{([^}]*background(?:-image)?\s*:[^}]+)\}', model_css, re2.IGNORECASE):
+                css_selectors = match.group(1).strip()
+                css_body = match.group(2).strip()
+                if 'Icon' in css_selectors:
+                    icon_css_blocks.append(f"{css_selectors} {{{css_body}}}")
+            extracted_icons_css = "\n".join(icon_css_blocks)
+            if extracted_icons_css:
+                css_link += f"<style>\n{extracted_icons_css}\n</style>"
             scoped_css = """
             <style>
                 body { margin: 2px; font-size: 13px; overflow-x: hidden; padding: 0 !important; }
