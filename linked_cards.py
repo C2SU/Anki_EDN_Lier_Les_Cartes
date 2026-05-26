@@ -95,6 +95,13 @@ def init_linked_cards():
     # Protection crash changement de thème
     gui_hooks.theme_did_change.append(_on_theme_changed)
     
+    # Init assistant
+    try:
+        from .edn_assistant import init_assistant
+        init_assistant()
+    except Exception as e:
+        log(f"Failed to init assistant: {e}")
+        
     log("Linked Cards module initialized (Full Restoration).")
 
 
@@ -1543,10 +1550,10 @@ def _do_editor_init(editor: Editor):
         };
 
         document.addEventListener("mouseover", function(e) {
-            if (e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+            var target = e.target && e.target.closest ? e.target.closest(".clickable_cards") : null;
+            if (target) {
                 if (window._ednHideTimer) { clearTimeout(window._ednHideTimer); window._ednHideTimer = null; }
                 if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
-                var target = e.target;
                 // Extraction robuste du NID (data-nid > span.edn-nid > innerText)
                 function _getN(el) {
                     if (el.dataset && el.dataset.nid) return el.dataset.nid;
@@ -1569,8 +1576,9 @@ def _do_editor_init(editor: Editor):
         });
 
         document.addEventListener("mouseout", function(e) {
-            if (e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                if (e.relatedTarget && e.target.contains(e.relatedTarget)) return;
+            var target = e.target && e.target.closest ? e.target.closest(".clickable_cards") : null;
+            if (target) {
+                if (e.relatedTarget && target.contains(e.relatedTarget)) return;
                 var box = window._ednGetOrCreateBox();
                 if (box && box.contains(e.relatedTarget)) return;
                 if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
