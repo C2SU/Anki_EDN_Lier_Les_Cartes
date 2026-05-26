@@ -100,7 +100,7 @@ def update_assistant(editor):
             <div class='card-item'>
                 <div class='card-title'>{recto_esc}</div>
                 <div class='card-nid'>{n['nid']}</div>
-                <button class='btn-add' onclick="pycmd('add_mirror:{n['nid']}|||{recto_esc}')">Ajouter ce lien</button>
+                <button class='btn-add' data-action='add_mirror' data-nid='{n['nid']}' data-recto='{recto_esc}'>Ajouter ce lien</button>
             </div>
             """
     html += "</div>"
@@ -122,11 +122,29 @@ def update_assistant(editor):
     else:
         for n in missing_outgoing:
             recto_esc = n['recto'].replace("'", "&#39;").replace('"', '&quot;')
-            html += f"<div class='card-item'><div class='card-title'>{recto_esc}</div><div class='card-nid'>{n['nid']}</div></div>"
+            html += f"""
+            <div class='card-item'>
+                <div class='card-title'>{recto_esc}</div>
+                <div class='card-nid'>{n['nid']}</div>
+                <button class='btn-add' data-action='make_reciprocal' data-nid='{n['nid']}'>Rendre réciproque</button>
+            </div>
+            """
     html += "</div>"
     
     html += """
     <script>
+    document.addEventListener("click", function(e) {
+        var btn = e.target.closest ? e.target.closest('.btn-add') : null;
+        if (!btn) return;
+        var action = btn.getAttribute('data-action');
+        var nid = btn.getAttribute('data-nid');
+        var recto = btn.getAttribute('data-recto') || '';
+        if (action === 'add_mirror') {
+            pycmd('add_mirror:' + nid + '|||' + recto);
+        } else if (action === 'make_reciprocal') {
+            pycmd('make_reciprocal:' + nid);
+        }
+    });
     function pycmd(cmd) {
         window.location.href = 'pycmd:' + cmd;
     }
@@ -137,47 +155,63 @@ def update_assistant(editor):
     assistant.setHtml(html)
 
 def handle_assistant_message(handled, message, context):
-    if not message.startswith("add_mirror:"):
-        return handled
-        
-    try:
-        parts = message.split("add_mirror:")[1].split("|||")
-        nid = parts[0]
-        recto = parts[1] if len(parts) > 1 else ""
-        
-        # Le contexte de notre pycmd est l'assistant_web (QWebEnginePage),
-        # On doit retrouver l'éditeur. Pour simplifier, on stocke une référence
-        # dans une variable globale ou on utilise l'éditeur actif.
-        from .linked_cards import _current_editor
-        if not _current_editor or not _current_editor.note:
-            return (True, None)
+    if message.startswith("add_mirror:"):
+        try:
+            parts = message.split("add_mirror:")[1].split("|||")
+            nid = parts[0]
+            recto = parts[1] if len(parts) > 1 else ""
             
-        editor = _current_editor
-        
-        recto_escaped = recto.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
-        badge_html = f'{recto_escaped} — <kbd class="clickable_cards" tabindex="0" data-nid="{nid}" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
-        
-        # Chercher le champ "Cartes liées"
-        flds = editor.note.note_type()['flds']
-        target_fidx = -1
-        for i, fld in enumerate(flds):
-            if fld['name'].lower() in ["cartes liées", "cartes liees", "liens", "linked cards"]:
-                target_fidx = i
-                break
+            from .linked_cards import _current_editor
+            if not _current_editor or not _current_editor.note:
+                return (True, None)
                 
-        if target_fidx == -1:
-            target_fidx = len(flds) - 1 # Dernier champ
+            editor = _current_editor
             
-        editor.note.fields[target_fidx] += "<br>" + badge_html
-        editor.loadNote()
+            recto_escaped = recto.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
+            badge_html = f'{recto_escaped} — <kbd class="clickable_cards" tabindex="0" data-nid="{nid}" onclick="cards_ct_click(\'{nid}\')" ondblclick="cards_ct_click(\'{nid}\')"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
+            
+            flds = editor.note.note_type()['flds']
+            target_fidx = next((i for i, fld in enumerate(flds) if fld['name'].lower() in ["cartes liées", "cartes liees", "liens", "linked cards"]), len(flds) - 1)
+                
+            editor.note.fields[target_fidx] += "<br>" + badge_html
+            editor.loadNote()
+            update_assistant(editor)
+            
+        except Exception as e:
+            print("Erreur add_mirror:", e)
+        return (True, None)
         
-        # On met à jour l'assistant manuellement
-        update_assistant(editor)
-        
-    except Exception as e:
-        print("Erreur add_mirror:", e)
-        
-    return (True, None)
+    elif message.startswith("make_reciprocal:"):
+        try:
+            target_nid = message.split("make_reciprocal:")[1]
+            from .linked_cards import _current_editor
+            if not _current_editor or not _current_editor.note:
+                return (True, None)
+                
+            editor = _current_editor
+            current_note = editor.note
+            current_nid = str(current_note.id)
+            current_recto = get_note_recto(current_note)
+            
+            target_note = mw.col.get_note(int(target_nid))
+            
+            recto_escaped = current_recto.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
+            badge_html = f'{recto_escaped} — <kbd class="clickable_cards" tabindex="0" data-nid="{current_nid}" onclick="cards_ct_click(\'{current_nid}\')" ondblclick="cards_ct_click(\'{current_nid}\')"><span class="edn-nid">{current_nid}</span></kbd>&nbsp;'
+            
+            flds = target_note.note_type()['flds']
+            target_fidx = next((i for i, fld in enumerate(flds) if fld['name'].lower() in ["cartes liées", "cartes liees", "liens", "linked cards"]), len(flds) - 1)
+            
+            target_note.fields[target_fidx] += "<br>" + badge_html
+            target_note.flush()
+            
+            # The current note in editor hasn't changed its text, but its reciprocal status did
+            update_assistant(editor)
+            
+        except Exception as e:
+            print("Erreur make_reciprocal:", e)
+        return (True, None)
+
+    return handled
 
 class EdnAssistantWeb(QWebEngineView):
     def __init__(self, editor, parent=None):

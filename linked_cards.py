@@ -1417,6 +1417,13 @@ def _do_editor_init(editor: Editor):
     (function() {
         if (window._ednEditorHoverInit) return;
         window._ednEditorHoverInit = true;
+        
+        window.toggle = window.toggle || function(id) {
+            var e = document.getElementById(id);
+            if (e) {
+                e.style.display = (e.style.display === 'none' || !e.style.display) ? 'block' : 'none';
+            }
+        };
 
         document.addEventListener('paste', function(e) {
             var text = (e.clipboardData || window.clipboardData).getData('text');
