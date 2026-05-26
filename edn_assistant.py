@@ -24,6 +24,8 @@ def extract_nids_from_fields(note):
             nids.add(match.group(1))
         for match in re.finditer(r'<span[^>]*class=["\'][^"\']*edn-nid[^"\']*["\'][^>]*>\s*(\d{10,})\s*</span>', f):
             nids.add(match.group(1))
+        for match in re.finditer(r'cards_ct_click\([\'"](\d{10,})[\'"]\)', f):
+            nids.add(match.group(1))
     return nids
 
 def get_note_recto(note):
@@ -173,9 +175,15 @@ def handle_assistant_message(handled, message, context):
             flds = editor.note.note_type()['flds']
             target_fidx = next((i for i, fld in enumerate(flds) if fld['name'].lower() in ["cartes liées", "cartes liees", "liens", "linked cards"]), len(flds) - 1)
                 
-            editor.note.fields[target_fidx] += "<br>" + badge_html
-            editor.loadNote()
-            update_assistant(editor)
+            def on_saved():
+                editor.note.fields[target_fidx] += "<br>" + badge_html
+                if hasattr(editor, 'loadNoteKeepingFocus'):
+                    editor.loadNoteKeepingFocus()
+                else:
+                    editor.loadNote()
+                update_assistant(editor)
+            
+            editor.saveNow(on_saved)
             
         except Exception as e:
             print("Erreur add_mirror:", e)
@@ -202,7 +210,7 @@ def handle_assistant_message(handled, message, context):
             target_fidx = next((i for i, fld in enumerate(flds) if fld['name'].lower() in ["cartes liées", "cartes liees", "liens", "linked cards"]), len(flds) - 1)
             
             target_note.fields[target_fidx] += "<br>" + badge_html
-            target_note.flush()
+            mw.col.update_note(target_note)
             
             # The current note in editor hasn't changed its text, but its reciprocal status did
             update_assistant(editor)

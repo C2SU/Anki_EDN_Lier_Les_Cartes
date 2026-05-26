@@ -2548,7 +2548,7 @@ class LinkedCardsDialog(QDialog):
             </style>
             """
             
-            gui_hover_script = """
+            gui_hover_script = r"""
             <script>
             document.addEventListener("mouseover", function(e) {
                 if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
