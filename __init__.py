@@ -8,6 +8,13 @@ Intègre les fonctionnalités de :
 - Menu partagé EDN (edn_menu)
 """
 from aqt import gui_hooks, utils
+from aqt.qt import QWebEngineSettings, QWebEngineProfile
+
+# Activer l'inspecteur d'élément (DevTools)
+try:
+    QWebEngineProfile.defaultProfile().settings().setAttribute(QWebEngineSettings.WebAttribute.DeveloperExtrasEnabled, True)
+except Exception:
+    pass
 
 # --- Fallback for missing edn_menu ---
 try:

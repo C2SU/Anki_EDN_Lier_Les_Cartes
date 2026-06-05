@@ -27,11 +27,16 @@ kbd.clickable_cards:hover {
   color: #BD93BD;
 }
 
+.cartesLiees br {
+  display: block !important;
+  content: "" !important;
+}
+
 #edn-preview-box {
   position: fixed;        /* fixed = no layout reflow, spaces don't jump */
   z-index: 99999;
   max-width: 400px;
-  max-height: 60vh;       /* limite la hauteur et évite le surplus en bas */
+  max-height: 90vh;       /* limite la hauteur et évite le surplus en bas */
   overflow-y: auto;
   background-color: #f5f6f7;
   border: 2px solid #c0c1c5;
