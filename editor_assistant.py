@@ -3,6 +3,7 @@ import re
 from aqt import mw
 from aqt.qt import *
 from aqt import gui_hooks
+from .logger import log
 
 try:
     from aqt.operations import QueryOp
@@ -168,7 +169,7 @@ h3 {
 """
 
 # --- État persistant du panneau (ouvert/fermé) ---
-_ASSISTANT_STATE_KEY = "_edn_assistant_open"
+_ASSISTANT_STATE_KEY = "_editor_assistant_open"
 
 def _addon_package():
     """Retourne le nom du package addon (dossier racine) pour la config."""
@@ -196,7 +197,7 @@ def _save_assistant_state(is_open: bool):
         config["assistant_panel_open"] = is_open
         mw.addonManager.writeConfig(pkg, config)
     except Exception as e:
-        print("EDN assistant: Impossible de sauvegarder l'état panneau :", e)
+        print("Editor assistant: Impossible de sauvegarder l'état panneau :", e)
 
 def _is_widget_alive(w):
     if w is None:
@@ -204,70 +205,104 @@ def _is_widget_alive(w):
     try:
         w.objectName()
         return True
-    except RuntimeError:
+    except (RuntimeError, AttributeError):
         return False
 
 def _is_editor_alive(editor):
     if editor is None:
         return False
     try:
-        if hasattr(editor, 'web') and editor.web:
+        if hasattr(editor, 'web') and editor.web is not None:
             editor.web.objectName()
-        return True
-    except RuntimeError:
+            return True
+        return False
+    except (RuntimeError, AttributeError):
         return False
 
 def get_active_editor(context=None):
     from aqt import mw
+    from .logger import log
+    log(f"get_active_editor context={context}")
+    
     # If context is an Editor, return it directly
     from aqt.editor import Editor
     if isinstance(context, Editor):
         try:
-            context.web.objectName()
-            return context
-        except RuntimeError:
+            if context.web is not None:
+                context.web.objectName()
+                log("get_active_editor: context is active Editor, returning directly")
+                return context
+        except (RuntimeError, AttributeError) as e:
+            log(f"get_active_editor: context is Editor but check failed: {e}")
             pass
 
     # If context is the assistant's AnkiWebView or editor's EditorWebView, find its editor
     if context:
+        # Check if context is the preview popup's webview itself
+        if _is_preview_popup_alive() and getattr(_preview_popup, '_edn_web', None) == context:
+            parent_assistant = getattr(_preview_popup, '_edn_parent_widget', None)
+            if parent_assistant:
+                from .linked_cards import _current_editor
+                if _current_editor and getattr(_current_editor, '_editor_assistant_web', None) == parent_assistant:
+                    log("get_active_editor: matched preview popup context to editor via parent assistant")
+                    return _current_editor
+
         # Check active window first
         if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
             win = mw.app.activeWindow()
+            log(f"get_active_editor: checking activeWindow={win}")
             if hasattr(win, 'editor') and win.editor:
                 try:
                     editor = win.editor
-                    if editor.web == context or getattr(editor, '_edn_assistant_web', None) == context:
+                    log(f"get_active_editor: activeWindow has editor. web={getattr(editor, 'web', None)}")
+                    # Safe check for editor.web attribute presence and equivalence
+                    if hasattr(editor, 'web') and editor.web is not None and (editor.web == context or getattr(editor, '_editor_assistant_web', None) == context):
+                        log("get_active_editor: activeWindow editor matched context")
                         return editor
-                except RuntimeError:
+                except (RuntimeError, AttributeError) as e:
+                    log(f"get_active_editor: activeWindow editor check exception: {e}")
                     pass
         # Check _current_editor
         from .linked_cards import _current_editor
+        log(f"get_active_editor: checking _current_editor={_current_editor}")
         if _current_editor:
             try:
-                if _current_editor.web == context or getattr(_current_editor, '_edn_assistant_web', None) == context:
+                log(f"get_active_editor: _current_editor web={getattr(_current_editor, 'web', None)}, assistant={getattr(_current_editor, '_editor_assistant_web', None)}")
+                if hasattr(_current_editor, 'web') and _current_editor.web is not None and (_current_editor.web == context or getattr(_current_editor, '_editor_assistant_web', None) == context):
+                    log("get_active_editor: _current_editor matched context")
                     return _current_editor
-            except RuntimeError:
+            except (RuntimeError, AttributeError) as e:
+                log(f"get_active_editor: _current_editor check exception: {e}")
                 pass
 
     # Fallback to active window's editor
     if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
         win = mw.app.activeWindow()
+        log(f"get_active_editor fallback: checking activeWindow={win}")
         if hasattr(win, 'editor') and win.editor:
             try:
-                win.editor.web.objectName()
-                return win.editor
-            except RuntimeError:
+                if hasattr(win.editor, 'web') and win.editor.web is not None:
+                    win.editor.web.objectName()
+                    log("get_active_editor fallback: returned activeWindow editor")
+                    return win.editor
+            except (RuntimeError, AttributeError) as e:
+                log(f"get_active_editor fallback: activeWindow editor check exception: {e}")
                 pass
 
     # Fallback to _current_editor
     from .linked_cards import _current_editor
+    log(f"get_active_editor fallback: checking _current_editor={_current_editor}")
     if _current_editor:
         try:
-            _current_editor.web.objectName()
-            return _current_editor
-        except RuntimeError:
+            if hasattr(_current_editor, 'web') and _current_editor.web is not None:
+                _current_editor.web.objectName()
+                log("get_active_editor fallback: returned _current_editor")
+                return _current_editor
+        except (RuntimeError, AttributeError) as e:
+            log(f"get_active_editor fallback: _current_editor exception: {e}")
             pass
 
+    log("get_active_editor: returned None")
     return None
 
 # --- Popup preview (imitant show_preview_popup du GUI) ---
@@ -277,24 +312,84 @@ _esc_shortcut = None   # Raccourci Échap temporaire
 _preview_history = []  # Historique pour navigation imbriquée
 _current_preview_nid = None  # NID actuellement affiché dans l'aperçu
 _preview_event_filter = None  # Event filter pour lifecycle du popup
+_preview_popup_filter = None  # Event filter pour le popup lui-même
+
+
+class EdnPreviewPopupFilter(QObject):
+    """Filtre d'événements installé sur le popup de preview lui-même.
+    
+    Lance la boucle de check_hide_preview lorsque la souris entre dans le popup.
+    """
+    def eventFilter(self, obj, event):
+        try:
+            if event.type() == QEvent.Type.Enter:
+                check_hide_preview()
+        except Exception as e:
+            print("Error in EdnPreviewPopupFilter:", e)
+        return False
 
 
 class EdnPreviewEventFilter(QObject):
-    """Filtre d'événements installé sur la fenêtre parente de l'éditeur.
+    """Filtre d'événements global installé sur l'application pendant que le popup de preview est ouvert.
     
     Masque automatiquement le popup de preview miroir quand :
     - La fenêtre parente perd le focus (Alt-Tab)
-    - La fenêtre parente est fermée ou masquée
+    - Une autre fenêtre est fermée ou masquée
+    - L'utilisateur clique en dehors de la preview
     """
     def eventFilter(self, obj, event):
-        etype = event.type()
-        if etype in (QEvent.Type.WindowDeactivate, QEvent.Type.Close, QEvent.Type.Hide):
-            if etype == QEvent.Type.WindowDeactivate and _is_preview_popup_alive() and _preview_popup.isVisible():
-                pos = QCursor.pos()
-                geom = _preview_popup.geometry()
-                if geom.adjusted(-15, -15, 15, 15).contains(pos):
+        try:
+            etype = event.type()
+            # 1. Masquer sur clic en dehors du popup de preview
+            if etype == QEvent.Type.MouseButtonPress:
+                if _is_preview_popup_alive() and _preview_popup.isVisible():
+                    # Vérifier si la souris est dans la géométrie du popup de preview
+                    is_inside_preview = False
+                    try:
+                        if _preview_popup.rect().contains(_preview_popup.mapFromGlobal(QCursor.pos())):
+                            is_inside_preview = True
+                    except Exception:
+                        pass
+                    
+                    if not is_inside_preview:
+                        widget = obj
+                        while widget:
+                            if widget == _preview_popup:
+                                is_inside_preview = True
+                                break
+                            try:
+                                widget = widget.parent()
+                            except:
+                                widget = None
+                                
+                    if not is_inside_preview:
+                        _hide_card_preview_popup()
+
+            # 2. Masquer sur perte de focus ou masquage de la fenêtre
+            elif etype in (QEvent.Type.WindowDeactivate, QEvent.Type.Close, QEvent.Type.Hide):
+                # Si l'événement concerne le popup de preview lui-même, l'ignorer
+                if obj == _preview_popup:
                     return False
-            _hide_card_preview_popup()
+                
+                # Si c'est une désactivation de fenêtre
+                if etype == QEvent.Type.WindowDeactivate and _is_preview_popup_alive() and _preview_popup.isVisible():
+                    if getattr(_preview_popup, '_context_menu_active', False):
+                        return False
+                    try:
+                        no_btn = getattr(Qt.MouseButton, "NoButton", None) or getattr(Qt, "NoButton", None)
+                        if QApplication.mouseButtons() != no_btn:
+                            return False
+                    except Exception:
+                        pass
+                    
+                    # Si la nouvelle fenêtre active est la preview popup elle-même, ne pas la fermer
+                    active_win = QApplication.activeWindow()
+                    if active_win == _preview_popup or (active_win and active_win.findChild(QWidget, "EdnAssistantPreviewPopup")):
+                        return False
+                        
+                _hide_card_preview_popup()
+        except Exception as e:
+            print("Error in EdnPreviewEventFilter:", e)
         return False
 
 def _is_preview_popup_alive():
@@ -356,9 +451,7 @@ def _hide_card_preview_popup():
     # Retirer le filtre de lifecycle
     if _preview_event_filter:
         try:
-            parent = _preview_event_filter.parent()
-            if parent:
-                parent.removeEventFilter(_preview_event_filter)
+            QApplication.instance().removeEventFilter(_preview_event_filter)
             _preview_event_filter.deleteLater()
         except Exception:
             pass
@@ -372,7 +465,7 @@ def _hide_card_preview_popup():
     # Mettre à jour l'état dans l'assistant
     editor = get_active_editor()
     if editor:
-        assistant = getattr(editor, '_edn_assistant_web', None)
+        assistant = getattr(editor, '_editor_assistant_web', None)
         if _is_widget_alive(assistant):
             try:
                 assistant.eval("window._ednPreviewPopupOpen = false;")
@@ -383,6 +476,18 @@ def check_hide_preview():
     global _preview_popup
     if not _is_preview_popup_alive() or not _preview_popup.isVisible():
         return
+        
+    if getattr(_preview_popup, '_context_menu_active', False):
+        QTimer.singleShot(200, check_hide_preview)
+        return
+
+    try:
+        no_btn = getattr(Qt.MouseButton, "NoButton", None) or getattr(Qt, "NoButton", None)
+        if QApplication.mouseButtons() != no_btn:
+            QTimer.singleShot(200, check_hide_preview)
+            return
+    except Exception:
+        pass
         
     pos = QCursor.pos()
     
@@ -397,7 +502,7 @@ def check_hide_preview():
     # 2. Check if mouse is over the assistant panel (the source trigger widget)
     editor = get_active_editor()
     if editor:
-        assistant = getattr(editor, '_edn_assistant_web', None)
+        assistant = getattr(editor, '_editor_assistant_web', None)
         if _is_widget_alive(assistant):
             try:
                 # Map assistant geometry to global coordinates
@@ -414,23 +519,23 @@ def check_hide_preview():
     # If mouse is neither over the preview popup nor the assistant panel, hide it!
     _hide_card_preview_popup()
 
-def handle_preview_popup_message(message):
+def handle_preview_popup_message(message, context=None):
     if message.startswith("preview_nested:"):
         nid = message[len("preview_nested:"):]
-        editor = get_active_editor()
+        editor = get_active_editor(context)
         anchor = None
         if editor:
-            anchor = getattr(editor, '_edn_assistant_web', None)
+            anchor = getattr(editor, '_editor_assistant_web', None)
         _show_card_preview_popup(nid, parent_widget=anchor, is_nested=True)
     elif message == "preview_back":
         global _preview_history, _current_preview_nid
         if _preview_history:
             prev_nid = _preview_history.pop()
             _current_preview_nid = prev_nid
-            editor = get_active_editor()
+            editor = get_active_editor(context)
             anchor = None
             if editor:
-                anchor = getattr(editor, '_edn_assistant_web', None)
+                anchor = getattr(editor, '_editor_assistant_web', None)
             _show_card_preview_popup(prev_nid, parent_widget=anchor, is_nested=True)
             # Activer et redonner le focus
             if _is_preview_popup_alive():
@@ -447,14 +552,14 @@ def handle_preview_popup_message(message):
             print("Error resizing preview:", e)
     elif message == "escape":
         _hide_card_preview_popup()
-        editor = get_active_editor()
+        editor = get_active_editor(context)
         _close_editor(editor)
     elif message.startswith("preview_key_to_assistant:"):
         try:
             key = message[len("preview_key_to_assistant:"):]
-            editor = get_active_editor()
+            editor = get_active_editor(context)
             if editor:
-                assistant = getattr(editor, '_edn_assistant_web', None)
+                assistant = getattr(editor, '_editor_assistant_web', None)
                 if _is_widget_alive(assistant):
                     assistant.eval(f"document.dispatchEvent(new KeyboardEvent('keydown', {{key: '{key}', bubbles: true}}));")
         except Exception as e:
@@ -468,14 +573,14 @@ def handle_preview_popup_message(message):
         except Exception as e:
             print("Erreur open_browser from preview:", e)
 
-def _create_preview_popup():
+def _create_preview_popup(parent=None):
     """Crée le popup Qt de preview (singleton réutilisable, sans barre de titre)."""
-    global _preview_popup
-    flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-    dlg = QWidget(None, flags)
+    global _preview_popup, _preview_popup_filter
+    flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+    dlg = QWidget(parent, flags)
     dlg.setObjectName("EdnAssistantPreviewPopup")
     dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-    dlg.setMinimumSize(500, 100)
+    dlg.setMinimumSize(500, 50)
     dlg.setMaximumSize(800, 1400)
     dlg.setStyleSheet("#EdnAssistantPreviewPopup { border: 1px solid #aaa; background: white; border-radius: 8px; }")
 
@@ -488,6 +593,12 @@ def _create_preview_popup():
     v.addWidget(web)
 
     dlg._edn_web = web
+    dlg._context_menu_active = False
+
+    # Installer le filtre pour démarrer check_hide_preview au survol
+    _preview_popup_filter = EdnPreviewPopupFilter(dlg)
+    dlg.installEventFilter(_preview_popup_filter)
+
     _preview_popup = dlg
 
 
@@ -495,6 +606,8 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
     """Ouvre un popup Qt AnkiWebView avec la preview de la carte (même rendu que GUI 'Voir')."""
     global _preview_popup, _esc_shortcut, _preview_history, _current_preview_nid
     import re as re2
+    from .logger import log
+    log(f"_show_card_preview_popup nid_str={nid_str} parent_widget={parent_widget} is_nested={is_nested} y_offset={y_offset}")
 
     # Gérer l'historique
     if not is_nested:
@@ -516,9 +629,15 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
         _kbd_next, _kbd_prev, _kbd_open, _kbd_back = "n", "p", "r", "z"
 
     _shortcuts_script = (
-        f"<script>window._ednMiroirKeys = {{"
+        f"<script>"
+        f"window._ednMiroirKeys = {{"
         f"next: '{_kbd_next}', prev: '{_kbd_prev}', open: '{_kbd_open}', back: '{_kbd_back}'"
-        f"}};</script>"
+        f"}};"
+        f"window.MathJax = window.MathJax || {{}};"
+        f"window.MathJax.loader = window.MathJax.loader || {{}};"
+        f"window.MathJax.loader.versions = window.MathJax.loader.versions || {{}};"
+        f"window.MathJax.loader.versions['[tex]/mathtools'] = '3.0.0';"
+        f"</script>"
     )
 
     try:
@@ -528,19 +647,27 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             return
         card = cards[0]
         rendered = card.answer()
+        try:
+            from .linked_cards import _clean_kbd_html
+            rendered = _clean_kbd_html(rendered)
+        except Exception as e:
+            print("Error cleaning kbd html in editor assistant:", e)
 
         # Nettoyage identique au GUI show_preview_popup
-        isolated = re2.sub(r'(?<!\w)id=(["\'])(.*?)\1', r'id="dlg_preview_\2"', rendered)
+        isolated = re2.sub(r'(?<![\w-])id=(["\'])(.*?)\1', r'id="dlg_preview_\2"', rendered)
+        isolated = re2.sub(r'src=(["\'])(?![a-z]+:)(?!/)([^"\']+)\1', r'src="/\2"', isolated, flags=re2.IGNORECASE)
         isolated = re2.sub(r'toggle\([\"\'](.*?)[\"\']\)', r"toggle('dlg_preview_\1')", isolated)
+        # Remplacer onclick par data-onclick pour éviter les violations de Content Security Policy (CSP)
+        isolated = re2.sub(r'\bonclick=(["\'])(.*?)\1', r'data-onclick=\1\2\1', isolated, flags=re2.IGNORECASE)
         isolated = re2.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', isolated, flags=re2.IGNORECASE)
         isolated = re2.sub(
             r"(?:<br>\s*)?<(span|div|p)\b[^>]*id=[^>]*fsrs[^>]*>.*?</\1>",
             "", isolated, flags=re2.IGNORECASE | re2.DOTALL)
         for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer",
                     "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]:
-            isolated = re2.sub(
-                rf'<div[^>]*id=["\']dlg_preview_{re2.escape(sec)}["\'][^>]*>.*?</div>',
-                '', isolated, flags=re2.IGNORECASE | re2.DOTALL)
+            # Cacher le container via style inline display none pour contourner les divs imbriqués
+            isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'][^\'>]*style=["\'])([^\'\"]*)', r'\1display: none !important;\2', isolated, flags=re2.IGNORECASE)
+            isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'])(?![^>]*style=)', r'\1 style="display: none !important;"', isolated, flags=re2.IGNORECASE)
         isolated = re2.sub(
             r'(<div[^>]*class=["\'][^"\']*(section)[^"\']*["\'][^>]*style=["\'])display:\s*none;?',
             r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
@@ -557,12 +684,46 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             return f"{match.group(1)}{inner}</div>"
         isolated = re2.sub(r'(<div[^>]*class=["\'][^"\']*cartesLiees[^"\']*["\'][^>]*>)(.*?)</div>', _clean_cartes_liees, isolated, flags=re2.IGNORECASE | re2.DOTALL)
 
+        # Déterminer la fenêtre de l'éditeur
+        editor_window = parent_widget.window() if _is_widget_alive(parent_widget) else None
+
         # Créer ou réutiliser le popup
         if not _is_preview_popup_alive():
-            _create_preview_popup()
+            _create_preview_popup(editor_window)
+        else:
+            # Si le parent a changé, reparenter le popup
+            if editor_window and _preview_popup.parentWidget() != editor_window:
+                try:
+                    _preview_popup.setParent(editor_window, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+                except Exception as e:
+                    print("Error reparenting preview popup:", e)
 
         dlg = _preview_popup
+        dlg._edn_parent_widget = parent_widget
         web = dlg._edn_web
+
+        # Déterminer si night mode est actif pour la bordure dynamique
+        is_night = False
+        try:
+            from aqt.theme import theme_manager
+            is_night = theme_manager.night_mode
+        except:
+            try:
+                is_night = mw.theme_manager.night_mode
+            except AttributeError:
+                try:
+                    from aqt import theme_manager
+                    is_night = theme_manager.night_mode
+                except:
+                    try:
+                        is_night = mw.pm.night_mode()
+                    except:
+                        is_night = False
+
+        if is_night:
+            dlg.setStyleSheet("#EdnAssistantPreviewPopup { border: 2px solid #555; background: #373a41; border-radius: 5px; }")
+        else:
+            dlg.setStyleSheet("#EdnAssistantPreviewPopup { border: 2px solid #c0c1c5; background: #f5f6f7; border-radius: 5px; }")
 
         # Conserver le popup comme une fenêtre flottante autonome (pas de setParent)
         # pour éviter les restrictions de géométrie et de dimensionnement imposées par l'éditeur.
@@ -583,34 +744,30 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             except Exception as se:
                 print("Error setting escape shortcut:", se)
 
-        # Installer le filtre de lifecycle pour masquer le popup quand la fenêtre perd le focus
+        # Installer le filtre de lifecycle pour masquer le popup quand la fenêtre perd le focus ou clique en dehors
         global _preview_event_filter
-        if _is_widget_alive(parent_widget):
-            try:
-                editor_window = parent_widget.window()
-                if _is_widget_alive(editor_window):
-                    # Retirer l'ancien filtre si existant
-                    if _preview_event_filter:
-                        try:
-                            editor_window.removeEventFilter(_preview_event_filter)
-                        except Exception:
-                            pass
-                        try:
-                            parent_widget.removeEventFilter(_preview_event_filter)
-                        except Exception:
-                            pass
-                    _preview_event_filter = EdnPreviewEventFilter(editor_window)
-                    editor_window.installEventFilter(_preview_event_filter)
-                    parent_widget.installEventFilter(_preview_event_filter)
-            except Exception as lfe:
-                print("Error setting lifecycle event filter:", lfe)
+        try:
+            # Retirer l'ancien filtre si existant
+            if _preview_event_filter:
+                try:
+                    QApplication.instance().removeEventFilter(_preview_event_filter)
+                    _preview_event_filter.deleteLater()
+                except Exception:
+                    pass
+            _preview_event_filter = EdnPreviewEventFilter()
+            QApplication.instance().installEventFilter(_preview_event_filter)
+        except Exception as lfe:
+            print("Error setting lifecycle event filter:", lfe)
 
         # Positionner de façon intelligente
         if _is_widget_alive(parent_widget) and not is_nested:
             try:
                 parent_global_pos = parent_widget.mapToGlobal(QPoint(0, 0))
                 dlg_width = dlg.width() if dlg.width() > 100 else 550
-                screen = QApplication.primaryScreen().availableGeometry()
+                try:
+                    screen = parent_widget.screen().availableGeometry()
+                except Exception:
+                    screen = QApplication.primaryScreen().availableGeometry()
                 
                 # Par défaut à droite du panneau assistant
                 x = parent_global_pos.x() + parent_widget.width() + 10
@@ -620,67 +777,109 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                     x = parent_global_pos.x() - dlg_width - 10
                 
                 y = parent_global_pos.y() + y_offset
-                # Ajustement si on sort de l'écran bas pour un espace de hauteur confortable de 800px
-                if y + 800 > screen.bottom():
-                    y = max(screen.top() + 10, screen.bottom() - 820)
+                # Ajustement initial basé sur la hauteur de départ (200px)
+                if y + 250 > screen.bottom():
+                    y = max(screen.top() + 10, screen.bottom() - 270)
                 
+                log(f"_show_card_preview_popup: moving to x={x}, y={y} (initial screen height={screen.height()})")
                 dlg.move(QPoint(x, y))
             except Exception as pe:
+                log(f"_show_card_preview_popup error positioning: {pe}")
                 print("Error positioning preview popup:", pe)
+        else:
+            log(f"_show_card_preview_popup: skip positioning (parent_widget alive={_is_widget_alive(parent_widget)}, is_nested={is_nested})")
 
         addon_package = mw.addonManager.addonFromModule(__name__)
         css_link = f'<link rel="stylesheet" href="/_addons/{addon_package}/user_files/clickable_cards.css">'
 
         model_css = note.note_type().get('css', '')
         if model_css:
-            css_link += f"<style>\n{model_css}\n</style>"
+            from .linked_cards import _sanitize_model_css_for_preview
+            sanitized_css = _sanitize_model_css_for_preview(model_css)
+            css_link += f'<style>\n{sanitized_css}\n</style>'
 
-        scoped_css = """
-        <style>
-            html, body { margin: 0; font-size: 13px; overflow-x: hidden; overflow-y: auto !important; padding: 0 !important; }
-            [id*='FSRS'], [id*='fsrs'], .fsrs-info { display: none !important; }
-            hr { display: none !important; }
-            .edn-nid { display: none !important; }
-            .clickable_cards .edn-nid { display: inline !important; }
-            .card > *:last-child { margin-bottom: 0 !important; padding-bottom: 0 !important; }
-            .card { background: transparent !important; background-color: transparent !important; margin: 0 !important; padding: 4px 5px !important; font-size: 16px !important; line-height: 1.35 !important; max-width: 100% !important; text-align: left; }
-            a { font-size: 0.85em !important; }
-            .section { display: flex !important; margin: 1px 0 !important; padding: 0 !important; width: 100% !important; min-height: 0 !important; border-width: 1.5px !important; }
-            div[class*='section'] { display: flex !important; }
-            .items { margin-left: 8px !important; margin-right: 8px !important; padding: 1px 0 !important; min-height: 0 !important; white-space: normal !important; word-break: break-word !important; }
-            .items ul, .items ol { padding-top: 2px !important; padding-bottom: 2px !important; margin-top: 0 !important; margin-bottom: 0 !important; padding-left: 18px !important; }
-            .items li { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
-            .items ul ul, .items ol ol, .items ul ol, .items ol ul { padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
-            .items > span ul, .items > span ol { padding-left: 18px !important; margin: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; }
-            .items li > ul, .items li > ol { padding-left: 14px !important; margin: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; }
-            .items > span { display: block !important; }
-            .items.answer { padding: 1px 0 !important; }
-            .bar { flex: 0 0 28px !important; width: 28px !important; min-height: 28px !important; margin: 0 !important; padding: 0 !important; background-size: 20px !important; border-right-width: 1px !important; }
-            .barHider { display: none !important; }
-            br { display: block !important; content: '' !important; margin: 1px 0 !important; }
-            .clickable_cards { font-size: 13px !important; height: auto !important; line-height: 13px !important; padding: 3px 5px !important; margin: 3px !important; cursor: pointer; transition: all 0.2s ease; }
-            .clickable_cards:hover { background-color: #3b82f6 !important; color: white !important; }
-            .items.cartesLiees { flex-direction: row !important; flex-wrap: wrap !important; align-items: center !important; justify-content: flex-start !important; margin-left: 0 !important; }
-            .items.cartesLiees br { flex-basis: 100% !important; height: 0 !important; margin: 0 !important; display: block !important; content: "" !important; }
-            /* Supprimer les espaces blancs vides en haut/bas */
-            .card > br:first-child { display: none !important; }
-            .card > br:last-child { display: none !important; }
-            div:empty, p:empty { display: none !important; }
-        </style>
-        """
+        # Charger les styles de preview depuis user_files/preview_edn.css
+        from .linked_cards import _load_preview_edn_css
+        preview_css = _load_preview_edn_css()
+        
+        # Injecter des règles CSS pour cacher les conteneurs de la blacklist (y compris tagsIcon)
+        sec_to_field = {
+            "sourcesMegaContainer": "Sources",
+            "commentsMegaContainer": "Comments",
+            "tagsMegaContainer": "Tags",
+            "erreursFaitesMegaContainer": "Erreurs faites",
+            "mnemonicsMegaContainer": "Mnemonics",
+            "infoSupplementairesMegaContainer": "Infos supplémentaires"
+        }
+        
+        active_blacklist = []
+        for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer", "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]:
+            field_name = sec_to_field.get(sec)
+            has_links = False
+            if field_name and field_name in note:
+                val = note[field_name]
+                if "clickable_cards" in val or "data-nid" in val or re.search(r'\b1\d{12}\b', val):
+                    has_links = True
+            if not has_links:
+                active_blacklist.append(sec)
+                
+        blacklist_selectors = [f"#dlg_preview_{sec}" for sec in active_blacklist]
+        blacklist_selectors.append("#dlg_preview_FSRS_status")
+        blacklist_css = ", ".join(blacklist_selectors) + " { display: none !important; }\n"
+        
+        scoped_css = f"<style>\n{blacklist_css}{preview_css}\n</style>"
 
         nav_script = r"""
         <script>
         (function() {
+            var lastCmd = null;
+            var lastCmdTime = 0;
             function pycmd(cmd) {
-                if (typeof bridgeCommand !== 'undefined') {
-                    bridgeCommand(cmd);
-                } else if (typeof window.pycmd !== 'undefined') {
+                var now = Date.now();
+                if (cmd === lastCmd && now - lastCmdTime < 100) {
+                    return;
+                }
+                lastCmd = cmd;
+                lastCmdTime = now;
+
+                if (window.pycmd && window.pycmd !== pycmd) {
                     window.pycmd(cmd);
-                } else {
-                    window.location.href = 'pycmd:' + cmd;
+                } else if (typeof bridgeCommand !== 'undefined') {
+                    bridgeCommand(cmd);
                 }
             }
+            var sendPycmd = pycmd;
+            window.sendPycmd = pycmd;
+
+            window.cards_ct_click = function(nid) {
+                if (nid) {
+                    pycmd('open_browser:' + nid);
+                }
+            };
+
+            // Event listener délégué pour remplacer les attributs onclick bloqués par CSP
+            document.addEventListener('click', function(e) {
+                var el = e.target;
+                while (el && el !== document.body) {
+                    if (el.getAttribute && el.getAttribute('data-onclick')) {
+                        var clickAttr = el.getAttribute('data-onclick');
+                        if (clickAttr.includes('toggle(')) {
+                            var match = clickAttr.match(/toggle\(['"](.*?)['"]\)/);
+                            if (match && window.toggle) {
+                                window.toggle(match[1]);
+                            }
+                        } else {
+                            try {
+                                new Function(clickAttr).call(el);
+                            } catch(err) {
+                                console.error("Error executing data-onclick:", err);
+                            }
+                        }
+                        break;
+                    }
+                    el = el.parentNode;
+                }
+            }, true);
 
             function _gn(el) {
                 if (!el) return '';
@@ -688,7 +887,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 if (el.getAttribute('data-nid')) return el.getAttribute('data-nid');
                 var s = el.querySelector && el.querySelector('.edn-nid');
                 if (s) return s.textContent.trim();
-                var oc = el.getAttribute('onclick');
+                var oc = el.getAttribute('data-onclick') || el.getAttribute('onclick');
                 if (oc) { var m = oc.match(/\d{10,}/); if (m) return m[0]; }
                 return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
             }
@@ -705,16 +904,212 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                     }
                 });
             }
-            _hideFsrsInfo();
-            setTimeout(_hideFsrsInfo, 100);
-            setTimeout(_hideFsrsInfo, 400);
+            // Masquer les sections vides (par exemple tags / items vides) pour gagner de la place
+            function _hideEmptySections() {
+                document.querySelectorAll('.section').forEach(function(section) {
+                    var items = section.querySelector('.items');
+                    if (items) {
+                        var cleanedHtml = items.innerHTML
+                            .replace(/<!--[\s\S]*?-->/g, '')
+                            .replace(/<br\s*\/?>/gi, '')
+                            .replace(/&nbsp;/gi, '')
+                            .trim();
+                        var hasImage = items.querySelector('img') !== null;
+                        var hasCanvas = items.querySelector('canvas') !== null;
+                        var hasSvg = items.querySelector('svg') !== null;
+                        var hasKbd = items.querySelector('kbd') !== null;
+                        if (cleanedHtml === '' && !hasImage && !hasCanvas && !hasSvg && !hasKbd) {
+                            section.style.setProperty('display', 'none', 'important');
+                            var mega = section.closest('[id*="MegaContainer"]');
+                            if (mega) {
+                                mega.style.setProperty('display', 'none', 'important');
+                            }
+                            if (section.previousElementSibling && section.previousElementSibling.classList.contains('barHider')) {
+                                section.previousElementSibling.style.setProperty('display', 'none', 'important');
+                            }
+                        }
+                    }
+                });
+            }
+            function _capitalizePreview(root) {
+                try {
+                    var elementsToCapitalize = root.querySelectorAll('.items, .items li');
+                    elementsToCapitalize.forEach(function (item) {
+                        var foundLetter = false;
+                        var afterCloze = false;
 
-            var badges = Array.from(document.querySelectorAll('.clickable_cards'));
+                        function capitalizeFirstTextNode(node) {
+                            if (foundLetter) return true;
+
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                var text = node.nodeValue;
+                                var match = text.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
+                                if (match) {
+                                    var index = match.index;
+
+                                    if (afterCloze) {
+                                        var char = text.charAt(index);
+                                        if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                            if (index + 1 < text.length) {
+                                                var next = text.charAt(index + 1);
+                                                if (next === next.toLowerCase() && next !== next.toUpperCase()) {
+                                                    node.nodeValue = text.substring(0, index) + char.toLowerCase() + text.substring(index + 1);
+                                                }
+                                            }
+                                        }
+                                        foundLetter = true;
+                                        return true;
+                                    }
+
+                                    var hasUpperElsewhere = false;
+                                    var wordMatch = text.substring(index).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
+                                    if (wordMatch) {
+                                        var word = wordMatch[0];
+                                        var restOfWord = word.substring(1);
+                                        for (var i = 0; i < restOfWord.length; i++) {
+                                            var char = restOfWord.charAt(i);
+                                            if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                                hasUpperElsewhere = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    var precedingText = '';
+                                    var current = node;
+                                    while (current && current !== item) {
+                                        var sib = current.previousSibling;
+                                        while (sib) {
+                                            precedingText = (sib.textContent || '') + precedingText;
+                                            sib = sib.previousSibling;
+                                        }
+                                        current = current.parentNode;
+                                    }
+                                    precedingText += text.substring(0, index);
+
+                                    var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
+
+                                    if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
+                                        node.nodeValue = text.substring(0, index) + text.charAt(index).toUpperCase() + text.substring(index + 1);
+                                    }
+                                    foundLetter = true;
+                                    return true;
+                                }
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'A' || node.tagName === 'SUP' || node.tagName === 'ANKI-MATHJAX' || node.tagName === 'MJX-CONTAINER' || node.tagName === 'MATH') return false;
+                                if (node.classList && node.classList.contains('cloze')) {
+                                    if (!foundLetter) {
+                                        for (var ci = 0; ci < node.childNodes.length; ci++) {
+                                            if (capitalizeFirstTextNode(node.childNodes[ci])) break;
+                                        }
+                                    }
+                                    afterCloze = true;
+                                    return false;
+                                }
+                                for (var i = 0; i < node.childNodes.length; i++) {
+                                    if (capitalizeFirstTextNode(node.childNodes[i])) return true;
+                                }
+                            }
+                            return false;
+                        }
+                        capitalizeFirstTextNode(item);
+                    });
+                } catch(e) {}
+
+                try {
+                    var clItems = root.querySelectorAll('.cartesLiees');
+                    clItems.forEach(function(container) {
+                        function capitalizeFirstInNode(node) {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                var txt = node.nodeValue;
+                                var m = txt.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
+                                if (m) {
+                                    var idx = m.index;
+                                    var hasUpperElsewhere = false;
+                                    var wordMatch = txt.substring(idx).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
+                                    if (wordMatch) {
+                                        var word = wordMatch[0];
+                                        var restOfWord = word.substring(1);
+                                        for (var i = 0; i < restOfWord.length; i++) {
+                                            var char = restOfWord.charAt(i);
+                                            if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                                hasUpperElsewhere = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    var precedingText = '';
+                                    var current = node;
+                                    while (current && current !== container) {
+                                        var sib = current.previousSibling;
+                                        while (sib) {
+                                            if (sib.tagName === 'BR' || sib.tagName === 'KBD') break;
+                                            precedingText = (sib.textContent || '') + precedingText;
+                                            sib = sib.previousSibling;
+                                        }
+                                        if (sib && (sib.tagName === 'BR' || sib.tagName === 'KBD')) break;
+                                        current = current.parentNode;
+                                    }
+                                    precedingText += txt.substring(0, idx);
+
+                                    var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
+
+                                    if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
+                                        node.nodeValue = txt.substring(0, idx) + txt.charAt(idx).toUpperCase() + txt.substring(idx + 1);
+                                    }
+                                    return true;
+                                }
+                                return false;
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                if (node.tagName === 'KBD' || node.tagName === 'BR' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'SUP') return false;
+                                if (node.tagName === 'SPAN' && node.classList.contains('edn-nid')) return false;
+                                for (var j = 0; j < node.childNodes.length; j++) {
+                                    if (capitalizeFirstInNode(node.childNodes[j])) return true;
+                                }
+                            }
+                            return false;
+                        }
+                        var childNodes = Array.from(container.childNodes);
+                        var segmentStart = true;
+                        for (var ci = 0; ci < childNodes.length; ci++) {
+                            var cnode = childNodes[ci];
+                            if (cnode.nodeName === 'BR') { segmentStart = true; continue; }
+                            if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'KBD') { segmentStart = true; continue; }
+                            if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'SPAN' && cnode.classList.contains('edn-nid')) continue;
+                            if (segmentStart) {
+                                if (capitalizeFirstInNode(cnode)) {
+                                    segmentStart = false;
+                                }
+                            }
+                        }
+                    });
+                } catch(e) {}
+            }
+            function _cleanAll() {
+                _hideFsrsInfo();
+                _hideEmptySections();
+                _capitalizePreview(document);
+            }
+            _cleanAll();
+            setTimeout(_cleanAll, 100);
+            setTimeout(_cleanAll, 400);
+
+            // Utilisez la délégation pour trouver les badges dynamiquement
+            function getBadges() {
+                return Array.from(document.querySelectorAll('.clickable_cards'));
+            }
+
+            var hoverTimer = null;
+            var previewBadgeClicked = false;
             var activeIdx = -1;
 
             function highlightBadge(idx) {
+                var badges = getBadges();
                 if (badges.length === 0) return;
+                
                 badges.forEach(function(b) {
+                    b.classList.remove('edn-selected-badge');
                     b.style.outline = 'none';
                     b.style.boxShadow = 'none';
                     b.style.transform = 'none';
@@ -725,6 +1120,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 
                 activeIdx = idx;
                 var activeBadge = badges[activeIdx];
+                activeBadge.classList.add('edn-selected-badge');
                 activeBadge.style.outline = '2px solid #3b82f6';
                 activeBadge.style.outlineOffset = '1px';
                 activeBadge.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
@@ -733,40 +1129,66 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 activeBadge.focus();
             }
 
-            var hoverTimer = null;
-            var previewBadgeClicked = false;
-            badges.forEach(function(b, idx) {
-                b.addEventListener('mousedown', function(e) {
+            document.addEventListener('mousedown', function(e) {
+                var b = e.target.closest ? e.target.closest('.clickable_cards') : null;
+                if (b) {
                     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
                     previewBadgeClicked = true;
-                });
-                b.addEventListener('click', function(e) {
+                }
+            });
+
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('.clickable_cards') : null;
+                if (b) {
                     e.preventDefault();
                     e.stopPropagation();
                     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
                     previewBadgeClicked = true;
                     var nid = _gn(b);
                     if (nid) {
-                        pycmd('open_browser:' + nid);
+                        sendPycmd('open_browser:' + nid);
                     }
-                });
-                b.addEventListener('mouseover', function(e) {
+                }
+            });
+
+            document.addEventListener('mouseover', function(e) {
+                var b = e.target.closest ? e.target.closest('.clickable_cards') : null;
+                if (b) {
                     previewBadgeClicked = false;
                     var nid = _gn(b);
                     if (nid) {
-                        b.style.outline = '2px solid #3b82f6';
+                        var badges = getBadges();
+                        var idx = badges.indexOf(b);
+                        if (idx >= 0) {
+                            badges.forEach(function(x) {
+                                x.classList.remove('edn-selected-badge');
+                                x.style.outline = 'none';
+                                x.style.boxShadow = 'none';
+                                x.style.transform = 'none';
+                            });
+                            activeIdx = idx;
+                            b.classList.add('edn-selected-badge');
+                            b.style.outline = '2px solid #3b82f6';
+                            b.style.outlineOffset = '1px';
+                            b.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
+                            b.style.transform = 'scale(1.05)';
+                        }
                         if (hoverTimer) clearTimeout(hoverTimer);
                         hoverTimer = setTimeout(function() {
                             if (previewBadgeClicked) return;
-                            pycmd('preview_nested:' + nid);
+                            sendPycmd('preview_nested:' + nid);
                         }, 250); // 250ms hover delay
                     }
-                });
-                b.addEventListener('mouseout', function(e) {
+                }
+            });
+
+            document.addEventListener('mouseout', function(e) {
+                var b = e.target.closest ? e.target.closest('.clickable_cards') : null;
+                if (b) {
                     if (e.relatedTarget && b.contains(e.relatedTarget)) return;
                     if (hoverTimer) clearTimeout(hoverTimer);
                     b.style.outline = 'none';
-                });
+                }
             });
 
             var _kbdNext = (window._ednMiroirKeys && window._ednMiroirKeys.next) || 'n';
@@ -775,19 +1197,33 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             var _kbdBack = (window._ednMiroirKeys && window._ednMiroirKeys.back) || 'z';
 
             document.addEventListener("keydown", function(e) {
-                if (badges.length === 0) {
-                    if (e.key === 'Escape') {
-                        e.preventDefault();
-                        pycmd('escape');
-                    }
-                    if (e.key.toLowerCase() === _kbdBack.toLowerCase()) {
-                        e.preventDefault();
-                        pycmd('preview_back');
-                    }
+                if (e.key === 'Tab' && e.ctrlKey) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    sendPycmd('ctrl_tab_pressed:' + (e.shiftKey ? 'shift' : 'normal'));
+                    return;
+                }
+                var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+                var badges = getBadges();
+
+                // Toujours autoriser le cyclage des cartes dans l'assistant via p (prev)
+                if (k === _kbdPrev.toLowerCase()) {
+                    e.preventDefault();
+                    sendPycmd('preview_key_to_assistant:p');
                     return;
                 }
 
-                var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+                if (badges.length === 0) {
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        sendPycmd('escape');
+                    }
+                    if (k === _kbdBack.toLowerCase()) {
+                        e.preventDefault();
+                        sendPycmd('preview_back');
+                    }
+                    return;
+                }
 
                 if (e.key === 'ArrowDown' || k === _kbdNext.toLowerCase()) {
                     e.preventDefault();
@@ -795,76 +1231,157 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 } else if (e.key === 'ArrowUp') {
                     e.preventDefault();
                     highlightBadge(activeIdx - 1);
-                } else if (k === _kbdPrev.toLowerCase()) {
-                    e.preventDefault();
-                    pycmd('preview_key_to_assistant:p');
                 } else if (k === _kbdOpen.toLowerCase()) {
                     e.preventDefault();
-                    if (activeIdx >= 0 && activeIdx < badges.length) {
-                        var nid = _gn(badges[activeIdx]);
-                        if (nid) pycmd('preview_nested:' + nid);
-                    } else {
+                    var currentActive = document.querySelector('.edn-selected-badge');
+                    var idx = badges.indexOf(currentActive);
+                    if (idx >= 0) {
+                        var nid = _gn(badges[idx]);
+                        if (nid) sendPycmd('preview_nested:' + nid);
+                    } else if (badges.length > 0) {
                         highlightBadge(0);
                     }
                 } else if (k === _kbdBack.toLowerCase()) {
                     e.preventDefault();
-                    pycmd('preview_back');
+                    sendPycmd('preview_back');
                 } else if (e.key === 'Escape') {
                     e.preventDefault();
-                    pycmd('escape');
+                    sendPycmd('escape');
                 } else if (e.key === 'Enter') {
                     e.preventDefault();
-                    if (activeIdx >= 0 && activeIdx < badges.length) {
-                        var nid = _gn(badges[activeIdx]);
-                        if (nid) pycmd('open_browser:' + nid);
+                    var currentActive = document.querySelector('.edn-selected-badge');
+                    var idx = badges.indexOf(currentActive);
+                    if (idx >= 0) {
+                        var nid = _gn(badges[idx]);
+                        if (nid) sendPycmd('open_browser:' + nid);
                     }
                 }
             });
+
+            // --- Clic droit : Apprendre maintenant / Noter ---
+            document.addEventListener('pointerdown', function(e) {
+                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+                var nid = badge ? _gn(badge) : null;
+                if (nid) {
+                    sendPycmd('edn_right_click_nid:' + nid);
+                } else {
+                    sendPycmd('edn_right_click_nid:none');
+                }
+            });
+
+            document.addEventListener('contextmenu', function(e) {
+                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+                var nid = badge ? _gn(badge) : null;
+                if (nid) {
+                    sendPycmd('edn_right_click_nid:' + nid);
+                } else {
+                    sendPycmd('edn_right_click_page:sidebar_preview');
+                }
+            });
+
+            // Image load listener to dynamically resize
+            function _triggerResize() {
+                var card = document.querySelector('.card');
+                var h = card ? card.scrollHeight : document.body.scrollHeight;
+                sendPycmd('preview_resize:' + h);
+            }
+            // Use ResizeObserver to dynamically resize whenever the content height changes
+            try {
+                var cardEl = document.querySelector('.card') || document.body;
+                var lastHeight = 0;
+                var resizeObserver = new ResizeObserver(function(entries) {
+                    var h = Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);
+                    if (h && h !== lastHeight) {
+                        lastHeight = h;
+                        sendPycmd('preview_resize:' + h);
+                    }
+                });
+                resizeObserver.observe(cardEl);
+            } catch(e) {
+                document.addEventListener('load', function(ev) {
+                    if (ev.target && ev.target.tagName === 'IMG') {
+                        _triggerResize();
+                    }
+                }, true);
+            }
         })();
         </script>
         """
 
         try:
+            from aqt.theme import theme_manager
+            is_night = theme_manager.night_mode
+        except:
+            try:
+                is_night = mw.theme_manager.night_mode
+            except AttributeError:
+                try:
+                    from aqt import theme_manager
+                    is_night = theme_manager.night_mode
+                except:
+                    try:
+                        is_night = mw.pm.night_mode()
+                    except:
+                        is_night = False
+        
+        night_script = ""
+        if is_night:
+            night_script = """
+            <script>
+            document.documentElement.classList.add('night-mode', 'nightMode', 'night_mode');
+            if (document.body) document.body.classList.add('night-mode', 'nightMode', 'night_mode');
+            </script>
+            """
+
+        try:
             web.stdHtml(
-                css_link + scoped_css + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
+                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
                 mathjax=True
             )
         except TypeError:
             web.stdHtml(
-                css_link + scoped_css + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
+                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
                 js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
             )
 
         dlg.show()
         dlg.raise_()
+        log("_show_card_preview_popup: dlg shown and raised")
+        dlg.resize(dlg.width(), 200)
 
         # Mettre à jour l'état dans l'assistant
         if _is_widget_alive(parent_widget):
             try:
+                log("_show_card_preview_popup: updating assistant state to true")
                 parent_widget.eval("window._ednPreviewPopupOpen = true;")
-            except:
+            except Exception as e:
+                log(f"_show_card_preview_popup: failed to update assistant state: {e}")
                 pass
 
         # Redimensionner selon le contenu (calcul identique à 'Voir')
         def _quick_resize():
             try:
-                web.evalWithCallback(
-                    "var card = document.querySelector('.card'); var h = card ? card.scrollHeight + 30 : document.body.scrollHeight + 30; h;",
-                    lambda h: _adjust_height(dlg, h)
-                )
+                js = """
+                (function() {
+                    var cardEl = document.querySelector('.card') || document.body;
+                    return Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);
+                })()
+                """
+                web.evalWithCallback(js, lambda h: _adjust_height(dlg, h))
             except Exception:
                 pass
 
         def _try_typeset(attempts=0):
+            """Retry MathJax typeset every 100ms until available (max 1.5s)."""
             def _check(ready):
                 if ready:
                     web.eval(
                         "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
                         "MathJax.typesetPromise().then(function() {"
                         "  setTimeout(function() {"
-                        "    var card = document.querySelector('.card');"
-                        "    var h = card ? card.scrollHeight + 30 : document.body.scrollHeight + 30;"
-                        "    window.location.href = 'pycmd:preview_resize:' + h;"
+                        "    var cardEl = document.querySelector('.card') || document.body;"
+                        "    var h = Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);"
+                        "    if (typeof pycmd !== 'undefined') pycmd('preview_resize:' + h);"
                         "  }, 50);"
                         "}).catch(function(){});"
                     )
@@ -885,24 +1402,65 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
         QTimer.singleShot(500, _quick_resize)
 
     except Exception as ex:
-        print("EDN assistant preview error:", ex)
+        log(f"_show_card_preview_popup general exception: {ex}")
+        print("Editor assistant preview error:", ex)
 
 
 def _adjust_height(dlg, h):
     try:
-        screen = QApplication.primaryScreen().availableGeometry()
-        absolute_max = min(1500, int(screen.height() * 0.95))
+        try:
+            screen = dlg.screen().availableGeometry()
+        except Exception:
+            screen = QApplication.primaryScreen().availableGeometry()
+        
+        y_min = screen.top() + 10
+        y_max = screen.bottom() - 10
+        absolute_max = screen.height() - 40
+
+        # Constrain to parent window if alive
+        parent_widget = getattr(dlg, '_edn_parent_widget', None)
+        if _is_widget_alive(parent_widget):
+            parent_win = parent_widget.window()
+            if _is_widget_alive(parent_win) and parent_win.height() > 100:
+                y_min = parent_win.y() + 10
+                y_max = parent_win.y() + parent_win.height() - 10
+                absolute_max = parent_win.height() - 20
     except Exception:
-        absolute_max = 950
+        y_min = 10
+        y_max = 800
+        absolute_max = 600
+        try:
+            absolute_max = mw.height() - 40
+            y_min = mw.y() + 10
+            y_max = mw.y() + mw.height() - 10
+        except Exception:
+            pass
 
     if h and h > 0:
         try:
-            new_height = min(absolute_max, max(150, int(float(h)) + 20))
+            new_height = min(absolute_max, max(50, int(float(h)) + 16))
         except (ValueError, TypeError):
-            new_height = 350
+            new_height = 200
         dlg.resize(dlg.width(), new_height)
     else:
-        dlg.resize(dlg.width(), 350)
+        dlg.resize(dlg.width(), 200)
+        new_height = 200
+
+
+    try:
+        dlg._edn_web.eval("document.documentElement.style.overflowY = 'auto';")
+    except Exception:
+        pass
+
+    # Slide up if it overflows the bottom of the screen/parent window
+    try:
+        pos = dlg.pos()
+        if pos.y() + new_height > y_max:
+            new_y = max(y_min, y_max - new_height)
+            log(f"_adjust_height: sliding up from y={pos.y()} to new_y={new_y} (height={new_height})")
+            dlg.move(pos.x(), new_y)
+    except Exception as e:
+        print("Error adjusting assistant preview position:", e)
 
 
 
@@ -929,10 +1487,12 @@ def extract_nids_from_fields(note):
 
 def get_fields_recto(fields):
     try:
-        html = fields[0]
-        clean = re.sub(r'<[^>]+>', ' ', html).replace('&nbsp;', ' ')
+        import html as _html
+        raw = fields[0]
+        clean = re.sub(r'<[^>]+>', ' ', raw).replace('&nbsp;', ' ')
         clean = re.sub(r'\s+', ' ', clean).strip()
-        return clean[:100] or "[Vide]"
+        # Décoder les entités HTML résiduelles (&amp; → &, &lt; → <, etc.)
+        return _html.unescape(clean)[:100] or "[Vide]"
     except:
         return "[Erreur]"
 
@@ -990,18 +1550,24 @@ def update_assistant(editor):
     except:
         pass
 
-    if getattr(editor, '_edn_assistant_hidden', False):
+    if getattr(editor, '_editor_assistant_hidden', False):
         return
         
-    assistant = getattr(editor, '_edn_assistant_web', None)
+    assistant = getattr(editor, '_editor_assistant_web', None)
     if not assistant:
         return
+        
+    try:
+        if not assistant.isVisible():
+            return
+    except Exception:
+        pass
     
     # Vérifier que le QWebEngineView n'a pas été détruit par Qt
     try:
         assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
     except RuntimeError:
-        editor._edn_assistant_web = None
+        editor._editor_assistant_web = None
         return
         
     note = editor.note
@@ -1009,7 +1575,7 @@ def update_assistant(editor):
         try:
             assistant.stdHtml(f"<style>{_assistant_css}</style><body><div class='empty'>Veuillez sauvegarder la note d'abord.</div></body>")
         except RuntimeError:
-            editor._edn_assistant_web = None
+            editor._editor_assistant_web = None
         return
 
     current_nid = str(note.id)
@@ -1029,7 +1595,7 @@ def update_assistant(editor):
         try:
             assistant.objectName()
         except RuntimeError:
-            editor._edn_assistant_web = None
+            editor._editor_assistant_web = None
             return
 
         current_note = getattr(editor, 'note', None)
@@ -1048,7 +1614,7 @@ def update_assistant(editor):
         html = f"<style>{_assistant_css}</style>{_shortcuts_script}<body>"
         
         def _card_item_html(n, actions_html="", card_class=""):
-            recto_esc = n['recto'].replace("'", "&#39;").replace('"', '&quot;')
+            recto_esc = n['recto'].replace('&', '&amp;').replace("'", '&#39;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
             nid_badge = f"<span class='card-nid-badge'>{n['nid']}</span>"
             actions_div = f"<div class='card-actions'>{actions_html}</div>" if actions_html else ""
             return f"""
@@ -1059,15 +1625,15 @@ def update_assistant(editor):
             </div>
             """
         
-        # Section 1: Missing mirrors
-        html += "<h3>Liens Entrants (Miroirs manquants)</h3><div class='section'>"
-        if not missing_backlinks:
+        # Section 1: Outgoing without backlink
+        html += "<h3>Liens Sortants (sans retour)</h3><div class='section'>"
+        if not missing_outgoing:
             html += "<div class='empty'>Aucun.</div>"
         else:
-            for n in missing_backlinks:
-                recto_esc = n['recto'].replace("'", "&#39;").replace('"', '&quot;')
-                add_btn = f"<button class='btn-add' data-action='add_mirror' data-nid='{n['nid']}' data-recto='{recto_esc}'>+ Ajouter lien</button>"
-                html += _card_item_html(n, add_btn, "incoming")
+            for n in missing_outgoing:
+                recto_esc = n['recto'].replace('&', '&amp;').replace("'", '&#39;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+                recip_btn = f"<button class='btn-add' data-action='make_reciprocal' data-nid='{n['nid']}'>↔ Rendre réciproque</button>"
+                html += _card_item_html(n, recip_btn, "outgoing")
         html += "</div>"
         
         # Section 2: Complete mirrors
@@ -1079,15 +1645,15 @@ def update_assistant(editor):
                 html += _card_item_html(n, card_class="reciprocal")
         html += "</div>"
         
-        # Section 3: Outgoing without backlink
-        html += "<h3>Liens Sortants (sans retour)</h3><div class='section'>"
-        if not missing_outgoing:
+        # Section 3: Missing mirrors
+        html += "<h3>Liens Entrants (Miroirs manquants)</h3><div class='section'>"
+        if not missing_backlinks:
             html += "<div class='empty'>Aucun.</div>"
         else:
-            for n in missing_outgoing:
-                recto_esc = n['recto'].replace("'", "&#39;").replace('"', '&quot;')
-                recip_btn = f"<button class='btn-add' data-action='make_reciprocal' data-nid='{n['nid']}'>↔ Rendre réciproque</button>"
-                html += _card_item_html(n, recip_btn, "outgoing")
+            for n in missing_backlinks:
+                recto_esc = n['recto'].replace('&', '&amp;').replace("'", '&#39;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+                add_btn = f"<button class='btn-add' data-action='add_mirror' data-nid='{n['nid']}' data-recto='{recto_esc}'>+ Ajouter lien</button>"
+                html += _card_item_html(n, add_btn, "incoming")
         html += "</div>"
         
         html += """
@@ -1100,13 +1666,13 @@ def update_assistant(editor):
                 var nid = btn.getAttribute('data-nid');
                 var recto = btn.getAttribute('data-recto') || '';
                 if (action === 'add_mirror') {
-                    pycmd('add_mirror:' + nid + '|||' + recto);
+                    sendPycmd('add_mirror:' + nid + '|||' + recto);
                 } else if (action === 'make_reciprocal') {
-                    pycmd('make_reciprocal:' + nid);
+                    sendPycmd('make_reciprocal:' + nid);
                 } else if (action === 'preview_card') {
-                    pycmd('preview_card:' + nid);
+                    sendPycmd('preview_card:' + nid);
                 } else if (action === 'open_browser') {
-                    pycmd('open_browser:' + nid);
+                    sendPycmd('open_browser:' + nid);
                 }
                 e.stopPropagation();
                 return;
@@ -1116,18 +1682,34 @@ def update_assistant(editor):
             if (card) {
                 var nid = card.getAttribute('data-nid');
                 if (nid) {
-                    pycmd('open_browser:' + nid);
+                    sendPycmd('open_browser:' + nid);
                 }
             }
         });
-        function pycmd(cmd) {
-            if (typeof bridgeCommand !== 'undefined') {
-                bridgeCommand(cmd);
-            } else if (typeof window.pycmd !== 'undefined') {
-                window.pycmd(cmd);
-            } else {
-                window.location.href = 'pycmd:' + cmd;
+        var _anki_pycmd = window.pycmd;
+        var _anki_bridge = typeof bridgeCommand !== 'undefined' ? bridgeCommand : null;
+        var lastCmd = null;
+        var lastCmdTime = 0;
+        function sendPycmd(cmd) {
+            var now = Date.now();
+            if (cmd === lastCmd && now - lastCmdTime < 100) {
+                return;
             }
+            lastCmd = cmd;
+            lastCmdTime = now;
+
+            var activePycmd = window.pycmd || _anki_pycmd;
+            if (activePycmd && activePycmd !== sendPycmd) {
+                activePycmd(cmd);
+            } else if (_anki_bridge) {
+                _anki_bridge(cmd);
+            } else {
+                console.log("pycmd not ready/available for cmd: " + cmd);
+            }
+        }
+
+        if (!window.pycmd) {
+            window.pycmd = sendPycmd;
         }
 
         var hoverTimer = null;
@@ -1141,7 +1723,7 @@ def update_assistant(editor):
                     currentHoveredNid = nid;
                     var rect = card.getBoundingClientRect();
                     hoverTimer = setTimeout(function() {
-                        pycmd('hover_card:' + nid + '|||' + Math.round(rect.top));
+                        sendPycmd('hover_card:' + nid + '|||' + Math.round(rect.top));
                     }, 150); // 150ms hover delay
                 }
             }
@@ -1153,8 +1735,27 @@ def update_assistant(editor):
                 if (hoverTimer) clearTimeout(hoverTimer);
                 currentHoveredNid = null;
                 hoverTimer = setTimeout(function() {
-                    pycmd('hover_leave');
+                    sendPycmd('hover_leave');
                 }, 100); // 100ms leave delay
+            }
+        });
+        document.addEventListener("pointerdown", function(e) {
+            var card = e.target.closest ? e.target.closest('.card-item') : null;
+            var nid = card ? card.getAttribute('data-nid') : null;
+            if (nid) {
+                sendPycmd('edn_right_click_nid:' + nid);
+            } else {
+                sendPycmd('edn_right_click_nid:none');
+            }
+        });
+
+        document.addEventListener("contextmenu", function(e) {
+            var card = e.target.closest ? e.target.closest('.card-item') : null;
+            var nid = card ? card.getAttribute('data-nid') : null;
+            if (nid) {
+                sendPycmd('edn_right_click_nid:' + nid);
+            } else {
+                e.preventDefault();
             }
         });
 
@@ -1180,7 +1781,7 @@ def update_assistant(editor):
             if (nid) {
                 if (hoverTimer) clearTimeout(hoverTimer);
                 var rect = activeCard.getBoundingClientRect();
-                pycmd('hover_card:' + nid + '|||' + Math.round(rect.top));
+                sendPycmd('hover_card:' + nid + '|||' + Math.round(rect.top));
             }
         }
         
@@ -1191,51 +1792,53 @@ def update_assistant(editor):
         var _kbdBack    = (window._ednMiroirKeys && window._ednMiroirKeys.back)    || 'z';
 
         document.addEventListener("keydown", function(e) {
+            if (e.key === 'Tab' && e.ctrlKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                sendPycmd('ctrl_tab_pressed:' + (e.shiftKey ? 'shift' : 'normal'));
+                return;
+            }
             var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             
             // Si la preview popup est ouverte, relayer les touches n, r, z, Escape
             if (window._ednPreviewPopupOpen) {
                 if (e.key === 'Escape' || k === _kbdNext.toLowerCase() || k === _kbdOpen.toLowerCase() || k === _kbdBack.toLowerCase()) {
                     e.preventDefault();
-                    pycmd('preview_key_forward:' + e.key);
+                    sendPycmd('preview_key_forward:' + e.key);
                     return;
                 }
             }
 
             if (e.key === 'Escape') {
                 e.preventDefault();
-                pycmd('hover_leave');
-                pycmd('escape');
+                sendPycmd('hover_leave');
+                sendPycmd('escape');
                 return;
             }
             var cards = getCards();
             if (cards.length === 0) return;
 
-            // p ou ArrowDown cycles DOWN in assistant list
-            if (e.key === 'ArrowDown' || k === _kbdPrev.toLowerCase()) {
+            // p cycles DOWN in assistant list
+            if (k === _kbdPrev.toLowerCase()) {
                 e.preventDefault();
                 setActiveCard(activeIdx + 1);
-            // ArrowUp cycles UP
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActiveCard(activeIdx - 1);
             // open/r : focaliser la preview popup
             } else if (k === _kbdOpen.toLowerCase()) {
                 if (activeIdx >= 0 && activeIdx < cards.length) {
                     e.preventDefault();
                     var nidR = cards[activeIdx].getAttribute('data-nid');
                     var rect = cards[activeIdx].getBoundingClientRect();
-                    if (nidR) pycmd('focus_preview:' + nidR + '|||' + Math.round(rect.top));
+                    if (nidR) sendPycmd('focus_preview:' + nidR + '|||' + Math.round(rect.top));
                 }
             // back/z : fermer le popup preview
             } else if (k === _kbdBack.toLowerCase()) {
                 e.preventDefault();
-                pycmd('hover_leave');
+                sendPycmd('hover_leave');
             } else if (e.key === 'Enter') {
                 if (activeIdx >= 0 && activeIdx < cards.length) {
                     e.preventDefault();
                     var nidE = cards[activeIdx].getAttribute('data-nid');
-                    if (nidE) pycmd('open_browser:' + nidE);
+                    if (nidE) sendPycmd('open_browser:' + nidE);
                 }
             }
         });
@@ -1245,7 +1848,7 @@ def update_assistant(editor):
         try:
             assistant.stdHtml(html)
         except RuntimeError:
-            editor._edn_assistant_web = None
+            editor._editor_assistant_web = None
 
     if HAS_QUERY_OP:
         op = QueryOp(
@@ -1377,20 +1980,29 @@ def handle_assistant_message(handled, message, context):
             editor = get_active_editor(context)
             anchor = None
             if editor:
-                anchor = getattr(editor, '_edn_assistant_web', None)
+                anchor = getattr(editor, '_editor_assistant_web', None)
             _show_card_preview_popup(nid, parent_widget=anchor)
         except Exception as e:
             print("Erreur preview_card:", e)
         return (True, None)
     elif message.startswith("hover_card:"):
         try:
+            from .logger import log
+            log(f"handle_assistant_message: hover_card received message={message}")
+            try:
+                from .linked_cards import _last_gui_close_time
+                import time
+                if time.time() - _last_gui_close_time < 1.0:
+                    return (True, None)
+            except Exception:
+                pass
             parts = message[len("hover_card:"):].split("|||")
             nid = parts[0]
             y_offset = int(parts[1]) if len(parts) > 1 else 0
             editor = get_active_editor(context)
             anchor = None
             if editor:
-                anchor = getattr(editor, '_edn_assistant_web', None)
+                anchor = getattr(editor, '_editor_assistant_web', None)
             _show_card_preview_popup(nid, parent_widget=anchor, y_offset=y_offset)
         except Exception as e:
             print("Erreur hover_card:", e)
@@ -1404,7 +2016,7 @@ def handle_assistant_message(handled, message, context):
             editor = get_active_editor(context)
             anchor = None
             if editor:
-                anchor = getattr(editor, '_edn_assistant_web', None)
+                anchor = getattr(editor, '_editor_assistant_web', None)
             _show_card_preview_popup(nid, parent_widget=anchor, y_offset=y_offset)
             if _is_preview_popup_alive():
                 _preview_popup.activateWindow()
@@ -1414,6 +2026,8 @@ def handle_assistant_message(handled, message, context):
         return (True, None)
  
     elif message == "hover_leave":
+        from .logger import log
+        log("handle_assistant_message: hover_leave received")
         check_hide_preview()
         return (True, None)
  
@@ -1422,10 +2036,36 @@ def handle_assistant_message(handled, message, context):
         editor = get_active_editor(context)
         _close_editor(editor)
         return (True, None)
-
+ 
+    elif message.startswith("ctrl_tab_pressed:"):
+        try:
+            is_shift = (message[len("ctrl_tab_pressed:"):] == "shift")
+            editor = get_active_editor(context)
+            if editor:
+                win = editor.parentWindow or mw
+                tab_key = getattr(Qt.Key, "Key_Tab", None) or getattr(Qt, "Key_Tab", None)
+                ctrl_modifier = getattr(Qt.KeyboardModifier, "ControlModifier", None) or getattr(Qt, "ControlModifier", None)
+                shift_modifier = getattr(Qt.KeyboardModifier, "ShiftModifier", None) or getattr(Qt, "ShiftModifier", None)
+                
+                mods = ctrl_modifier
+                if is_shift:
+                    mods |= shift_modifier
+                
+                new_event = QKeyEvent(
+                    QEvent.Type.KeyPress,
+                    tab_key,
+                    mods
+                )
+                QCoreApplication.postEvent(win, new_event)
+        except Exception as e:
+            print("Error handling ctrl_tab_pressed:", e)
+        return (True, None)
+ 
     elif message.startswith("preview_key_forward:"):
         try:
+            from .logger import log
             key = message[len("preview_key_forward:"):]
+            log(f"handle_assistant_message: preview_key_forward received key={key}, alive={_is_preview_popup_alive()}")
             if _is_preview_popup_alive():
                 # Mapper vers la touche physique attendue par le JS de la preview
                 from .edn_menu import get_shortcut
@@ -1445,6 +2085,7 @@ def handle_assistant_message(handled, message, context):
                 elif k_low == kbd_back:
                     mapped_key = "z"
                 
+                log(f"handle_assistant_message: eval dispatching key '{mapped_key}' to popup")
                 _preview_popup._edn_web.eval(
                     f"document.dispatchEvent(new KeyboardEvent('keydown', "
                     f"{{key: '{mapped_key}', bubbles: true, cancelable: true, composed: true}}));"
@@ -1457,9 +2098,9 @@ def handle_assistant_message(handled, message, context):
     return handled
 
 def _setup_assistant_ui(editor):
-    if getattr(editor, '_edn_assistant_setup', False):
+    if getattr(editor, '_editor_assistant_setup', False):
         return
-    editor._edn_assistant_setup = True
+    editor._editor_assistant_setup = True
     
     try:
         # Get the webview's parent layout
@@ -1483,7 +2124,7 @@ def _setup_assistant_ui(editor):
         
         assistant.setMinimumWidth(200)
         assistant.setMaximumWidth(450)
-        assistant.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        assistant.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         # Permettre le focus clavier pour la navigation par flèches et raccourcis
         assistant.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
@@ -1491,7 +2132,7 @@ def _setup_assistant_ui(editor):
         splitter.setSizes([splitter.width(), 0])
         assistant.hide()  # Fermé par défaut — état mémorisé restauré dans on_editor_did_init
         
-        editor._edn_assistant_web = assistant
+        editor._editor_assistant_web = assistant
         
     except Exception as e:
         print("Failed to setup editor assistant:", e)
@@ -1508,7 +2149,7 @@ def _restore_assistant_state(editor):
         if _get_assistant_should_open():
             _show_assistant(editor)
     except Exception as e:
-        print("EDN assistant: restore state error:", e)
+        print("Editor assistant: restore state error:", e)
 
 def toggle_assistant(editor):
     """Affiche ou masque le panneau assistant (cartes miroir).
@@ -1517,13 +2158,13 @@ def toggle_assistant(editor):
     Le panneau commence caché et s'affiche sur Ctrl+Alt+B.
     Mémorise l'état pour la prochaine session.
     """
-    if not getattr(editor, '_edn_assistant_setup', False):
+    if not getattr(editor, '_editor_assistant_setup', False):
         # Setup non encore fait : le faire maintenant
         _setup_assistant_ui(editor)
         QTimer.singleShot(150, lambda: _show_assistant(editor))
         return
 
-    assistant = getattr(editor, '_edn_assistant_web', None)
+    assistant = getattr(editor, '_editor_assistant_web', None)
     if not assistant:
         return
 
@@ -1538,7 +2179,7 @@ def toggle_assistant(editor):
 
 def _show_assistant(editor):
     """Affiche le panneau assistant et le met à jour."""
-    assistant = getattr(editor, '_edn_assistant_web', None)
+    assistant = getattr(editor, '_editor_assistant_web', None)
     if not assistant:
         return
     splitter = assistant.parent()
@@ -1556,14 +2197,14 @@ def _show_assistant(editor):
 
 def on_editor_did_load_note(editor):
     # Ne mettre à jour que si le panneau est visible (évite les requêtes DB inutiles)
-    assistant = getattr(editor, '_edn_assistant_web', None)
+    assistant = getattr(editor, '_editor_assistant_web', None)
     if assistant:
         try:
             assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
             if assistant.isVisible():
                 QTimer.singleShot(200, lambda: update_assistant(editor))
         except RuntimeError:
-            editor._edn_assistant_web = None
+            editor._editor_assistant_web = None
 
 def init_assistant():
     gui_hooks.editor_did_init.append(on_editor_did_init)

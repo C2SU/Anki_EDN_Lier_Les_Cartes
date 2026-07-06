@@ -24,6 +24,10 @@ Cet addon permet de créer des liens entre vos cartes Anki facilement, facilitan
 Cet addon intègre les fonctionnalités suivantes (aucune installation externe requise) :
 - [**Link Cards**](https://ankiweb.net/shared/info/1170639320) : Fonctionnalités complètes de liaison
 - [**Open Multiple Windows**](https://ankiweb.net/shared/info/354407385) : Support multi-fenêtres pour le browser
+- [**Learn Now**](https://ankiweb.net/shared/info/1021636467) : Intégration des options "Apprendre maintenant" et "Noter la carte" (desuspend automatique inclus) au clic droit sur les previews et badges NID
+
+Il propose également une intégration avec :
+- [**BetterSearch**](https://ankiweb.net/shared/info/1052724801) : Intégration de la recherche améliorée, auto-complétion et suggestions d'opérateurs dans la barre de recherche du dialogue (si installé). Remerciements particuliers à l'auteur de BetterSearch pour cet excellent outil de recherche.
 
 ## 🚀 Installation
 

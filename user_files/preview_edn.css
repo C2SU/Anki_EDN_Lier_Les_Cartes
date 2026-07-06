@@ -1,0 +1,307 @@
+/* ==========================================================================
+   PREVIEW EDN STYLES (preview_edn.css)
+   Ce fichier contient toutes les règles d'affichage des aperçus de cartes.
+   Vous pouvez le modifier librement pour personnaliser le rendu.
+   ========================================================================== */
+
+/* --- Configuration globale des pages d'aperçu --- */
+html, body {
+    margin: 0 !important;
+    font-size: 13px;
+    overflow-x: hidden;
+    overflow-y: auto !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* --- Éléments à masquer dans les aperçus --- */
+[id*='FSRS'], [id*='fsrs'], .fsrs-info {
+    display: none !important;
+}
+
+#tagsMegaContainer, .tags, .items.tags, [id*='tagsMegaContainer'], [id*='tags'] {
+    display: none !important;
+}
+
+
+hr {
+    display: none !important;
+}
+
+.edn-nid {
+    display: none !important;
+}
+
+.clickable_cards .edn-nid {
+    display: inline !important;
+    font-size: 14px !important;
+    line-height: 14px !important;
+}
+
+.edn-nid[style*="display:none"],
+.edn-nid[style*="display: none"],
+.clickable_cards .edn-nid[style*="display:none"],
+.clickable_cards .edn-nid[style*="display: none"],
+#edn-preview-box .edn-nid[style*="display:none"],
+#edn-preview-box .edn-nid[style*="display: none"] {
+    display: none !important;
+}
+
+/* --- Mise en page de la carte d'aperçu --- */
+.card > *:last-child {
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+.card {
+    background: transparent !important;
+    background-color: transparent !important;
+    margin: 0 !important;
+    padding: 6px 8px !important;
+    font-size: 18px !important;
+    line-height: 1.35 !important;
+    max-width: 100% !important;
+    text-align: left !important;
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* --- Alignements des champs (Recto / Verso) --- */
+.preview-verso {
+    text-align: left !important;
+}
+
+.preview-recto {
+    text-align: center !important;
+}
+
+.recto, .recto * {
+    text-align: center !important;
+}
+
+.answer, .answer *, .tags, .tags * {
+    text-align: left !important;
+}
+
+a {
+    font-size: 0.85em !important;
+}
+
+/* --- Sections et barres latérales (Style EDN) --- */
+.section {
+    display: flex !important;
+    margin: 1px 0 !important;
+    padding: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    border-width: 1.5px !important;
+}
+
+div[class*='section'] {
+    display: flex !important;
+}
+
+.items {
+    margin-left: 8px !important;
+    margin-right: 8px !important;
+    padding: 1px 0 !important;
+    min-height: 0 !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+}
+
+.items, .items span, .items div, .items p, .items li, .items ul, .items ol {
+    font-size: 18px !important;
+}
+
+.items ul, .items ol {
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-left: 18px !important;
+}
+
+.items li {
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+.items ul ul, .items ol ol, .items ul ol, .items ol ul {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+.items > span ul, .items > span ol {
+    padding-left: 18px !important;
+    margin: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+.items li > ul, .items li > ol {
+    padding-left: 14px !important;
+    margin: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+.items > span {
+    display: block !important;
+}
+
+.items.answer {
+    padding: 1px 0 !important;
+}
+
+.bar {
+    flex: 0 0 31px !important;
+    width: 31px !important;
+    min-height: 31px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background-size: 23px !important;
+    border-right-width: 1px !important;
+}
+
+.barHider {
+    display: none !important;
+}
+
+br {
+    display: block !important;
+    content: '' !important;
+    margin: 2px 0 !important;
+}
+
+.card > br:first-child {
+    display: none !important;
+}
+
+.card > br:last-child {
+    display: none !important;
+}
+
+div:empty:not(.bar), p:empty {
+    display: none !important;
+}
+
+/* --- Badges cliquables --- */
+.clickable_cards {
+    display: inline-block !important;
+    vertical-align: middle !important;
+    box-sizing: border-box !important;
+    font-size: 14px !important;
+    height: auto !important;
+    line-height: 14px !important;
+    padding: 3px 5px !important;
+    margin: 3px !important;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.clickable_cards * {
+    font-size: 14px !important;
+    line-height: 14px !important;
+}
+
+.clickable_cards:hover {
+    background-color: #3b82f6 !important;
+    color: white !important;
+}
+
+.items.cartesLiees {
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    margin-left: 0 !important;
+}
+
+.cartesLiees br, .items.cartesLiees br {
+    flex-basis: 100% !important;
+    width: 100% !important;
+    height: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+    content: "" !important;
+}
+
+.cloze {
+    color: orange !important;
+    font-weight: bold !important;
+}
+
+.cloze-inactive {
+    color: orange !important;
+    font-weight: bold !important;
+}
+
+/* ==========================================================================
+   Règles spécifiques pour la bulle d'aperçu au survol (#edn-preview-box)
+   ========================================================================== */
+#edn-preview-box {
+    max-width: 480px !important;
+    width: fit-content !important;
+    min-width: 250px !important;
+    padding: 6px 6px 12px 6px !important;
+    box-sizing: border-box !important;
+}
+
+#edn-preview-box .card {
+    padding: 6px 8px !important;
+}
+
+#edn-preview-box .edn-preview-isolated > *:last-child {
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+#edn-preview-box .edn-preview-isolated {
+    overflow: visible;
+    padding: 0 !important;
+}
+
+#edn-preview-box .edn-nid {
+    display: inline !important;
+}
+
+/* Force vertical scrollbar to be visible and styled beautifully when there is overflow */
+::-webkit-scrollbar {
+    width: 10px !important;
+    height: 10px !important;
+    background: transparent !important;
+}
+::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.03) !important;
+    border-radius: 5px !important;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.45) !important;
+    border-radius: 5px !important;
+    border: 2px solid transparent !important;
+    background-clip: padding-box !important;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.65) !important;
+    border: 2px solid transparent !important;
+    background-clip: padding-box !important;
+}
+
+/* Night mode scrollbars */
+.night-mode ::-webkit-scrollbar-track, .nightMode ::-webkit-scrollbar-track, .night_mode ::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.03) !important;
+}
+.night-mode ::-webkit-scrollbar-thumb, .nightMode ::-webkit-scrollbar-thumb, .night_mode ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.45) !important;
+}
+.night-mode ::-webkit-scrollbar-thumb:hover, .nightMode ::-webkit-scrollbar-thumb:hover, .night_mode ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.65) !important;
+}

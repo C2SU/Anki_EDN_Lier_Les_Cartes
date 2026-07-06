@@ -26,8 +26,17 @@ kbd.clickable_cards {
 kbd.clickable_cards:hover { 
   color: #BD93BD;
 }
+kbd.clickable_cards:focus,
+kbd.clickable_cards:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
 
-.cartesLiees br {
+.cartesLiees br, .items.cartesLiees br {
+  flex-basis: 100% !important;
+  width: 100% !important;
+  height: 0 !important;
+  margin: 0 !important;
   display: block !important;
   content: "" !important;
 }
@@ -48,7 +57,7 @@ kbd.clickable_cards:hover {
   text-align: left;
   display: none;
 }
-.nightMode #edn-preview-box, .night_mode #edn-preview-box {
+.nightMode #edn-preview-box, .night_mode #edn-preview-box, .night-mode #edn-preview-box {
   background-color: #373a41;
   border-color: #e5e6e9 #dfe0e4 #d0d1d5;
   color: #fff;

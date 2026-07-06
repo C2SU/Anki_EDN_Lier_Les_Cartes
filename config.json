@@ -12,5 +12,6 @@
     ],
     "kbd_navigate": "Tab",
     "mirror_link_enabled": true,
+    "mirror_link_on_paste": true,
     "assistant_panel_open": false
 }
