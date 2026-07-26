@@ -157,6 +157,10 @@ div[class*='section'] {
     display: block !important;
 }
 
+.edn-desc, .items > span.edn-desc {
+    display: inline !important;
+}
+
 .items.answer {
     padding: 1px 0 !important;
 }
@@ -305,3 +309,9 @@ div:empty:not(.bar), p:empty {
 .night-mode ::-webkit-scrollbar-thumb:hover, .nightMode ::-webkit-scrollbar-thumb:hover, .night_mode ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.65) !important;
 }
+
+/* Masquer les badges de matières */
+.edn-specialty-icons {
+    display: none !important;
+}
+

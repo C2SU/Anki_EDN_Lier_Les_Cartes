@@ -56,12 +56,86 @@ def _toggle_assistant_from_menu():
     except Exception as e:
         log(f"toggle_assistant error: {e}")
 
-class MirrorSelectionDialog(QDialog):
-    def __init__(self, parent, targets):
+class MirrorTargetRowWidget(QWidget):
+    def __init__(self, parent, nid_str, target_note, fidx, source_note=None):
         super().__init__(parent)
+        self.nid_str = nid_str
+        self.target_note = target_note
+        self.fidx = fidx
+        self.source_note = source_note
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setSpacing(6)
+        
+        # Checkbox
+        self.cb = QCheckBox(self)
+        self.cb.setChecked(True)
+        self.cb.setToolTip(f"ID Note: {nid_str}")
+        layout.addWidget(self.cb)
+        
+        # Target card recto label (recto de la carte cible)
+        target_recto = get_note_recto(target_note, 80)
+        self.target_label = QLabel(target_recto, self)
+        self.target_label.setStyleSheet("font-weight: bold; color: #222222;")
+        self.target_label.setToolTip(f"Carte cible (ID Note: {nid_str})")
+        layout.addWidget(self.target_label)
+        
+        # Target field label/button (champ cible)
+        field_name = target_note.note_type()['flds'][fidx]['name']
+        self.field_btn = QPushButton(f"[{field_name}]", self)
+        self.field_btn.setFlat(True)
+        self.field_btn.setStyleSheet(
+            "QPushButton { color: #0066cc; text-decoration: underline; border: none; background: transparent; text-align: left; padding: 2px; font-style: italic; }"
+            "QPushButton:hover { color: #003399; }"
+        )
+        self.field_btn.setToolTip("Cliquer pour choisir un autre champ de la carte cible")
+        self.field_btn.clicked.connect(self.choose_field)
+        layout.addWidget(self.field_btn)
+        
+        # Separator arrow
+        arrow_label = QLabel("→", self)
+        arrow_label.setStyleSheet("color: #888888; font-weight: bold;")
+        layout.addWidget(arrow_label)
+        
+        # Content of return link in target card (de base: recto de la carte A, modifiable par simple clic)
+        source_recto = get_note_recto(source_note, 80) if source_note else ""
+        self.desc_edit = QLineEdit(source_recto, self)
+        self.desc_edit.setStyleSheet(
+            "QLineEdit { background: #ffffff; border: 1px solid #cccccc; border-radius: 3px; padding: 2px 5px; }"
+            "QLineEdit:focus { border: 1px solid #0066cc; }"
+        )
+        self.desc_edit.setToolTip("Contenu du lien retour dans la carte cible (cliquez pour modifier)")
+        layout.addWidget(self.desc_edit)
+        
+    def choose_field(self):
+        menu = QMenu(self)
+        fields = self.target_note.note_type()['flds']
+        current_name = fields[self.fidx]['name']
+        
+        actions = []
+        for i, fld in enumerate(fields):
+            name = fld['name']
+            action = menu.addAction(name)
+            if name == current_name:
+                action.setCheckable(True)
+                action.setChecked(True)
+            actions.append((action, i, name))
+            
+        selected_action = menu.exec(QCursor.pos())
+        if selected_action:
+            for action, idx, name in actions:
+                if action == selected_action:
+                    self.fidx = idx
+                    self.field_btn.setText(f"[{name}]")
+                    break
+
+class MirrorSelectionDialog(QDialog):
+    def __init__(self, parent, targets, source_note=None):
+        super().__init__(parent)
+        self.source_note = source_note
         self.setWindowTitle("Liens miroirs")
-        self.resize(500, 300)
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(520)
         self.setModal(True)
         
         layout = QVBoxLayout(self)
@@ -70,7 +144,6 @@ class MirrorSelectionDialog(QDialog):
         
         # Info label
         self.info_label = QLabel(
-            "Cette nouvelle carte contient des liens vers d'autres cartes.\n"
             "Voulez-vous créer automatiquement les liens retours (miroirs) ?"
         )
         self.info_label.setWordWrap(True)
@@ -102,18 +175,20 @@ class MirrorSelectionDialog(QDialog):
         if align_top:
             self.scroll_layout.setAlignment(align_top)
             
-        self.checkboxes = []
+        self.checkbox_rows = []
         for nid_str, target_note, fidx in targets:
-            recto = strip_html(target_note.fields[0])[:80] or "[Vide]"
-            target_field_name = target_note.note_type()['flds'][fidx]['name']
-            
-            cb = QCheckBox(f"{recto} (champ [{target_field_name}])")
-            cb.setChecked(True)
-            cb.setToolTip(f"ID Note: {nid_str}")
-            self.scroll_layout.addWidget(cb)
-            self.checkboxes.append((cb, (nid_str, target_note, fidx)))
+            row_widget = MirrorTargetRowWidget(self.scroll_content, nid_str, target_note, fidx, source_note=self.source_note)
+            self.scroll_layout.addWidget(row_widget)
+            self.checkbox_rows.append(row_widget)
             
         self.scroll.setWidget(self.scroll_content)
+        
+        # Set dynamic height for the scroll area based on item count to avoid empty spaces
+        row_height = 32
+        content_height = len(targets) * row_height + 20
+        scroll_height = min(250, max(60, content_height))
+        self.scroll.setFixedHeight(scroll_height)
+        
         layout.addWidget(self.scroll)
         
         # Helper layout for checking/unchecking all
@@ -149,22 +224,27 @@ class MirrorSelectionDialog(QDialog):
             
         layout.addWidget(self.button_box)
         
+        # Adjust dialog size dynamically to fit contents
+        self.adjustSize()
+        
     def select_all(self):
-        for cb, _ in self.checkboxes:
-            cb.setChecked(True)
+        for row_widget in self.checkbox_rows:
+            row_widget.cb.setChecked(True)
             
     def deselect_all(self):
-        for cb, _ in self.checkboxes:
-            cb.setChecked(False)
+        for row_widget in self.checkbox_rows:
+            row_widget.cb.setChecked(False)
             
     def get_selected_targets(self):
-        return [target for cb, target in self.checkboxes if cb.isChecked()]
+        return [
+            (row.nid_str, row.target_note, row.fidx, row.desc_edit.text())
+            for row in self.checkbox_rows if row.cb.isChecked()
+        ]
 
 class InterLinkSelectionDialog(QDialog):
     def __init__(self, parent, pairs):
         super().__init__(parent)
         self.setWindowTitle("Liens croisés")
-        self.resize(500, 300)
         self.setMinimumWidth(450)
         self.setModal(True)
         
@@ -206,11 +286,11 @@ class InterLinkSelectionDialog(QDialog):
             
         self.checkboxes = []
         for target_b, target_c in pairs:
-            nid_b, note_b, _ = target_b
-            nid_c, note_c, _ = target_c
+            nid_b, note_b, _ = target_b[:3]
+            nid_c, note_c, _ = target_c[:3]
             
-            recto_b = strip_html(note_b.fields[0])[:40] or "[Vide]"
-            recto_c = strip_html(note_c.fields[0])[:40] or "[Vide]"
+            recto_b = get_note_recto(note_b, 40)
+            recto_c = get_note_recto(note_c, 40)
             
             cb = QCheckBox(f"{recto_b}  <—>  {recto_c}")
             cb.setChecked(True)
@@ -219,6 +299,13 @@ class InterLinkSelectionDialog(QDialog):
             self.checkboxes.append((cb, (target_b, target_c)))
             
         self.scroll.setWidget(self.scroll_content)
+        
+        # Set dynamic height for the scroll area based on item count to avoid empty spaces
+        row_height = 32
+        content_height = len(pairs) * row_height + 20
+        scroll_height = min(250, max(60, content_height))
+        self.scroll.setFixedHeight(scroll_height)
+        
         layout.addWidget(self.scroll)
         
         # Helper layout for checking/unchecking all
@@ -254,6 +341,9 @@ class InterLinkSelectionDialog(QDialog):
             
         layout.addWidget(self.button_box)
         
+        # Adjust dialog size dynamically to fit contents
+        self.adjustSize()
+        
     def select_all(self):
         for cb, _ in self.checkboxes:
             cb.setChecked(True)
@@ -264,6 +354,31 @@ class InterLinkSelectionDialog(QDialog):
             
     def get_selected_pairs(self):
         return [pair for cb, pair in self.checkboxes if cb.isChecked()]
+
+def update_link_description_in_note(note, target_nid_str, new_desc):
+    """Updates the description of the link to target_nid_str in the fields of note in database."""
+    modified = False
+    new_desc_escaped = new_desc.replace('&', '&amp;').replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
+    
+    # We support standard dashes —, \u2014, –, \u2013, hyphens, and various spaces/nbsp
+    space_pattern = r'(?:\s|&nbsp;|&#160;|\xa0)*'
+    dash_pattern = r'(?:—|\u2014|–|\u2013|-|&mdash;|&ndash;|&#8212;|&#8211;)'
+    
+    pattern_span = r'<span\s+[^>]*class="edn-desc"[^>]*>[^<]*</span>' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
+    pattern_text = r'([^<>\n]*?)' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
+    
+    for i in range(len(note.fields)):
+        content = note.fields[i]
+        if target_nid_str in content:
+            new_content = content
+            if re.search(pattern_span, new_content):
+                new_content = re.sub(pattern_span, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(1)}', new_content)
+            else:
+                new_content = re.sub(pattern_text, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(2)}', new_content)
+            if new_content != content:
+                note.fields[i] = new_content
+                modified = True
+    return modified
 
 def on_add_cards_did_add_note(note: Any) -> None:
     """Triggered after a note has been successfully validated and added from the Add Cards window.
@@ -326,7 +441,7 @@ def on_add_cards_did_add_note(note: Any) -> None:
         # 3. Propose to mirror links
         parent = mw.app.activeWindow() or mw
         
-        dialog = MirrorSelectionDialog(parent, valid_targets)
+        dialog = MirrorSelectionDialog(parent, valid_targets, source_note=note)
         result = dialog.exec()
         
         accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
@@ -336,15 +451,16 @@ def on_add_cards_did_add_note(note: Any) -> None:
                 return
                 
             # 4. Perform the mirroring
-            source_recto = strip_html(note.fields[0])[:240] or "[Vide]"
-            source_recto_escaped = source_recto.replace('"', '&quot;').replace("'", '&#39;')
-            badge_html = (
-                f'<br>{source_recto_escaped}&nbsp;\u2014&nbsp;'
-                f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{source_nid}"'
-                f'><span class="edn-nid">{source_nid}</span></kbd>'
-            )
-            
-            for _, target_note, fidx in selected_targets:
+            for nid_str, target_note, fidx, custom_recto in selected_targets:
+                update_link_description_in_note(note, nid_str, custom_recto)
+                
+                # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
+                source_recto_escaped = custom_recto.replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
+                badge_html = (
+                    f'<br><span class="edn-desc">{source_recto_escaped}</span>&nbsp;\u2014&nbsp;'
+                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{source_nid}"'
+                    f'><span class="edn-nid">{source_nid}</span></kbd>'
+                )
                 current_field_content = target_note.fields[fidx].strip()
                 tb = badge_html
                 if not current_field_content or current_field_content == '<br>':
@@ -352,6 +468,7 @@ def on_add_cards_did_add_note(note: Any) -> None:
                 target_note.fields[fidx] += tb
                 mw.col.update_note(target_note)
                 
+            mw.col.update_note(note)
             tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
             
             # 5. Propose inter-linking between target cards
@@ -362,8 +479,8 @@ def on_add_cards_did_add_note(note: Any) -> None:
                         target_b = selected_targets[i]
                         target_c = selected_targets[j]
                         
-                        nid_b, note_b, _ = target_b
-                        nid_c, note_c, _ = target_c
+                        nid_b, note_b, _, _ = target_b
+                        nid_c, note_c, _, _ = target_c
                         
                         # Check if they already have links to each other
                         already_linked = (
@@ -380,11 +497,11 @@ def on_add_cards_did_add_note(note: Any) -> None:
                         selected_pairs = inter_dialog.get_selected_pairs()
                         if selected_pairs:
                             for target_b, target_c in selected_pairs:
-                                nid_b, note_b, fidx_b = target_b
-                                nid_c, note_c, fidx_c = target_c
+                                nid_b, note_b, fidx_b = target_b[:3]
+                                nid_c, note_c, fidx_c = target_c[:3]
                                 
-                                recto_b = strip_html(note_b.fields[0])[:240] or "[Vide]"
-                                recto_c = strip_html(note_c.fields[0])[:240] or "[Vide]"
+                                recto_b = get_note_recto(note_b, 240)
+                                recto_c = get_note_recto(note_c, 240)
                                 
                                 recto_b_escaped = recto_b.replace('"', '&quot;').replace("'", '&#39;')
                                 recto_c_escaped = recto_c.replace('"', '&quot;').replace("'", '&#39;')
@@ -520,7 +637,101 @@ def init_linked_cards():
     except Exception as e:
         log(f"Failed to patch Editor.saveNow: {e}")
         
+    try:
+        setup_edn_submenu()
+    except Exception as e:
+        log(f"Failed to setup submenu: {e}")
+        
     log("Linked Cards module initialized (Full Restoration).")
+
+def setup_edn_submenu():
+    try:
+        from .edn_menu import get_edn_menu
+        main_menu = get_edn_menu()
+        if not main_menu:
+            return
+            
+        # Search if the submenu "Liens entre les cartes" already exists
+        sub_menu = None
+        for action in main_menu.actions():
+            menu = action.menu()
+            if menu and menu.title() == "Liens entre les cartes":
+                sub_menu = menu
+                break
+                
+        if not sub_menu:
+            sub_menu = QMenu("Liens entre les cartes", main_menu)
+            # Insert before the separator at the bottom
+            actions = main_menu.actions()
+            if len(actions) >= 2:
+                main_menu.insertMenu(actions[-2], sub_menu)
+            else:
+                main_menu.addMenu(sub_menu)
+                
+        # Now add the toggle actions/settings in the submenu
+        config = mw.addonManager.getConfig(__name__) or {}
+        
+        # Check if actions are already added (to avoid duplicates if called multiple times)
+        existing_actions = [a.text() for a in sub_menu.actions()]
+        
+        if "Miroir automatique (sans GUI)" not in existing_actions:
+            action_mirror = QAction("Miroir automatique (sans GUI)", sub_menu)
+            action_mirror.setCheckable(True)
+            action_mirror.setChecked(config.get("mirror_link_on_paste", True))
+            def toggle_mirror(checked):
+                cfg = mw.addonManager.getConfig(__name__) or {}
+                cfg["mirror_link_on_paste"] = checked
+                mw.addonManager.writeConfig(__name__, cfg)
+            action_mirror.triggered.connect(toggle_mirror)
+            sub_menu.addAction(action_mirror)
+            
+        if "Description intelligente" not in existing_actions:
+            action_desc = QAction("Description intelligente", sub_menu)
+            action_desc.setCheckable(True)
+            action_desc.setChecked(config.get("description_intelligente", True))
+            def toggle_desc(checked):
+                cfg = mw.addonManager.getConfig(__name__) or {}
+                cfg["description_intelligente"] = checked
+                mw.addonManager.writeConfig(__name__, cfg)
+            action_desc.triggered.connect(toggle_desc)
+            sub_menu.addAction(action_desc)
+            
+        if "Suggestions de liens" not in existing_actions:
+            action_suggest = QAction("💡 Suggestions de liens", sub_menu)
+            action_suggest.setCheckable(True)
+            action_suggest.setChecked(config.get("suggestions_de_liens", True))
+            def toggle_suggest(checked):
+                cfg = mw.addonManager.getConfig(__name__) or {}
+                cfg["suggestions_de_liens"] = checked
+                mw.addonManager.writeConfig(__name__, cfg)
+            action_suggest.triggered.connect(toggle_suggest)
+            sub_menu.addAction(action_suggest)
+            
+        if "Paramètres..." not in existing_actions:
+            sub_menu.addSeparator()
+            action_settings = QAction("Paramètres...", sub_menu)
+            def open_config_dialog():
+                addon_id = __name__
+                act = mw.addonManager.configAction(addon_id)
+                if act:
+                    act()
+                else:
+                    conf = mw.addonManager.getConfig(addon_id)
+                    if conf is not None:
+                        from aqt.addons import ConfigEditor
+                        if not hasattr(mw, "mgr"):
+                            mw.mgr = mw.addonManager
+                        ConfigEditor(mw, addon_id, conf)
+                    else:
+                        from aqt.utils import showInfo
+                        showInfo("Cet addon n'a pas de configuration configurable.")
+            action_settings.triggered.connect(open_config_dialog)
+            sub_menu.addAction(action_settings)
+
+            
+    except Exception as e:
+        from .logger import log
+        log(f"Linked Cards : Failed to setup submenu: {e}")
 
 
 # on_editor_shortcuts supprimé — les raccourcis Ctrl+Alt+C/L sont gérés
@@ -904,6 +1115,15 @@ if (!window._ednListenersAttached) {
     setTimeout(_ednSetupBadges, 300);
 
     document.addEventListener('keydown', function(e) {
+        var activeEl = document.activeElement || e.target;
+        if (activeEl && (
+            activeEl.tagName === 'INPUT' || 
+            activeEl.tagName === 'TEXTAREA' || 
+            activeEl.isContentEditable ||
+            (activeEl.closest && activeEl.closest('[contenteditable="true"]'))
+        )) {
+            return;
+        }
         var kbdOpen = window._ednKbdOpenCfg || 'n';
         var kbdPreview = window._ednKbdPreviewCfg || 'p';
         var kbdNavigate = window._ednKbdNavigateCfg || 'r';
@@ -919,7 +1139,7 @@ if (!window._ednListenersAttached) {
             e.preventDefault();
             e.stopImmediatePropagation();
             var parentCards = Array.from(document.querySelectorAll('.clickable_cards')).filter(function(c) {
-                return !previewBox || !previewBox.contains(c);
+                return (!previewBox || !previewBox.contains(c)) && (c.offsetWidth > 0 || c.offsetHeight > 0);
             });
             if (parentCards.length > 0) {
                 window._ednPreviewIndex = (window._ednPreviewIndex + 1) % parentCards.length;
@@ -1110,6 +1330,14 @@ if (!window._ednListenersAttached) {
             });
             box.addEventListener("contextmenu", function(e) {
                 window._ednContextMenuActive = true;
+            });
+            window.addEventListener("blur", function() {
+                if (window._ednContextMenuActive) return;
+                box.style.display = "none";
+                window._edn_hover_target = null;
+                window._edn_parent_badge = null;
+                window._ednPositionLocked = false;
+                if (window._ednRestoreScroll) window._ednRestoreScroll();
             });
         }
         return box;
@@ -1412,6 +1640,90 @@ if (!window._ednListenersAttached) {
         window._ednPreviewUpdating = true;
         box.innerHTML = tempDiv.innerHTML;
         _capitalizePreview(box);
+        
+        // Appliquer les styles de rang et de flag selon les préférences EDN
+        try {
+            var prefs = {};
+            try {
+                if (typeof edn_prefs !== "undefined") {
+                    prefs = edn_prefs;
+                } else {
+                    prefs = JSON.parse(localStorage.getItem("edn_card_prefs") || "{}");
+                }
+            } catch(e) {}
+            var showRank = prefs.hasOwnProperty('showRankBadge') ? prefs.showRankBadge : true;
+            var showFlags = prefs.hasOwnProperty('showFlagBorders') ? prefs.showFlagBorders : true;
+
+            var tagsEl = box.querySelector("[id*='tagsData']") || box.querySelector(".tags") || box.querySelector("[id*='tags']");
+            var tags = tagsEl ? tagsEl.innerHTML : "";
+            var rang = tags.includes("Rang::A") ? "A" : tags.includes("Rang::B") ? "B" : tags.includes("Rang::C") ? "C" : "?";
+            
+            if (showRank) {
+                var bars = box.querySelectorAll('.bar, .barHider');
+                for (var i = 0; i < bars.length; i++) {
+                    var b = bars[i];
+                    if (!b.classList.contains('edn-rang-' + rang)) {
+                        b.classList.add('edn-rang-' + rang);
+                    }
+                }
+            }
+            
+            var activeColor = null;
+            if (showFlags) {
+                var flagsEl = box.querySelector("[id*='flagsData']") || box.querySelector("[id*='flags']");
+                var flags = flagsEl ? flagsEl.innerHTML.trim() : "";
+                var flagColorMap = {
+                    'flag1': '#E53E3E', // Rouge
+                    'flag2': '#DD6B20', // Orange
+                    'flag3': '#38A169', // Vert
+                    'flag4': '#3182CE', // Bleu
+                    'flag5': '#D53F8C', // Rose
+                    'flag6': '#00A3C4', // Turquoise
+                    'flag7': '#805AD5'  // Violet
+                };
+                for (var key in flagColorMap) {
+                    if (flags.includes(key)) {
+                        activeColor = flagColorMap[key];
+                        break;
+                    }
+                }
+                if (!activeColor && tags.includes("Difficile")) {
+                    activeColor = '#E53E3E';
+                }
+                if (!activeColor && tags.includes("Bleu")) {
+                    activeColor = '#3182CE';
+                }
+            }
+            
+            var sections = box.getElementsByClassName("section");
+            var hiders = box.getElementsByClassName("barHider");
+            var barsList = box.getElementsByClassName("bar");
+            
+            if (activeColor) {
+                for (var sIdx = 0; sIdx < sections.length; sIdx++) {
+                    sections[sIdx].style.borderColor = activeColor;
+                }
+                for (var hIdx = 0; hIdx < hiders.length; hIdx++) {
+                    hiders[hIdx].style.borderColor = activeColor;
+                }
+                for (var bIdx = 0; bIdx < barsList.length; bIdx++) {
+                    barsList[bIdx].style.borderColor = activeColor;
+                }
+            } else {
+                for (var sIdx = 0; sIdx < sections.length; sIdx++) {
+                    sections[sIdx].style.borderColor = "";
+                }
+                for (var hIdx = 0; hIdx < hiders.length; hIdx++) {
+                    hiders[hIdx].style.borderColor = "";
+                }
+                for (var bIdx = 0; bIdx < barsList.length; bIdx++) {
+                    barsList[bIdx].style.borderColor = "";
+                }
+            }
+        } catch(e) {
+            console.error("Error styling edn-preview-box:", e);
+        }
+        
         
         // Masquer les sections vides (par exemple tags / items vides) pour gagner de la place
         box.querySelectorAll('.section').forEach(function(section) {
@@ -1747,10 +2059,9 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
         recto = ""
         try:
             note = card.note()
-            recto = strip_html(note.fields[0])[:240] if note.fields else ""
+            recto = get_note_recto(note, 240)
         except:
-            pass
-        recto = recto or "[Vide]"
+            recto = "[Vide]"
         recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
         html = (
             f'{recto_escaped} — '
@@ -1829,6 +2140,10 @@ html, body {
     padding: 0 !important;
     height: auto !important;
     min-height: 0 !important;
+}
+
+.edn-specialty-icons {
+    display: none !important;
 }
 
 [id*='FSRS'], [id*='fsrs'], .fsrs-info {
@@ -1960,6 +2275,10 @@ div[class*='section'] {
 
 .items > span {
     display: block !important;
+}
+
+.edn-desc, .items > span.edn-desc {
+    display: inline !important;
 }
 
 .items.answer {
@@ -2168,6 +2487,7 @@ def on_js_message_reviewer(handled, message, context):
                 selectors = [f"#edn-preview-box #edn_preview_{sec}" for sec in actual_hidden]
                 selectors.extend(["#edn-preview-box #edn_preview_FSRS_status"])
                 id_css = ", ".join(selectors) + " { display: none !important; }" if selectors else ""
+                id_css += "\n#edn-preview-box .edn-specialty-icons { display: none !important; }\n"
                 
                 # Charger et scoper l'ensemble du CSS du modèle de la note cible
                 model_css = note.note_type().get('css', '')
@@ -2383,10 +2703,9 @@ def copy_nid_from_browser(browser: Browser):
         recto = ""
         try:
             note = card.note()
-            recto = strip_html(note.fields[0])[:240] if note.fields else ""
+            recto = get_note_recto(note, 240)
         except:
-            pass
-        recto = recto or "[Vide]"
+            recto = "[Vide]"
         recto_escaped = (
             recto.replace('&', '&amp;')
             .replace('"', '&quot;')
@@ -2420,10 +2739,9 @@ def copy_nid_from_editor(editor: Editor):
         nid = str(editor.note.id)
         recto = ""
         try:
-            recto = strip_html(editor.note.fields[0])[:240] if editor.note.fields else ""
+            recto = get_note_recto(editor.note, 240)
         except:
-            pass
-        recto = recto or "[Vide]"
+            recto = "[Vide]"
         recto_escaped = recto.replace('&', '&amp;').replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
         # HTML riche : recto visible dans le badge, NID uniquement dans data-nid + span caché
         # Le texte visible du <kbd> est le recto (pas le NID) pour éviter la duplication
@@ -2715,8 +3033,7 @@ def create_link_for_nid(editor, nid, with_recto=False):
         note = mw.col.get_note(int(nid))
         recto = None
         if with_recto:
-            recto = note.fields[0] if note.fields else ""
-            recto = strip_html(recto)[:240] or "[Vide]"
+            recto = get_note_recto(note, 240, source_note=editor.note)
         LinkInserter(editor).insert_link([(nid, recto)])
     except:
         tooltip(f"Note {nid} non trouvée.")
@@ -2802,7 +3119,7 @@ def _do_editor_init(editor: Editor):
     _current_editor = editor
     
     config = mw.addonManager.getConfig(__name__)
-    trigger = config.get("search_trigger", "nid:") if config else "nid:"
+    trigger = config.get("gui_trigger", "nid:") if config else "nid:"
     trigger_len = len(trigger)
     
     # Injecter les handlers hover preview dans l'éditeur (non disponibles via on_card_render)
@@ -3534,9 +3851,8 @@ def on_js_message(handled, message, context):
             editor = get_active_editor(context)
             if editor and editor.note and editor.note.id:
                 config = mw.addonManager.getConfig(__name__) or {}
-                mirror_systematic = config.get("mirror_link_systematic", False)
                 mirror_on_paste = config.get("mirror_link_on_paste", True)
-                if mirror_systematic or mirror_on_paste:
+                if mirror_on_paste:
                     source_note = editor.note
                     for target_nid in nids:
                         _proposal_queue.add(lambda done, tn=target_nid: _propose_mirror_link(
@@ -3751,14 +4067,151 @@ def _scope_css_for_preview(css_text: str, scope_selector: str) -> str:
     return "\n".join(scoped_rules)
 
 
+def clean_cloze(text):
+    if not text:
+        return ""
+    import re
+    return re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', text)
+
+def detect_smart_label(source_note, target_note):
+    if not source_note or not target_note:
+        return None
+        
+    def get_raw_text(n):
+        if not n or not n.fields:
+            return ""
+        raw = n.fields[0]
+        if not raw:
+            return ""
+        import re
+        clean = re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', raw)
+        clean = re.sub(r'<[^>]+>', ' ', clean).replace('&nbsp;', ' ')
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        import html
+        return html.unescape(clean).lower()
+        
+    t_source = get_raw_text(source_note)
+    t_target = get_raw_text(target_note)
+    
+    if not t_source or not t_target:
+        return None
+        
+    def get_pathology_key(title):
+        title = title.replace("syndrome du", "").replace("syndrome de la", "").replace("syndrome de l'", "").replace("syndrome de", "").replace("syndrome d'", "")
+        title = title.replace("sémiologie du", "").replace("sémiologie de la", "").replace("sémiologie de l'", "").replace("sémiologie de", "").replace("sémiologie d'", "")
+        title = title.replace("diagnostic du", "").replace("diagnostic de la", "").replace("diagnostic de l'", "").replace("diagnostic de", "").replace("diagnostic d'", "")
+        title = title.replace("traitement du", "").replace("traitement de la", "").replace("traitement de l'", "").replace("traitement de", "").replace("traitement d'", "")
+        title = title.replace("évolutions et complications du", "").replace("complications du", "").replace("complications de", "")
+        return title.strip()
+        
+    key_target = get_pathology_key(t_target)
+    key_source = get_pathology_key(t_source)
+    
+    is_target_syndrome = False
+    try:
+        is_target_syndrome = "syndrome" in target_note.note_type()['name'].lower()
+    except:
+        pass
+        
+    is_source_syndrome = False
+    try:
+        is_source_syndrome = "syndrome" in source_note.note_type()['name'].lower()
+    except:
+        pass
+
+    is_parent = False
+    if is_target_syndrome and not is_source_syndrome:
+        if key_target in t_source:
+            is_parent = True
+    elif key_target in t_source and len(key_target) > 5 and len(t_target) < len(t_source):
+        is_parent = True
+        
+    if is_parent:
+        return "Main"
+        
+    is_child = False
+    if is_source_syndrome and not is_target_syndrome:
+        if key_source in t_target or any(key_source in f.lower() for f in target_note.fields):
+            is_child = True
+    elif key_source in t_target and len(key_source) > 5 and len(t_source) < len(t_target):
+        is_child = True
+        
+    if is_child:
+        if any(w in t_target for w in ["traitement", "chirurgie", "thérapeutique", "médical", "infiltration", "corticoïde", "prise en charge"]):
+            return "Traitements"
+        if any(w in t_target for w in ["enmg", "irm", "scanner", "radio", "biologie", "examen", "complémentaire", "diagnostic", "imagerie", "échographie", "radiographie", "ponction"]):
+            return "Examens complémentaires"
+        is_semiology = False
+        try:
+            is_semiology = "sémiologie" in target_note.note_type()['name'].lower()
+        except:
+            pass
+        if is_semiology or any(w in t_target for w in ["signe", "symptôme", "sémiologie", "clinique", "physiopathologie", "déficit", "douleur", "paresthésie"]):
+            return "Signes"
+            
+    return None
+
 def strip_html(text):
     import html as _html
+    text = clean_cloze(text)
     clean = re.sub(r'<[^>]+>', ' ', text)
     clean = clean.replace('&nbsp;', ' ')
     clean = re.sub(r'\s+', ' ', clean)
     clean = clean.strip()
     # Décoder les entités HTML résiduelles (&amp; → &, &lt; → <, etc.)
     return _html.unescape(clean)
+
+def get_note_recto(note, limit=None, source_note=None):
+    if not note or not note.fields:
+        return "[Vide]"
+        
+    config = mw.addonManager.getConfig(__name__) or {}
+    desc_intelligent = config.get("description_intelligente", True)
+    
+    if desc_intelligent and source_note:
+        smart_label = detect_smart_label(source_note, note)
+        if smart_label:
+            return smart_label
+            
+    is_cloze = False
+    try:
+        is_cloze = note.note_type()['type'] == 1
+    except:
+        pass
+        
+    if desc_intelligent and is_cloze:
+        try:
+            # 1. Essayer d'extraire C2 en priorité
+            c2_contents = []
+            for field in note.fields:
+                matches = re.findall(r'\{\{c2::(.*?)(?:::[^}]+)?\}\}', field, re.IGNORECASE | re.DOTALL)
+                for m in matches:
+                    clean = strip_html(m)
+                    if clean:
+                        c2_contents.append(clean)
+            if c2_contents:
+                val = " ".join(c2_contents)
+                return val[:limit] if limit else val
+
+            # 2. Sinon essayer C1
+            c1_contents = []
+            for field in note.fields:
+                matches = re.findall(r'\{\{c1::(.*?)(?:::[^}]+)?\}\}', field, re.IGNORECASE | re.DOTALL)
+                for m in matches:
+                    clean = strip_html(m)
+                    if clean:
+                        c1_contents.append(clean)
+            if c1_contents:
+                val = " ".join(c1_contents)
+                return val[:limit] if limit else val
+        except:
+            pass
+
+    for field in note.fields:
+        clean = strip_html(field)
+        if clean:
+            return clean[:limit] if limit else clean
+    return "[Vide]"
 
 class LinkInserter:
     def __init__(self, editor):
@@ -3777,7 +4230,7 @@ class LinkInserter:
             else:
                 recto_escaped = recto.replace('&', '&amp;').replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
                 html_parts.append(
-                    f'{recto_escaped}&nbsp;—&nbsp;'
+                    f'<span class="edn-desc">{recto_escaped}</span>&nbsp;—&nbsp;'
                     f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
                     f'><span class="edn-nid">{nid}</span></kbd>'
                 )
@@ -3954,14 +4407,12 @@ class LinkInserter:
         
         # --- Lien miroir : proposer de lier la carte source dans la carte cible ---
         config = mw.addonManager.getConfig(__name__) or {}
-        mirror_systematic = config.get("mirror_link_systematic", False)
-        if mirror_systematic or mirror_requested:
+        if mirror_requested:
             source_note = self.editor.note
             if source_note and source_note.id:
-                for target_nid, _ in items:
-                    _proposal_queue.add(lambda done, tn=target_nid: _propose_mirror_link(
-                        self.editor, source_note, tn, done
-                    ))
+                _proposal_queue.add(lambda done: _propose_mirror_links_group(
+                    self.editor, source_note, items, done
+                ))
                 if len(items) > 1:
                     target_nids = [int(nid) for nid, _ in items]
                     _proposal_queue.add(lambda done: _propose_cross_links(
@@ -4055,7 +4506,7 @@ def _add_badge_to_note(target_nid, fidx, source_nid, source_recto):
     source_recto_escaped = source_recto_badge.replace('"', '&quot;').replace("'", '&#39;')
     
     badge_html = (
-        f'<br>{source_recto_escaped}&nbsp;\u2014&nbsp;'
+        f'<br><span class="edn-desc">{source_recto_escaped}</span>&nbsp;\u2014&nbsp;'
         f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{source_nid}"'
         f'><span class="edn-nid">{source_nid}</span></kbd>'
     )
@@ -4068,71 +4519,125 @@ def _add_badge_to_note(target_nid, fidx, source_nid, source_recto):
     mw.col.update_note(target_note)
 
 
-def _propose_mirror_link(editor, source_note, target_nid_str, on_done):
-    """Propose de lier la carte source dans la carte cible (lien miroir)."""
+def _propose_mirror_links_group(editor, source_note, items, on_done):
+    """Propose de lier la carte source dans les cartes cibles de manière groupée."""
     try:
-        target_nid = int(target_nid_str)
-        target_note = mw.col.get_note(target_nid)
+        if not source_note or not source_note.id:
+            on_done()
+            return
+            
+        valid_targets = []
         source_nid = str(source_note.id)
         
-        def _got_field_idx(idx_str):
+        # Retrieve all target notes and default field indices
+        for target_nid_str, _ in items:
             try:
-                field_idx = int(idx_str) if idx_str and idx_str != 'null' else -1
-            except:
-                field_idx = -1
-            try:
-                _do_mirror(field_idx)
-            except Exception as e:
-                log(f"Error in _do_mirror: {e}")
-                on_done()
+                target_nid = int(target_nid_str)
+                target_note = mw.col.get_note(target_nid)
+                
+                # Check if it already has a link to source_nid
+                if any(source_nid in field for field in target_note.fields):
+                    continue
+                
+                # Determine target field
+                fidx_target = _find_target_field_idx(target_note, source_note)
+                valid_targets.append((target_nid_str, target_note, fidx_target))
+            except Exception:
+                pass
+                
+        if not valid_targets:
+            on_done()
+            return
+            
+        parent = editor.widget if editor.widget else mw
+        dialog = MirrorSelectionDialog(parent, valid_targets, source_note=source_note)
+        result = dialog.exec()
         
-        def _do_mirror(fidx):
-            try:
-                # Re-load target note to get fresh data
-                fresh_target_note = mw.col.get_note(target_nid)
-                fidx_target = _find_target_field_idx(fresh_target_note, source_note, fidx)
+        accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
+        if result == accepted_code:
+            selected_targets = dialog.get_selected_targets()
+            if selected_targets:
+                for nid_str, target_note, fidx, custom_recto in selected_targets:
+                    # Update description in editor (JavaScript)
+                    js = f"""
+                    (function() {{
+                        let nid = "{nid_str}";
+                        let newDesc = `{custom_recto.replace('`', '\\`').replace('$', '\\$')}`;
+                        let kbds = [];
+                        let allKbds = Array.from(document.querySelectorAll('kbd.clickable_cards[data-nid="' + nid + '"]'));
+                        document.querySelectorAll('anki-editable').forEach(edn => {{
+                            let root = edn.shadowRoot || edn;
+                            root.querySelectorAll('kbd.clickable_cards[data-nid="' + nid + '"]').forEach(k => {{
+                                if (!kbds.includes(k)) kbds.push(k);
+                            }});
+                        }});
+                        allKbds.forEach(k => {{
+                            if (!kbds.includes(k)) kbds.push(k);
+                        }});
+                        
+                        kbds.forEach(kbd => {{
+                            let foundSpan = null;
+                            let curr = kbd.previousSibling;
+                            for (let i = 0; i < 4 && curr; i++) {{
+                                if (curr.nodeType === Node.ELEMENT_NODE && curr.classList && curr.classList.contains('edn-desc')) {{
+                                    foundSpan = curr;
+                                    break;
+                                }}
+                                curr = curr.previousSibling;
+                            }}
+                            if (foundSpan) {{
+                                foundSpan.textContent = newDesc;
+                            }} else {{
+                                let currNode = kbd.previousSibling;
+                                for (let i = 0; i < 3 && currNode; i++) {{
+                                    if (currNode.nodeType === Node.TEXT_NODE) {{
+                                        let val = currNode.nodeValue;
+                                        let match = val.match(/^(.*?)([\\s\\xa0\\u00a0]*[\\u2014\\u2013-][\\s\\xa0\\u00a0]*)$/);
+                                        if (match) {{
+                                            currNode.nodeValue = newDesc + match[2];
+                                            break;
+                                        }} else {{
+                                            let lastDashIdx = -1;
+                                            for (let char of ['\\u2014', '\\u2013', '-']) {{
+                                                let idx = val.lastIndexOf(char);
+                                                if (idx > lastDashIdx) {{
+                                                    lastDashIdx = idx;
+                                                }}
+                                            }}
+                                            if (lastDashIdx >= 0) {{
+                                                currNode.nodeValue = newDesc + val.substring(lastDashIdx);
+                                                break;
+                                            }}
+                                        }}
+                                    }}
+                                    currNode = currNode.previousSibling;
+                                }}
+                            }}
+                        }});
+                        
+                        let active = document.activeElement;
+                        if (active) {{
+                            let dispatchTarget = active.closest ? active.closest('anki-editable') : active;
+                            if (dispatchTarget) {{
+                                dispatchTarget.dispatchEvent(new Event("input", {{ bubbles: true, composed: true }}));
+                            }}
+                        }}
+                    }})();
+                    """
+                    editor.web.eval(js)
+                    
+                    # Update description in DB for the source note (if it has already been saved)
+                    update_link_description_in_note(source_note, nid_str, custom_recto)
+                    
+                    # Add mirror badge to the target note
+                    # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
+                    source_nid = str(source_note.id)
+                    _add_badge_to_note(int(nid_str), fidx, source_nid, custom_recto)
+                    
+                mw.col.update_note(source_note)
+                tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
                 
-                # Vérifier si le lien miroir existe déjà dans la note cible
-                if any(source_nid in field for field in fresh_target_note.fields):
-                    log(f"Lien miroir ignoré : la carte cible {target_nid_str} contient déjà un lien vers {source_nid}")
-                    return
-                
-                # Récupérer le recto de la note source pour l'affichage dans la popup
-                source_recto = ""
-                try:
-                    source_recto = strip_html(source_note.fields[0])[:80] if source_note.fields else ""
-                except:
-                    pass
-                source_recto = source_recto or "[Vide]"
-                
-                target_recto = ""
-                try:
-                    target_recto = strip_html(fresh_target_note.fields[0])[:80] if fresh_target_note.fields else ""
-                except:
-                    pass
-                target_recto = target_recto or "[Vide]"
-                
-                # Popup de confirmation
-                msg = QMessageBox(editor.widget if editor.widget else mw)
-                msg.setWindowTitle("Lien miroir")
-                target_field_name = fresh_target_note.note_type()['flds'][fidx_target]['name']
-                msg.setText(
-                    f"Lier aussi la carte source dans la carte cible ?\n\n"
-                    f"→ Ajouter un lien vers :\n"
-                    f"   {source_recto}\n"
-                    f"   dans le champ [{target_field_name}] de la carte :\n"
-                    f"   {target_recto}"
-                )
-                msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-                msg.setDefaultButton(QMessageBox.StandardButton.Ok)
-                
-                result = msg.exec()
-                if result == QMessageBox.StandardButton.Ok:
-                    source_recto_badge = strip_html(source_note.fields[0])[:240] if source_note.fields else "[Vide]"
-                    _add_badge_to_note(target_nid, fidx_target, source_nid, source_recto_badge)
-                    tooltip(f"Lien miroir créé dans la carte {target_nid_str}")
-                
-                # Refresh assistant side panel in all cases after dialog decision
+                # Refresh assistant side panel
                 from .editor_assistant import update_assistant
                 if editor:
                     try:
@@ -4140,19 +4645,15 @@ def _propose_mirror_link(editor, source_note, target_nid_str, on_done):
                     except Exception as se:
                         log(f"Error saving editor/updating assistant: {se}")
                         update_assistant(editor)
-            finally:
-                on_done()
-        
-        try:
-            editor.web.evalWithCallback(
-                "(typeof window._ednSavedFieldIndex !== 'undefined') ? window._ednSavedFieldIndex : -1;",
-                _got_field_idx
-            )
-        except Exception:
-            _do_mirror(-1)
     except Exception as e:
-        log(f"Mirror link error: {e}")
+        log(f"Error in _propose_mirror_links_group: {e}")
+    finally:
         on_done()
+
+
+def _propose_mirror_link(editor, source_note, target_nid_str, on_done):
+    """Propose de lier la carte source dans la carte cible (lien miroir)."""
+    _propose_mirror_links_group(editor, source_note, [(target_nid_str, None)], on_done)
 
 
 class CrossLinksSelectionDialog(QDialog):
@@ -4206,8 +4707,8 @@ class CrossLinksSelectionDialog(QDialog):
         for item in links:
             note1, note2, _, _, _, _ = item
             
-            recto1 = strip_html(note1.fields[0])[:60] or "[Vide]"
-            recto2 = strip_html(note2.fields[0])[:60] or "[Vide]"
+            recto1 = get_note_recto(note1, 60)
+            recto2 = get_note_recto(note2, 60)
             
             cb = QCheckBox(f"{recto1}  <—>  {recto2}")
             cb.setChecked(True)
@@ -4335,17 +4836,17 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                         if req1:
                             try:
                                 note2_fresh = mw.col.get_note(note2.id)
-                                r2_clean = strip_html(note2_fresh.fields[0])[:240] or "[Vide]"
+                                r2_clean = get_note_recto(note2_fresh, 240, source_note=note1)
                             except:
-                                r2_clean = strip_html(note2.fields[0])[:240] or "[Vide]"
+                                r2_clean = get_note_recto(note2, 240, source_note=note1)
                             _add_badge_to_note(note1.id, fidx1, str(note2.id), r2_clean)
                         # note2 -> note1
                         if req2:
                             try:
                                 note1_fresh = mw.col.get_note(note1.id)
-                                r1_clean = strip_html(note1_fresh.fields[0])[:240] or "[Vide]"
+                                r1_clean = get_note_recto(note1_fresh, 240, source_note=note2)
                             except:
-                                r1_clean = strip_html(note1.fields[0])[:240] or "[Vide]"
+                                r1_clean = get_note_recto(note1, 240, source_note=note2)
                             _add_badge_to_note(note2.id, fidx2, str(note1.id), r1_clean)
                     
                     tooltip("Liaisons créées entre les autres cartes.")
@@ -4395,6 +4896,13 @@ class LinkedCardsDialog(QDialog):
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._on_search_timeout)
+        
+        self._suggestions_cache = None
+        self._all_target_nids = []
+        self._search_offset = 0
+        self._current_results_type = None
+        self._current_query = ""
+        self._search_type_label = "résultats"
         
         self.setup_ui()
 
@@ -4522,7 +5030,7 @@ class LinkedCardsDialog(QDialog):
         
         self.mirror_cb = QCheckBox("Lien miroir")
         self.mirror_cb.setToolTip("Ajouter automatiquement un lien retour dans la carte cible (popup de confirmation)")
-        self.mirror_cb.setChecked(config.get("gui_mirror_cb_state", config.get("mirror_link_systematic", False)))
+        self.mirror_cb.setChecked(config.get("gui_mirror_cb_state", True))
         
         def _on_mirror_cb_changed(state):
             cfg = mw.addonManager.getConfig(__name__) or {}
@@ -4552,6 +5060,34 @@ class LinkedCardsDialog(QDialog):
         self.results_table.customContextMenuRequested.connect(self.on_table_context_menu)
         self.results_table.clicked.connect(lambda index: self.hide_preview_popup())
         layout.addWidget(self.results_table)
+        
+        # Bouton Charger plus pour la pagination
+        self.load_more_btn = QPushButton("Charger plus")
+        self.load_more_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f5f9;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 6px;
+                color: #334155;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e2e8f0;
+            }
+            QPushButton:pressed {
+                background-color: #cbd5e1;
+            }
+            QPushButton:disabled {
+                background-color: #f8fafc;
+                color: #94a3b8;
+                border-color: #e2e8f0;
+            }
+        """)
+        self.load_more_btn.clicked.connect(self.load_next_page)
+        self.load_more_btn.setVisible(False)
+        layout.addWidget(self.load_more_btn)
+        
         self.results_table.setColumnCount(3)
         self.results_table.setHorizontalHeaderLabels(["Recto", "NID", "Actions"])
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -4585,6 +5121,15 @@ class LinkedCardsDialog(QDialog):
         self.results_table.installEventFilter(self)
         if hasattr(self.results_table, 'viewport') and self.results_table.viewport():
             self.results_table.viewport().installEventFilter(self)
+            
+        # Connecter la barre de défilement verticale
+        self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
+        
+        # Charger les suggestions initiales ou lancer la recherche si texte sélectionné
+        if self.selected_text:
+            self.search_bar.setText(self.selected_text)
+        else:
+            self.do_search("")
         
     def closeEvent(self, event):
         self._cleanup_on_close()
@@ -4603,7 +5148,8 @@ class LinkedCardsDialog(QDialog):
                     try:
                         from aqt.qt import Qt, QApplication
                         active_win = QApplication.activeWindow()
-                        if active_win == getattr(self, '_preview_dlg', None):
+                        preview_dlg = getattr(self, '_preview_dlg', None)
+                        if preview_dlg is not None and active_win == preview_dlg:
                             return
                         no_btn = getattr(Qt.MouseButton, "NoButton", None) or getattr(Qt, "NoButton", None)
                         if QApplication.mouseButtons() != no_btn:
@@ -4643,7 +5189,8 @@ class LinkedCardsDialog(QDialog):
                     try:
                         from aqt.qt import Qt, QApplication
                         active_win = QApplication.activeWindow()
-                        if active_win == getattr(self, '_preview_dlg', None):
+                        preview_dlg = getattr(self, '_preview_dlg', None)
+                        if preview_dlg is not None and active_win == preview_dlg:
                             return super().event(event)
                         no_btn = getattr(Qt.MouseButton, "NoButton", None) or getattr(Qt, "NoButton", None)
                         if QApplication.mouseButtons() != no_btn:
@@ -4762,20 +5309,233 @@ class LinkedCardsDialog(QDialog):
         except Exception:
             pass
 
+    def append_results_to_table(self, results):
+        for nid_str, recto_clean in results:
+            row = self.results_table.rowCount()
+            self.results_table.insertRow(row)
+            
+            i_recto = QTableWidgetItem(recto_clean)
+            i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': nid_str, 'recto': recto_clean})
+            self.results_table.setItem(row, 0, i_recto)
+            
+            self.results_table.setItem(row, 1, QTableWidgetItem(nid_str))
+            
+            btn = self._make_voir_button(nid_str)
+            self.results_table.setCellWidget(row, 2, btn)
+
+    def load_next_page(self):
+        if self._current_results_type == "suggestions":
+            # load next chunk of suggestions
+            start = self._search_offset
+            end = start + 50
+            chunk = self._all_target_nids[start:end]
+            if not chunk:
+                self.load_more_btn.setVisible(False)
+                if start == 0:
+                    self.results_label.setText("Pas de résultats")
+                return
+            
+            self.append_results_to_table(chunk)
+            self._search_offset = min(end, len(self._all_target_nids))
+            
+            # Show remaining count
+            remaining = len(self._all_target_nids) - self._search_offset
+            if remaining > 0:
+                self.load_more_btn.setText(f"Charger plus ({remaining} restantes)")
+                self.load_more_btn.setVisible(True)
+            else:
+                self.load_more_btn.setVisible(False)
+                
+            self.results_label.setText(f"{self.results_table.rowCount()} suggestions de liens")
+            
+        elif self._current_results_type == "search":
+            if self._search_offset >= len(self._all_target_nids):
+                self.load_more_btn.setVisible(False)
+                return
+                
+            self.load_more_btn.setEnabled(False)
+            self.load_more_btn.setText("Chargement...")
+            
+            # Save the current search sequence to verify on completion
+            current_seq = self._search_seq
+            recto_only = self.recto_only_cb.isChecked()
+            query = self._current_query
+            
+            # We want to fetch up to 50 qualified results
+            limit = 50
+            start_offset = self._search_offset
+            nids_to_process = self._all_target_nids
+            
+            def bg_fetch_rectos(col):
+                # Dummy Note class to avoid col.get_note lock contention and overhead
+                class DummyNote:
+                    def __init__(self, id, fields, mid, col):
+                        self.id = id
+                        self.fields = fields
+                        self.mid = mid
+                        self._col = col
+                        self._note_type = None
+
+                    def note_type(self):
+                        if self._note_type is None:
+                            try:
+                                self._note_type = self._col.models.get(self.mid)
+                            except:
+                                self._note_type = {"name": "", "type": 0, "flds": []}
+                        return self._note_type
+
+                results = []
+                idx = start_offset
+                
+                # Fetch in chunks of NIDs to find up to 50 qualified ones
+                while idx < len(nids_to_process) and len(results) < limit:
+                    # Take a small chunk to query DB
+                    chunk_nids = nids_to_process[idx:idx + 100]
+                    if not chunk_nids:
+                        break
+                    
+                    try:
+                        rows = col.db.all(f"select id, flds, mid from notes where id in ({','.join(map(str, chunk_nids))})")
+                        row_map = {row[0]: row for row in rows}
+                        
+                        # Process NIDs in order
+                        for nid in chunk_nids:
+                            if len(results) >= limit:
+                                break
+                            idx += 1  # We processed this NID
+                            
+                            if nid in row_map:
+                                row = row_map[nid]
+                                bnid, row_flds, mid = row
+                                fields = row_flds.split("\x1f")
+                                dummy = DummyNote(bnid, fields, mid, col)
+                                recto_clean = get_note_recto(dummy, 240, source_note=self.editor.note if self.editor else None)
+
+                                if recto_only and not query.startswith('tag') and ':' not in query:
+                                    search_words = query.lower().split()
+                                    recto_lower = recto_clean.lower()
+                                    if not all(word in recto_lower for word in search_words):
+                                        continue
+
+                                results.append((str(nid), recto_clean))
+                    except Exception as e:
+                        print("Error in bg_fetch_rectos chunk:", e)
+                        break
+                        
+                return results, idx
+                
+            def on_fetch_success(res):
+                try:
+                    self.objectName()
+                except RuntimeError:
+                    return
+                if current_seq != self._search_seq:
+                    return
+                    
+                results, next_offset = res
+                self.append_results_to_table(results)
+                self._search_offset = next_offset
+                
+                # Update button status
+                self.load_more_btn.setEnabled(True)
+                remaining = len(self._all_target_nids) - self._search_offset
+                if remaining > 0:
+                    self.load_more_btn.setText(f"Charger plus (~{remaining} restantes)")
+                    self.load_more_btn.setVisible(True)
+                else:
+                    self.load_more_btn.setVisible(False)
+                
+                row_count = self.results_table.rowCount()
+                if row_count == 0 and self._search_offset >= len(self._all_target_nids):
+                    # Aucun résultat trouvé — essayer une recherche approximative (fuzzy)
+                    self._try_fuzzy_search(query, current_seq)
+                else:
+                    self.results_label.setText(f"{row_count} {self._search_type_label}")
+                
+            from aqt.operations import QueryOp
+            op = QueryOp(
+                parent=self,
+                op=bg_fetch_rectos,
+                success=on_fetch_success
+            )
+            op.run_in_background()
+
     @perf_log
     def do_search(self, query):
         query = query.strip()
-        recto_only = self.recto_only_cb.isChecked()
-        
-        # NID de la note source (à exclure des résultats)
-        source_nid = str(self.editor.note.id) if self.editor and self.editor.note else None
+        self._current_query = query
         
         # Incrémenter le numéro de séquence de recherche pour ignorer les résultats obsolètes
         self._search_seq += 1
         current_seq = self._search_seq
 
-        # Vider la table immédiatement et indiquer que la recherche est en cours
+        # Vider la table immédiatement et masquer le bouton charger plus
         self.results_table.setRowCount(0)
+        self.load_more_btn.setVisible(False)
+        
+        if not query:
+            config = mw.addonManager.getConfig(__name__) or {}
+            if config.get("suggestions_de_liens", True):
+                self._current_results_type = "suggestions"
+                self.results_label.setText("Chargement des suggestions...")
+                
+                # Check if suggestions are cached
+                if self._suggestions_cache is not None:
+                    self._all_target_nids = self._suggestions_cache
+                    self._search_offset = 0
+                    self.load_next_page()
+                    return
+                
+                # If not cached, compute in background
+                def bg_suggestions(col):
+                    from .editor_assistant import _compute_suggestions, extract_nids_from_fields
+                    try:
+                        current_nid = str(self.editor.note.id) if self.editor and self.editor.note else None
+                        if not current_nid:
+                            return ("suggestions", [])
+                        note_fields = list(self.editor.note.fields) if self.editor and self.editor.note else []
+                        existing_nids = extract_nids_from_fields(self.editor.note) if self.editor and self.editor.note else set()
+                        # On veut les 50 premières suggestions à afficher, mais on peut en précalculer plus (ex: 150)
+                        suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=150)
+                        formatted = [(s["nid"], s["recto"]) for s in suggestions]
+                        return ("suggestions", formatted)
+                    except Exception as e:
+                        return ("error", str(e))
+                
+                def on_suggestions_success(res):
+                    try:
+                        self.objectName()
+                    except RuntimeError:
+                        return
+                    if current_seq != self._search_seq:
+                        return
+                    
+                    search_type, results_or_err = res
+                    if search_type == "error":
+                        self.results_label.setText(results_or_err)
+                        return
+                    
+                    self._suggestions_cache = results_or_err
+                    self._all_target_nids = self._suggestions_cache
+                    self._search_offset = 0
+                    self.load_next_page()
+                
+                from aqt.operations import QueryOp
+                op = QueryOp(
+                    parent=self,
+                    op=bg_suggestions,
+                    success=on_suggestions_success
+                )
+                op.run_in_background()
+            else:
+                self.results_label.setText("")
+            return
+
+        self._current_results_type = "search"
+        self.results_label.setText("Recherche en cours...")
+        
+        # NID de la note source (à exclure des résultats)
+        source_nid = str(self.editor.note.id) if self.editor and self.editor.note else None
         
         # Détection de NIDs multiples (ex: "1575893780795 1572425651952")
         # Aussi accepter un NID seul sans préfixe 'nid:'
@@ -4785,28 +5545,20 @@ class LinkedCardsDialog(QDialog):
             self.results_label.setText("")
             return
 
-        self.results_label.setText("Recherche en cours...")
-
         def bg_query(col):
             results = []
             if nid_matches:
                 seen_nids = set()
+                target_ids = []
                 for n in nid_matches:
                     found = col.find_notes(f"nid:{n}")
                     for nid in found:
-                        if nid in seen_nids or len(results) >= 50:
-                            break
                         if source_nid and str(nid) == source_nid:
                             continue
-                        seen_nids.add(nid)
-                        try:
-                            note = col.get_note(nid)
-                            recto = note.fields[0] if note.fields else ""
-                            recto_clean = strip_html(recto)[:240] or "[Vide]"
-                            results.append((str(nid), recto_clean))
-                        except:
-                            continue
-                return ("nid", results)
+                        if nid not in seen_nids:
+                            seen_nids.add(nid)
+                            target_ids.append(nid)
+                return ("nid", target_ids)
 
             # Recherche textuelle normale (ou tag)
             if query.startswith('tag::'):
@@ -4814,46 +5566,28 @@ class LinkedCardsDialog(QDialog):
             elif query.startswith('tag:'):
                 search_query = query
             elif any(op in query for op in (':', 'OR', 'AND', '-')):
-                # Requête avancée (ex: deck:, note:, is:, flag:, prop:, OR, AND, exclusion)
+                # Requête avancée
                 search_query = query
             else:
                 search_query = f"*{query}*"
 
             try:
                 nids = col.find_notes(search_query)
+                target_ids = []
                 for nid in nids:
-                    if len(results) >= 50:
-                        break
                     if source_nid and str(nid) == source_nid:
                         continue
-                    try:
-                        note = col.get_note(nid)
-                        recto = note.fields[0] if note.fields else ""
-                        recto_clean = strip_html(recto)[:240] or "[Vide]"
-
-                        if recto_only and not query.startswith('tag') and ':' not in query:
-                            search_words = query.lower().split()
-                            recto_lower = recto_clean.lower()
-                            if not all(word in recto_lower for word in search_words):
-                                continue
-
-                        results.append((str(nid), recto_clean))
-                    except:
-                        continue
+                    target_ids.append(nid)
+                return ("text", target_ids)
             except Exception as e:
-                # Transmettre l'erreur sous forme de tuple spécial
                 return ("error", str(e))
-                
-            return ("text", results)
 
         def on_success(res):
-            # S'assurer que le dialogue n'a pas été détruit/fermé
             try:
                 self.objectName()
             except RuntimeError:
                 return
 
-            # Ignorer si une recherche plus récente a été lancée
             if current_seq != self._search_seq:
                 return
 
@@ -4862,39 +5596,124 @@ class LinkedCardsDialog(QDialog):
                 self.results_label.setText(results_or_err)
                 return
 
-            results = results_or_err
-            self.results_table.setRowCount(0)
-            count = 0
+            self._all_target_nids = results_or_err
+            self._search_offset = 0
+            self._search_type_label = "résultats (recherche NID)" if search_type == "nid" else "résultats"
             
-            for nid_str, recto_clean in results:
-                row = self.results_table.rowCount()
-                self.results_table.insertRow(row)
-                
-                i_recto = QTableWidgetItem(recto_clean)
-                i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': nid_str, 'recto': recto_clean})
-                self.results_table.setItem(row, 0, i_recto)
-                
-                self.results_table.setItem(row, 1, QTableWidgetItem(nid_str))
-                
-                btn = self._make_voir_button(nid_str)
-                self.results_table.setCellWidget(row, 2, btn)
-                
-                count += 1
+            if not results_or_err:
+                # Aucun résultat — essayer une recherche approximative si c'est une recherche texte simple
+                if search_type == "text":
+                    self._try_fuzzy_search(query, current_seq)
+                else:
+                    self.results_label.setText("Pas de résultats")
+                return
 
-            if search_type == "nid":
-                self.results_label.setText(f"{count} résultats (recherche NID)")
-            else:
-                self.results_label.setText(f"{count} résultats")
-
-            if not hasattr(self, '_scroll_connected'):
-                self.results_table.verticalScrollBar().valueChanged.connect(self._on_table_scroll)
-                self._scroll_connected = True
+            # Load first page of search results
+            self.load_next_page()
 
         from aqt.operations import QueryOp
         op = QueryOp(
             parent=self,
             op=bg_query,
             success=on_success
+        )
+        op.run_in_background()
+
+    def _try_fuzzy_search(self, original_query, seq):
+        """Recherche approximative (fuzzy) quand la recherche exacte donne 0 résultats.
+        
+        Stratégie :
+        1. Décomposer la requête en mots.
+        2. Pour chaque mot, générer des variantes Anki (*mot*, wildcard par lettre).
+        3. Si des résultats sont trouvés, les afficher avec un message spécial.
+        4. Sinon, afficher 'Pas de résultats'.
+        """
+        source_nid = str(self.editor.note.id) if self.editor and self.editor.note else None
+
+        # Éviter la recherche fuzzy pour les requêtes avancées (tags, opérateurs, NID)
+        if (original_query.startswith('tag:') or any(op in original_query for op in (':', 'OR', 'AND'))
+                or len(original_query) < 2):
+            self.results_label.setText("Pas de résultats")
+            return
+
+        self.results_label.setText("Recherche approx. en cours...")
+
+        def bg_fuzzy(col):
+            import difflib
+            words = original_query.lower().split()
+            
+            # Construire des variantes de recherche fuzzy
+            # Stratégie 1 : retirer un caractère par mot (typo simple)
+            # Stratégie 2 : chercher chaque mot indépendamment avec wildcard
+            candidate_queries = []
+            
+            # Chaque mot séparément (OR implicite — on cherche les notes qui contiennent au moins un mot)
+            for word in words:
+                if len(word) >= 3:
+                    candidate_queries.append(f"*{word}*")
+                    # Variantes avec 1 lettre supprimée
+                    for i in range(len(word)):
+                        truncated = word[:i] + word[i+1:]
+                        if len(truncated) >= 3:
+                            candidate_queries.append(f"*{truncated}*")
+                    # Variante : inverser deux lettres adjacentes
+                    for i in range(len(word) - 1):
+                        swapped = list(word)
+                        swapped[i], swapped[i+1] = swapped[i+1], swapped[i]
+                        swapped_w = "".join(swapped)
+                        if swapped_w != word:
+                            candidate_queries.append(f"*{swapped_w}*")
+            
+            seen_nids = set()
+            target_ids = []
+            for fq in candidate_queries:
+                try:
+                    found = col.find_notes(fq)
+                    for nid in found:
+                        if source_nid and str(nid) == source_nid:
+                            continue
+                        if nid not in seen_nids:
+                            seen_nids.add(nid)
+                            target_ids.append(nid)
+                except Exception:
+                    pass
+            
+            # Trier par pertinence : préférer les notes qui contiennent le plus de mots de la requête
+            if target_ids and len(words) > 1:
+                def relevance(nid):
+                    try:
+                        note = col.get_note(nid)
+                        text = " ".join(note.fields).lower()
+                        return sum(1 for w in words if w in text)
+                    except Exception:
+                        return 0
+                target_ids.sort(key=relevance, reverse=True)
+            
+            return target_ids
+
+        def on_fuzzy_success(results):
+            try:
+                self.objectName()
+            except RuntimeError:
+                return
+            if seq != self._search_seq:
+                return
+
+            if not results:
+                self.results_label.setText("Pas de résultats")
+                return
+
+            self._all_target_nids = results
+            self._search_offset = 0
+            self._search_type_label = "résultats approx."
+            self._current_results_type = "search"
+            self.load_next_page()
+
+        from aqt.operations import QueryOp
+        op = QueryOp(
+            parent=self,
+            op=bg_fuzzy,
+            success=on_fuzzy_success
         )
         op.run_in_background()
 
@@ -5017,6 +5836,15 @@ class LinkedCardsDialog(QDialog):
                     self._preview_current_widget = None
                     self.hide_preview_popup()
 
+        # Détection du défilement vers le bas pour charger plus automatiquement
+        try:
+            scrollbar = self.results_table.verticalScrollBar()
+            if scrollbar.value() >= scrollbar.maximum() - 5:
+                if hasattr(self, 'load_more_btn') and self.load_more_btn.isVisible() and self.load_more_btn.isEnabled():
+                    self.load_next_page()
+        except Exception as e:
+            print("Error in scroll auto-load:", e)
+
     def toggle_preview_popup(self, nid, position_widget=None):
         """Affiche ou masque la preview sans fermer le dialog principal."""
         if (hasattr(self, '_preview_dlg') and self._preview_dlg
@@ -5098,8 +5926,8 @@ class LinkedCardsDialog(QDialog):
                             is_night = False
 
             if not hasattr(self, '_preview_dlg') or self._preview_dlg is None:
-                flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-                dlg = QWidget(None, flags)
+                flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                dlg = QWidget(self, flags)
                 dlg.setObjectName("PreviewPopup")
                 dlg.setWindowTitle("Apercu")
                 dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -5139,6 +5967,94 @@ class LinkedCardsDialog(QDialog):
                     pos.setY(screen.height() - 320)
                 dlg.move(pos)
 
+            # Charger les préférences cartes EDN
+            show_rank = True
+            show_flags = True
+            try:
+                from .edn_menu.card_styles import load_prefs
+                prefs = load_prefs()
+                show_rank = prefs.get("showRankBadge", True)
+                show_flags = prefs.get("showFlagBorders", True)
+            except Exception as e:
+                print("Error loading EDN card styles prefs in linked cards:", e)
+                show_rank = True
+                show_flags = True
+
+            show_rank_js = "true" if show_rank else "false"
+            show_flags_js = "true" if show_flags else "false"
+
+            pref_script = f"""
+            <script>
+            (function() {{
+                function _applyEdnPreviewStyles() {{
+                    try {{
+                        var showRank = {show_rank_js};
+                        var showFlags = {show_flags_js};
+                        
+                        var tagsEl = document.getElementById("dlg_preview_tagsData") || document.getElementById("tagsData");
+                        var tags = tagsEl ? tagsEl.innerHTML : "";
+                        var rang = tags.includes("Rang::A") ? "A" : tags.includes("Rang::B") ? "B" : tags.includes("Rang::C") ? "C" : "?";
+                        
+                        if (showRank) {{
+                            var bars = document.querySelectorAll('.bar, .barHider');
+                            bars.forEach(function(b) {{
+                                if (!b.classList.contains('edn-rang-' + rang)) {{
+                                    b.classList.add('edn-rang-' + rang);
+                                }}
+                            }});
+                        }}
+                        
+                        var activeColor = null;
+                        if (showFlags) {{
+                            var flagsEl = document.getElementById('dlg_preview_flagsData') || document.getElementById('flagsData') || document.getElementById('dlg_preview_flags') || document.getElementById('flags');
+                            var flags = flagsEl ? flagsEl.innerHTML.trim() : "";
+                            var flagColorMap = {{
+                                'flag1': '#E53E3E', // Rouge
+                                'flag2': '#DD6B20', // Orange
+                                'flag3': '#38A169', // Vert
+                                'flag4': '#3182CE', // Bleu
+                                'flag5': '#D53F8C', // Rose
+                                'flag6': '#00A3C4', // Turquoise
+                                'flag7': '#805AD5'  // Violet
+                            }};
+                            for (var key in flagColorMap) {{
+                                if (flags.includes(key)) {{
+                                    activeColor = flagColorMap[key];
+                                    break;
+                                }}
+                            }}
+                            if (!activeColor && tags.includes("Difficile")) {{
+                                activeColor = '#E53E3E';
+                            }}
+                            if (!activeColor && tags.includes("Bleu")) {{
+                                activeColor = '#3182CE';
+                            }}
+                        }}
+                        
+                        var sections = document.getElementsByClassName("section");
+                        var hiders = document.getElementsByClassName("barHider");
+                        var bars = document.getElementsByClassName("bar");
+                        
+                        if (activeColor) {{
+                            for (var s of sections) s.style.borderColor = activeColor;
+                            for (var h of hiders) h.style.borderColor = activeColor;
+                            for (var b of bars) b.style.borderColor = activeColor;
+                        }} else {{
+                            for (var s of sections) s.style.borderColor = "";
+                            for (var h of hiders) h.style.borderColor = "";
+                            for (var b of bars) b.style.borderColor = "";
+                        }}
+                    }} catch(e) {{
+                        console.error("Error applying preview styles:", e);
+                    }}
+                }}
+                _applyEdnPreviewStyles();
+                setTimeout(_applyEdnPreviewStyles, 100);
+                setTimeout(_applyEdnPreviewStyles, 400);
+            }})();
+            </script>
+            """
+
             addon_package = mw.addonManager.addonFromModule(__name__)
             css_link = '<link rel="stylesheet" href="/_addons/' + addon_package + '/user_files/clickable_cards.css">'
 
@@ -5151,6 +6067,7 @@ class LinkedCardsDialog(QDialog):
             blacklist_selectors = [f"#dlg_preview_{sec}" for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer", "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]]
             blacklist_selectors.append("#dlg_preview_FSRS_status")
             blacklist_css = ", ".join(blacklist_selectors) + " { display: none !important; }\n"
+            blacklist_css += ".edn-specialty-icons { display: none !important; }\n"
             scoped_css = f"<style>\n{blacklist_css}{preview_css}\n</style>"
             
             gui_hover_script = r"""
@@ -5559,12 +6476,12 @@ class LinkedCardsDialog(QDialog):
             # afin que le LaTeX \(...\) et \[...\] soit rendu correctement.
             try:
                 web.stdHtml(
-                    css_link + scoped_css + night_script + gui_hover_script + '<div class="card">' + isolated + '</div>',
+                    css_link + scoped_css + night_script + gui_hover_script + '<div class="card">' + isolated + '</div>' + pref_script,
                     mathjax=True
                 )
             except TypeError:
                 web.stdHtml(
-                    css_link + scoped_css + night_script + gui_hover_script + '<div class="card">' + isolated + '</div>',
+                    css_link + scoped_css + night_script + gui_hover_script + '<div class="card">' + isolated + '</div>' + pref_script,
                     js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
                 )
 
@@ -5764,9 +6681,16 @@ class LinkedCardsDialog(QDialog):
             return
         if not hasattr(self, '_preview_stack'):
             self._preview_stack = []
-        if self._preview_current_nid != nid:
-            self._preview_stack.append(self._preview_current_nid)
-            self.show_preview_popup(nid, position_widget=None) # Réutilise la popup sans la déplacer
+        nid_str = str(nid)
+        curr_nid_str = str(self._preview_current_nid) if hasattr(self, '_preview_current_nid') and self._preview_current_nid is not None else ""
+        self._preview_stack = [str(x) for x in self._preview_stack]
+        if curr_nid_str != nid_str:
+            if nid_str in self._preview_stack:
+                idx = self._preview_stack.index(nid_str)
+                self._preview_stack = self._preview_stack[:idx]
+            else:
+                self._preview_stack.append(curr_nid_str)
+            self.show_preview_popup(nid_str, position_widget=None) # Réutilise la popup sans la déplacer
 
     def hide_nested_preview(self):
         # On ressort la carte parente
@@ -5851,20 +6775,35 @@ class LinkedCardsDialog(QDialog):
                     }
                     if (!blockParent) return false;
                     
-                    var children = Array.from(blockParent.childNodes);
-                    var cursorIdx = -1;
-                    for (var i = 0; i < children.length; i++) {
-                        if (children[i] === marker || children[i].contains(marker)) {
-                            cursorIdx = i; break;
+                    // Collecte le texte avant le marker sur la même ligne (reset aux BR),
+                    // en gérant le cas où le marker est imbriqué dans un sous-élément du blockParent
+                    function _textBeforeMarkerInLine(container, mkr) {
+                        var parts = [];
+                        var nodes = Array.from(container.childNodes);
+                        for (var i = 0; i < nodes.length; i++) {
+                            var n = nodes[i];
+                            if (n === mkr) break;
+                            if (n.contains && n.contains(mkr)) {
+                                parts.push(_textBeforeMarkerInNode(n, mkr)); break;
+                            }
+                            if (n.tagName === 'BR') { parts = []; continue; }
+                            parts.push(n.textContent || '');
                         }
+                        return parts.join('');
                     }
-                    // Récupérer uniquement le texte précédant le curseur sur la ligne active
-                    var textBefore = [];
-                    for (var i = cursorIdx - 1; i >= 0; i--) {
-                        if (children[i].tagName === 'BR') break;
-                        textBefore.unshift(children[i].textContent || '');
+                    function _textBeforeMarkerInNode(nd, mkr) {
+                        var text = '';
+                        var chn = Array.from(nd.childNodes);
+                        for (var i = 0; i < chn.length; i++) {
+                            if (chn[i] === mkr) break;
+                            if (chn[i].contains && chn[i].contains(mkr)) {
+                                text += _textBeforeMarkerInNode(chn[i], mkr); break;
+                            }
+                            text += chn[i].textContent || '';
+                        }
+                        return text;
                     }
-                    var trimmedBefore = textBefore.join('').trim();
+                    var trimmedBefore = _textBeforeMarkerInLine(blockParent, marker).trim();
                     // Renvoie vrai si la ligne se termine par un tiret (ignorant les espaces)
                     return trimmedBefore.endsWith('—') || trimmedBefore.endsWith('-') || trimmedBefore.endsWith('\\u2014');
                 } catch(e) { return false; }
@@ -6083,13 +7022,21 @@ class LinkedCardsConfigWidget(QWidget):
         self.setLayout(layout)
         config = mw.addonManager.getConfig(__name__) or {}
         
+        # Détecter si le module EDN est actif
+        self.edn_active = False
+        try:
+            from .edn_menu import is_module_enabled
+            self.edn_active = is_module_enabled("linked_cards")
+        except:
+            pass
+            
         # --- Raccourcis ---
         group_shortcuts = QGroupBox("Raccourcis personnalisés")
         g_layout = QFormLayout()
         group_shortcuts.setLayout(g_layout)
         from .edn_menu import get_shortcut
         
-        self.edit_trigger = QLineEdit(config.get("search_trigger", "nid:"))
+        self.edit_trigger = QLineEdit(config.get("gui_trigger", "nid:"))
         g_layout.addRow("Symbole texte déclencheur recherche:", self.edit_trigger)
         
         self.edit_search = QLineEdit(get_shortcut("linked_cards_search", "Ctrl+Alt+L"))
@@ -6115,51 +7062,44 @@ class LinkedCardsConfigWidget(QWidget):
 
         layout.addWidget(group_shortcuts)
         
-        # --- Blacklist ---
-        group_blacklist = QGroupBox("Éléments à masquer dans la Miniature de Profil (Survol)")
-        b_layout = QVBoxLayout()
-        group_blacklist.setLayout(b_layout)
-        
-        hidden_sections = config.get("hidden_preview_sections", [
-            "sourcesMegaContainer",
-            "commentsMegaContainer",
-            "tagsMegaContainer",
-            "erreursFaitesMegaContainer",
-            "mnemonicsMegaContainer",
-            "infoSupplementairesMegaContainer"
-        ])
-        
+        # --- Blacklist (EDN uniquement) ---
         self.checkboxes = {}
-        target_fields = {
-            "sourcesMegaContainer": "Masquer : Sources",
-            "commentsMegaContainer": "Masquer : Commentaires",
-            "tagsMegaContainer": "Masquer : Tags",
-            "cartesLieesMegaContainer": "Masquer : Cartes Liées",
-            "erreursFaitesMegaContainer": "Masquer : Erreurs Précédentes",
-            "mnemonicsMegaContainer": "Masquer : Mnémotechniques",
-            "infoSupplementairesMegaContainer": "Masquer : Mots Clefs / Infos"
-        }
-        
-        for box_id, box_label in target_fields.items():
-            cb = QCheckBox(box_label)
-            cb.setChecked(box_id in hidden_sections)
-            b_layout.addWidget(cb)
-            self.checkboxes[box_id] = cb
+        if self.edn_active:
+            group_blacklist = QGroupBox("Éléments à masquer dans la Miniature de Profil (Survol)")
+            b_layout = QVBoxLayout()
+            group_blacklist.setLayout(b_layout)
             
-        layout.addWidget(group_blacklist)
+            hidden_sections = config.get("hidden_preview_sections", [
+                "sourcesMegaContainer",
+                "commentsMegaContainer",
+                "tagsMegaContainer",
+                "erreursFaitesMegaContainer",
+                "mnemonicsMegaContainer",
+                "infoSupplementairesMegaContainer"
+            ])
+            
+            target_fields = {
+                "sourcesMegaContainer": "Masquer : Sources",
+                "commentsMegaContainer": "Masquer : Commentaires",
+                "tagsMegaContainer": "Masquer : Tags",
+                "cartesLieesMegaContainer": "Masquer : Cartes Liées",
+                "erreursFaitesMegaContainer": "Masquer : Erreurs Précédentes",
+                "mnemonicsMegaContainer": "Masquer : Mnémotechniques",
+                "infoSupplementairesMegaContainer": "Masquer : Mots Clefs / Infos"
+            }
+            
+            for box_id, box_label in target_fields.items():
+                cb = QCheckBox(box_label)
+                cb.setChecked(box_id in hidden_sections)
+                b_layout.addWidget(cb)
+                self.checkboxes[box_id] = cb
+                
+            layout.addWidget(group_blacklist)
         
         # --- Lien miroir ---
         group_mirror = QGroupBox("Lien miroir")
         m_layout = QVBoxLayout()
         group_mirror.setLayout(m_layout)
-        
-        self.mirror_link_cb = QCheckBox("Lien miroir systématique (activé par défaut)")
-        self.mirror_link_cb.setToolTip(
-            "Si coché, propose automatiquement le lien retour A↔B dans l'éditeur.\n"
-            "Sinon, vous devrez cocher la case dans la fenêtre de recherche."
-        )
-        self.mirror_link_cb.setChecked(config.get("mirror_link_systematic", False))
-        m_layout.addWidget(self.mirror_link_cb)
 
         self.mirror_link_on_paste_cb = QCheckBox("Proposer le lien miroir lors du collage de NID")
         self.mirror_link_on_paste_cb.setToolTip(
@@ -6167,13 +7107,24 @@ class LinkedCardsConfigWidget(QWidget):
         )
         self.mirror_link_on_paste_cb.setChecked(config.get("mirror_link_on_paste", True))
         m_layout.addWidget(self.mirror_link_on_paste_cb)
+
+        # Description intelligente (EDN uniquement)
+        self.desc_intelligent_cb = None
+        if self.edn_active:
+            self.desc_intelligent_cb = QCheckBox("Description intelligente")
+            self.desc_intelligent_cb.setToolTip(
+                "Si coché, extrait en priorité le contenu de C2 (sinon C1) pour les cartes cloze,\n"
+                "et remplace le nom du lien par 'Main', 'Signes', 'Traitements', etc. selon le contexte."
+            )
+            self.desc_intelligent_cb.setChecked(config.get("description_intelligente", True))
+            m_layout.addWidget(self.desc_intelligent_cb)
         
         layout.addWidget(group_mirror)
         layout.addStretch()
 
     def save_config(self):
         config = mw.addonManager.getConfig(__name__) or {}
-        config["search_trigger"] = self.edit_trigger.text()
+        config["gui_trigger"] = self.edit_trigger.text()
         
         from .edn_menu import set_shortcut
         set_shortcut("linked_cards_search", self.edit_search.text())
@@ -6185,10 +7136,12 @@ class LinkedCardsConfigWidget(QWidget):
         set_shortcut("linked_cards_kbd_preview", self.edit_kbd_preview.text() or "p")
         set_shortcut("linked_cards_kbd_back", self.edit_kbd_back.text() or "z")
         
-        hiddens = [box_id for box_id, cb in self.checkboxes.items() if cb.isChecked()]
-        config["hidden_preview_sections"] = hiddens
+        if self.edn_active:
+            hiddens = [box_id for box_id, cb in self.checkboxes.items() if cb.isChecked()]
+            config["hidden_preview_sections"] = hiddens
+            if self.desc_intelligent_cb:
+                config["description_intelligente"] = self.desc_intelligent_cb.isChecked()
         
-        config["mirror_link_systematic"] = self.mirror_link_cb.isChecked()
         config["mirror_link_on_paste"] = self.mirror_link_on_paste_cb.isChecked()
         
         mw.addonManager.writeConfig(__name__, config) 
@@ -6322,12 +7275,10 @@ def grade_now_nid(nid: str, ease: int) -> None:
 def _get_recto_for_nid(nid_str: str) -> str:
     try:
         note = mw.col.get_note(int(nid_str))
-        raw = note.fields[0]
-        import re
-        clean = re.sub(r'<[^>]+>', ' ', raw).replace('&nbsp;', ' ')
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        import html
-        return html.unescape(clean)[:100] or "[Vide]"
+        from .editor_assistant import get_active_editor
+        editor = get_active_editor()
+        source_note = editor.note if editor else None
+        return get_note_recto(note, 100, source_note=source_note)
     except Exception:
         return "[Erreur]"
 
@@ -6353,7 +7304,7 @@ def link_card_to_active_editor(target_nid: str) -> None:
         return
         
     config = mw.addonManager.getConfig(__name__) or {}
-    mirror_req = config.get("mirror_link_systematic", False)
+    mirror_req = config.get("gui_mirror_cb_state", True)
     
     recto = _get_recto_for_nid(target_nid)
     
@@ -6441,20 +7392,36 @@ def link_card_to_active_editor(target_nid: str) -> None:
                 blockParent = blockParent.parentNode;
             }
             if (!blockParent) return false;
-            
-            var children = Array.from(blockParent.childNodes);
-            var cursorIdx = -1;
-            for (var i = 0; i < children.length; i++) {
-                if (children[i] === marker || children[i].contains(marker)) {
-                    cursorIdx = i; break;
+
+            // Collecte le texte avant le marker sur la même ligne (reset aux BR),
+            // en gérant le cas où le marker est imbriqué dans un sous-élément du blockParent
+            function _textBeforeMarkerInLine2(container, mkr) {
+                var parts = [];
+                var nodes = Array.from(container.childNodes);
+                for (var i = 0; i < nodes.length; i++) {
+                    var n = nodes[i];
+                    if (n === mkr) break;
+                    if (n.contains && n.contains(mkr)) {
+                        parts.push(_textBeforeMarkerInNode2(n, mkr)); break;
+                    }
+                    if (n.tagName === 'BR') { parts = []; continue; }
+                    parts.push(n.textContent || '');
                 }
+                return parts.join('');
             }
-            var textBefore = [];
-            for (var i = cursorIdx - 1; i >= 0; i--) {
-                if (children[i].tagName === 'BR') break;
-                textBefore.unshift(children[i].textContent || '');
+            function _textBeforeMarkerInNode2(nd, mkr) {
+                var text = '';
+                var chn = Array.from(nd.childNodes);
+                for (var i = 0; i < chn.length; i++) {
+                    if (chn[i] === mkr) break;
+                    if (chn[i].contains && chn[i].contains(mkr)) {
+                        text += _textBeforeMarkerInNode2(chn[i], mkr); break;
+                    }
+                    text += chn[i].textContent || '';
+                }
+                return text;
             }
-            var trimmedBefore = textBefore.join('').trim();
+            var trimmedBefore = _textBeforeMarkerInLine2(blockParent, marker).trim();
             return trimmedBefore.endsWith('—') || trimmedBefore.endsWith('-') || trimmedBefore.endsWith('\\u2014');
         } catch(e) { return false; }
     })();

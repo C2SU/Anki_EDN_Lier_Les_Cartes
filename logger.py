@@ -3,9 +3,18 @@ import sys
 import datetime
 import time
 import functools
+import json
 
 ADDON_DIR = os.path.dirname(__file__)
 LOG_FILE = os.path.join(ADDON_DIR, "Anki_EDN_Lier_les_cartes.log")
+
+# Load debug mode setting
+try:
+    with open(os.path.join(ADDON_DIR, "config.json"), encoding="utf-8") as f:
+        config = json.load(f)
+        DEBUG_MODE = config.get("debug", False)
+except Exception:
+    DEBUG_MODE = False
 
 def log(message, level="INFO"):
     """
@@ -15,9 +24,10 @@ def log(message, level="INFO"):
     formatted_message_file = f"[{timestamp}] [{level}] {message}\n"
     formatted_message_console = f"[EDN_Lier_les_cartes] [{timestamp}] [{level}] {message}"
     
-    # Print to console (so it appears in Anki launch console)
-    print(formatted_message_console, file=sys.stdout)
-    sys.stdout.flush()
+    # Print to console (only for warnings/errors or if debug mode is enabled)
+    if level != "INFO" or DEBUG_MODE:
+        print(formatted_message_console, file=sys.stdout)
+        sys.stdout.flush()
     
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:

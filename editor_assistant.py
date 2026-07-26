@@ -16,6 +16,7 @@ _assistant_css = """
   --incoming-color: #f59e0b;
   --reciprocal-color: #10b981;
   --outgoing-color: #3b82f6;
+  --suggested-color: #8b5cf6;
   --shadow-light: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03);
 }
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
@@ -155,6 +156,53 @@ h3 {
   background: #2563eb;
 }
 
+/* --- Liens Suggérés --- */
+.card-item.suggested {
+  border-left: 4px solid var(--suggested-color);
+}
+.card-item.suggested .btn-add {
+  background: var(--suggested-color);
+}
+.card-item.suggested .btn-add:hover {
+  background: #7c3aed;
+}
+.score-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--suggested-color);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 5px;
+  vertical-align: middle;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.btn-load-more {
+  width: 100%;
+  padding: 7px 0;
+  margin-top: 4px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+.btn-load-more:hover {
+  opacity: 1;
+  background: rgba(139, 92, 246, 0.06);
+  border-color: var(--suggested-color);
+  color: var(--suggested-color);
+}
+.suggested-hidden {
+  display: none;
+}
+
 .empty {
   font-style: italic;
   color: var(--fg);
@@ -165,6 +213,32 @@ h3 {
   border: 1px dashed var(--border);
   border-radius: 6px;
   text-align: center;
+}
+
+/* --- Spinner chargement suggestions --- */
+@keyframes _edn_spin {
+  to { transform: rotate(360deg); }
+}
+.suggestions-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--fg);
+  opacity: 0.5;
+  padding: 8px 12px;
+}
+.suggestions-loading::before {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(139, 92, 246, 0.25);
+  border-top-color: var(--suggested-color);
+  border-radius: 50%;
+  animation: _edn_spin 0.7s linear infinite;
+  flex-shrink: 0;
 }
 """
 
@@ -576,7 +650,7 @@ def handle_preview_popup_message(message, context=None):
 def _create_preview_popup(parent=None):
     """Crée le popup Qt de preview (singleton réutilisable, sans barre de titre)."""
     global _preview_popup, _preview_popup_filter
-    flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+    flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
     dlg = QWidget(parent, flags)
     dlg.setObjectName("EdnAssistantPreviewPopup")
     dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -612,11 +686,18 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
     # Gérer l'historique
     if not is_nested:
         _preview_history = []
-        _current_preview_nid = nid_str
+        _current_preview_nid = str(nid_str)
     else:
-        if _current_preview_nid and _current_preview_nid != nid_str:
-            if not _preview_history or _preview_history[-1] != _current_preview_nid:
-                _preview_history.append(_current_preview_nid)
+        nid_str = str(nid_str)
+        curr_nid_str = str(_current_preview_nid) if _current_preview_nid is not None else ""
+        _preview_history = [str(x) for x in _preview_history]
+        if curr_nid_str and curr_nid_str != nid_str:
+            if nid_str in _preview_history:
+                idx = _preview_history.index(nid_str)
+                _preview_history = _preview_history[:idx]
+            else:
+                if not _preview_history or _preview_history[-1] != curr_nid_str:
+                    _preview_history.append(curr_nid_str)
         _current_preview_nid = nid_str
 
     try:
@@ -694,7 +775,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             # Si le parent a changé, reparenter le popup
             if editor_window and _preview_popup.parentWidget() != editor_window:
                 try:
-                    _preview_popup.setParent(editor_window, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+                    _preview_popup.setParent(editor_window, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
                 except Exception as e:
                     print("Error reparenting preview popup:", e)
 
@@ -789,6 +870,94 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
         else:
             log(f"_show_card_preview_popup: skip positioning (parent_widget alive={_is_widget_alive(parent_widget)}, is_nested={is_nested})")
 
+        # Charger les préférences cartes EDN
+        show_rank = True
+        show_flags = True
+        try:
+            from .edn_menu.card_styles import load_prefs
+            prefs = load_prefs()
+            show_rank = prefs.get("showRankBadge", True)
+            show_flags = prefs.get("showFlagBorders", True)
+        except Exception as e:
+            print("Error loading EDN card styles prefs in editor assistant:", e)
+            show_rank = True
+            show_flags = True
+
+        show_rank_js = "true" if show_rank else "false"
+        show_flags_js = "true" if show_flags else "false"
+
+        pref_script = f"""
+        <script>
+        (function() {{
+            function _applyEdnPreviewStyles() {{
+                try {{
+                    var showRank = {show_rank_js};
+                    var showFlags = {show_flags_js};
+                    
+                    var tagsEl = document.getElementById("dlg_preview_tagsData") || document.getElementById("tagsData");
+                    var tags = tagsEl ? tagsEl.innerHTML : "";
+                    var rang = tags.includes("Rang::A") ? "A" : tags.includes("Rang::B") ? "B" : tags.includes("Rang::C") ? "C" : "?";
+                    
+                    if (showRank) {{
+                        var bars = document.querySelectorAll('.bar, .barHider');
+                        bars.forEach(function(b) {{
+                            if (!b.classList.contains('edn-rang-' + rang)) {{
+                                b.classList.add('edn-rang-' + rang);
+                            }}
+                        }});
+                    }}
+                    
+                    var activeColor = null;
+                    if (showFlags) {{
+                        var flagsEl = document.getElementById('dlg_preview_flagsData') || document.getElementById('flagsData') || document.getElementById('dlg_preview_flags') || document.getElementById('flags');
+                        var flags = flagsEl ? flagsEl.innerHTML.trim() : "";
+                        var flagColorMap = {{
+                            'flag1': '#E53E3E', // Rouge
+                            'flag2': '#DD6B20', // Orange
+                            'flag3': '#38A169', // Vert
+                            'flag4': '#3182CE', // Bleu
+                            'flag5': '#D53F8C', // Rose
+                            'flag6': '#00A3C4', // Turquoise
+                            'flag7': '#805AD5'  // Violet
+                        }};
+                        for (var key in flagColorMap) {{
+                            if (flags.includes(key)) {{
+                                activeColor = flagColorMap[key];
+                                break;
+                            }}
+                        }}
+                        if (!activeColor && tags.includes("Difficile")) {{
+                            activeColor = '#E53E3E';
+                        }}
+                        if (!activeColor && tags.includes("Bleu")) {{
+                            activeColor = '#3182CE';
+                        }}
+                    }}
+                    
+                    var sections = document.getElementsByClassName("section");
+                    var hiders = document.getElementsByClassName("barHider");
+                    var bars = document.getElementsByClassName("bar");
+                    
+                    if (activeColor) {{
+                        for (var s of sections) s.style.borderColor = activeColor;
+                        for (var h of hiders) h.style.borderColor = activeColor;
+                        for (var b of bars) b.style.borderColor = activeColor;
+                    }} else {{
+                        for (var s of sections) s.style.borderColor = "";
+                        for (var h of hiders) h.style.borderColor = "";
+                        for (var b of bars) b.style.borderColor = "";
+                    }}
+                }} catch(e) {{
+                    console.error("Error applying preview styles:", e);
+                }}
+            }}
+            _applyEdnPreviewStyles();
+            setTimeout(_applyEdnPreviewStyles, 100);
+            setTimeout(_applyEdnPreviewStyles, 400);
+        }})();
+        </script>
+        """
+
         addon_package = mw.addonManager.addonFromModule(__name__)
         css_link = f'<link rel="stylesheet" href="/_addons/{addon_package}/user_files/clickable_cards.css">'
 
@@ -826,6 +995,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
         blacklist_selectors = [f"#dlg_preview_{sec}" for sec in active_blacklist]
         blacklist_selectors.append("#dlg_preview_FSRS_status")
         blacklist_css = ", ".join(blacklist_selectors) + " { display: none !important; }\n"
+        blacklist_css += ".edn-specialty-icons { display: none !important; }\n"
         
         scoped_css = f"<style>\n{blacklist_css}{preview_css}\n</style>"
 
@@ -1282,7 +1452,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             // Image load listener to dynamically resize
             function _triggerResize() {
                 var card = document.querySelector('.card');
-                var h = card ? card.scrollHeight : document.body.scrollHeight;
+                var h = card ? card.scrollHeight : (document.body ? document.body.scrollHeight : 0);
                 sendPycmd('preview_resize:' + h);
             }
             // Use ResizeObserver to dynamically resize whenever the content height changes
@@ -1290,13 +1460,15 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 var cardEl = document.querySelector('.card') || document.body;
                 var lastHeight = 0;
                 var resizeObserver = new ResizeObserver(function(entries) {
-                    var h = Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);
+                    var h = Math.max(document.body ? document.body.scrollHeight : 0, cardEl ? cardEl.scrollHeight : 0);
                     if (h && h !== lastHeight) {
                         lastHeight = h;
                         sendPycmd('preview_resize:' + h);
                     }
                 });
-                resizeObserver.observe(cardEl);
+                if (cardEl) {
+                    resizeObserver.observe(cardEl);
+                }
             } catch(e) {
                 document.addEventListener('load', function(ev) {
                     if (ev.target && ev.target.tagName === 'IMG') {
@@ -1335,12 +1507,12 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
 
         try:
             web.stdHtml(
-                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
+                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script + pref_script,
                 mathjax=True
             )
         except TypeError:
             web.stdHtml(
-                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script,
+                css_link + scoped_css + night_script + _shortcuts_script + '<div class="card">' + isolated + '</div>' + nav_script + pref_script,
                 js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
             )
 
@@ -1364,7 +1536,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 js = """
                 (function() {
                     var cardEl = document.querySelector('.card') || document.body;
-                    return Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);
+                    return Math.max(document.body ? document.body.scrollHeight : 0, cardEl ? cardEl.scrollHeight : 0);
                 })()
                 """
                 web.evalWithCallback(js, lambda h: _adjust_height(dlg, h))
@@ -1376,14 +1548,16 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             def _check(ready):
                 if ready:
                     web.eval(
-                        "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
-                        "MathJax.typesetPromise().then(function() {"
-                        "  setTimeout(function() {"
-                        "    var cardEl = document.querySelector('.card') || document.body;"
-                        "    var h = Math.max(document.body.scrollHeight, cardEl ? cardEl.scrollHeight : 0);"
-                        "    if (typeof pycmd !== 'undefined') pycmd('preview_resize:' + h);"
-                        "  }, 50);"
-                        "}).catch(function(){});"
+                        "if (window.MathJax && window.MathJax.typesetClear) { try { window.MathJax.typesetClear(); } catch(e) {} } "
+                        "if (window.MathJax && window.MathJax.typesetPromise) { "
+                        "  window.MathJax.typesetPromise().then(function() {"
+                        "    setTimeout(function() {"
+                        "      var cardEl = document.querySelector('.card') || document.body;"
+                        "      var h = Math.max(document.body ? document.body.scrollHeight : 0, cardEl ? cardEl.scrollHeight : 0);"
+                        "      if (typeof pycmd !== 'undefined') pycmd('preview_resize:' + h);"
+                        "    }, 50);"
+                        "  }).catch(function(){});"
+                        "}"
                     )
                     QTimer.singleShot(150, _quick_resize)
                     QTimer.singleShot(500, _quick_resize)
@@ -1468,6 +1642,458 @@ def _adjust_height(dlg, h):
 
 # --- Helpers ---
 
+# Stop-words médicaux et communs (français) — filtrés lors de la suggestion de liens
+_SUGGESTION_STOP_WORDS = frozenset([
+    # Mots grammaticaux courts
+    "dans", "avec", "pour", "les", "des", "une", "qui", "que", "par", "sur",
+    "son", "ses", "leur", "leurs", "ces", "cette", "comme", "mais", "aussi",
+    "plus", "tout", "bien", "dont", "sans", "vers", "sous", "entre", "elle",
+    "elles", "nous", "vous", "ils", "etre", "avoir", "faire", "peut", "doit",
+    "selon", "apres", "avant", "lors", "chez", "donc", "alors", "aussi",
+    "plus", "moins", "tres", "bien", "souvent", "rarement", "jamais",
+    # Termes médicaux génériques non discriminants
+    "syndrome", "diagnostic", "traitement", "patient", "patients", "maladie",
+    "maladies", "clinique", "signe", "signes", "symptome", "symptomes",
+    "forme", "formes", "type", "types", "cause", "causes", "risque", "risques",
+    "facteur", "facteurs", "bilan", "examen", "examens", "resultat", "resultats",
+    "prise", "charge", "pathologie", "pathologies", "presentation", "anomalie",
+    "anomalies", "aspect", "aspects", "cartes", "carte", "lien", "liens",
+    "definition", "epidemiologie", "physiopathologie", "classification",
+    "complication", "complications", "etiologie", "pronostic", "prevention",
+    "indication", "indications", "contre", "association", "associations",
+    "principaux", "principales", "principal", "principale", "atteinte",
+    "atteintes", "important", "importante", "frequence", "evolution",
+    "caracteristique", "caracteristiques", "mecanisme", "mecanismes",
+    "absence", "presence", "niveau", "niveaux", "nombre", "valeur", "valeurs",
+    # Abréviations génériques médicales
+    "atcd", "fdr", "pec", "nfs", "bilan",
+])
+
+# Tags de spécialité EDN (pour le scoring par tag)
+_SPECIALTY_TAGS = frozenset([
+    "Neurologie", "Endocrinologie", "Ophtalmologie", "Cardiologie", "Pneumologie",
+    "Gastroenterologie", "Gastro-enterologie", "Nephrologie", "Urologie", "Gynecologie",
+    "Pediatrie", "Rhumatologie", "Orthopedie", "Dermatologie", "Hematologie",
+    "Oncologie", "Infectiologie", "Psychiatrie", "Geriatrie", "Anesthesie",
+    "Reanimation", "Urgences", "Sante-publique", "Medecine-legale", "Pharmacologie",
+    "Hepato-gastro-enterologie", "Chirurgie", "ORL", "LCA", "Immunologie",
+    "Rhumatologie", "Douleur", "Soins-palliatifs", "Geriatrie",
+])
+
+def _normalize_for_keywords(text: str) -> str:
+    """Normalise un texte : accents supprimés, minuscules, espaces collapsés.
+    
+    Inspiré de evolution_tracker.py normalize_text() : unicode NFKD + strip accents.
+    """
+    import unicodedata as _ud
+    import html as _html_mod
+    if not text:
+        return ""
+    # Cloze {{cn::texte::hint}} → texte
+    text = re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', text)
+    # Balises HTML
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Entités HTML
+    text = _html_mod.unescape(text)
+    # Minuscules + remplacement ligatures
+    text = text.lower().replace('œ', 'oe').replace('æ', 'ae')
+    # Normalisation NFKD (supprime les diacritiques/accents)
+    nfkd = _ud.normalize('NFKD', text)
+    text = ''.join(c for c in nfkd if not _ud.combining(c))
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _extract_keywords(text: str) -> set:
+    """Extrait les mots-clés significatifs d'un texte HTML (champ Anki).
+    
+    Utilise la normalisation Unicode de evolution_tracker.py :
+    accents supprimés → comparaisons robustes. Tokens ≥ 5 lettres uniquement.
+    Stop-words filtrés.
+    """
+    if not text:
+        return set()
+    normalized = _normalize_for_keywords(text)
+    # Tokeniser (lettres ASCII uniquement après normalisation)
+    tokens = re.findall(r'[a-z]{5,}', normalized)
+    # Filtrer stop-words (sur texte normalisé)
+    return {t for t in tokens if t not in _SUGGESTION_STOP_WORDS}
+
+
+def _extract_tags_normalized(tags_str: str) -> set:
+    """Extrait et normalise les tags Anki (espace-séparés).
+    
+    Retourne un set de tags normalisés (minuscules, sans accents).
+    """
+    if not tags_str:
+        return set()
+    tags = tags_str.strip().split()
+    result = set()
+    for t in tags:
+        norm = _normalize_for_keywords(t)
+        result.add(norm)
+    return result
+
+
+# Précomputer la normalisation des tags de spécialité (fait une seule fois au chargement)
+_SPECIALTY_NORM = None
+
+def _get_specialty_norm():
+    """Retourne le frozenset des tags de spécialité normalisés (singleton)."""
+    global _SPECIALTY_NORM
+    if _SPECIALTY_NORM is None:
+        _SPECIALTY_NORM = frozenset(_normalize_for_keywords(s) for s in _SPECIALTY_TAGS)
+    return _SPECIALTY_NORM
+
+
+def _get_item_tag(tags_set: set) -> str:
+    """Retourne le tag 'item-' EDN (format: edn::item-NNN-nom) si présent, sinon ''.
+    
+    Le tag est normalisé (accents supprimés, minuscules) donc on cherche
+    'edn::item-' dans les tags normalisés.
+    Exemple réel: 'EDN::item-117-Psoriasis' -> normalisé 'edn::item-117-psoriasis'
+    """
+    for t in tags_set:
+        if 'edn::item-' in t:
+            return t
+    # Fallback : tag item- générique
+    for t in tags_set:
+        if '::item-' in t:
+            return t
+    return ''
+
+
+def _get_specialty_tags(tags_set: set) -> set:
+    """Retourne les tags de spécialité de haut niveau parmi les tags normalisés.
+    
+    Gère les tags plats ('dermatologie') et hiérarchiques ('dermatologie::lesions_elementaires').
+    Retourne la partie racine (avant '::') pour les tags hiérarchiques.
+    """
+    spec_norm = _get_specialty_norm()
+    result = set()
+    for t in tags_set:
+        # Tag plat exact
+        if t in spec_norm:
+            result.add(t)
+        # Tag hiérarchique : vérifier la racine (ex: 'dermatologie::lesions...' -> 'dermatologie')
+        elif '::' in t:
+            root = t.split('::')[0]
+            if root in spec_norm:
+                result.add(root)
+    return result
+
+
+def _get_subspecialty_tags(tags_set: set) -> set:
+    """Retourne les sous-spécialités (tags hiérarchiques de niveau 2).
+    
+    Exemple: 'dermatologie::lesions_elementaires' -> {'dermatologie::lesions_elementaires'}
+    Utile pour matcher les cartes de même sous-chapitre.
+    """
+    result = set()
+    spec_norm = _get_specialty_norm()
+    for t in tags_set:
+        if '::' in t:
+            root = t.split('::')[0]
+            if root in spec_norm:
+                result.add(t)  # ex: 'dermatologie::lesions_elementaires'
+    return result
+
+
+def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids: set, max_results: int = 30) -> list:
+    """Calcule les suggestions de liens pour la note courante.
+    
+    Algorithme multi-critères scoré et optimisé, prenant en compte le contenu,
+    les items ECN, les spécialités, le réseau de liens, les dates de création
+    et les classements (rangs, modifications).
+    
+    Scores de base (cumulatifs) :
+    - Tags item- identiques (même item ECN) : +12
+    - Tags spécialité communs : +8 par spécialité (plafonné à +16)
+    - Amis-d'amis (cartes liées aux cartes liées) : +5 par occurrence
+    - Mots-clés communs ≥2 : +2/mot, plafonné à +10
+    - Même sous-deck exact (≥2 niveaux) : +3 (ou +2 si préfixe de niveau 2 commun)
+    
+    Bonus thématiques conditionnels (appliqués uniquement si une relation de sujet/thématique existe) :
+    - Même classement (mêmes tags de rang : Rang::A, Rang::B, Rang::C) : +2
+    - Même étiquette de mise à jour (mêmes tags de date de MAJ : MAJ::XX/XX) : +2
+    - Proximité de date en base de données (Note ID pour création, mod pour modification) :
+      - <= 1 jour (creation ou modification) : +6
+      - <= 7 jours (creation ou modification) : +3
+      - <= 30 jours (creation ou modification) : +1
+    
+    Exclusions :
+    - La carte courante elle-même
+    - Les cartes déjà liées (tous types de liens)
+    - Les candidats avec score final < 4 (seuil anti-bruit)
+    - Les candidats sans texte dans les champs principaux
+    
+    Retourne une liste de dicts {nid, recto, score} triés par score décroissant.
+    """
+    from collections import defaultdict
+    base_scores = {}       # nid -> int score (item, spec, subdeck, fof, keywords)
+    date_bonuses = {}      # nid -> int
+    rank_bonuses = {}      # nid -> int
+    maj_bonuses = {}       # nid -> int
+    has_topic_relation = {} # nid -> bool (item, spec, fof, or keywords match)
+    
+    all_linked = set(existing_nids) | {current_nid}
+
+    # === Récupérer métadonnées de la note source ===
+    source_tags_norm = set()
+    source_item_tag = ''
+    source_specialty_tags = set()
+    source_subdeck = ''
+    source_root_deck = ''
+    source_ranks = set()
+    source_majs = set()
+    
+    source_mod = 0
+    try:
+        source_mod = col.db.scalar("SELECT mod FROM notes WHERE id = ?", int(current_nid)) or 0
+    except Exception:
+        pass
+        
+    try:
+        src_note = col.get_note(int(current_nid))
+        src_tags_str = ' '.join(src_note.tags)
+        source_tags_norm = _extract_tags_normalized(src_tags_str)
+        source_item_tag = _get_item_tag(source_tags_norm)
+        source_specialty_tags = _get_specialty_tags(source_tags_norm)
+        source_ranks = {t for t in source_tags_norm if 'rang::' in t}
+        source_majs = {t for t in source_tags_norm if 'maj::' in t}
+        
+        cards = src_note.cards()
+        if cards:
+            deck_id = cards[0].did
+            deck_name = col.decks.name(deck_id)
+            parts = deck_name.split("::")
+            source_root_deck = parts[0]
+            source_subdeck = deck_name if len(parts) >= 2 else ''
+    except Exception:
+        pass
+
+    # === Source 1 : Tags & Métadonnées (item, spécialité, sous-deck, rang, date) ===
+    try:
+        if source_root_deck:
+            deck_nids_raw = col.find_notes(f'deck:"{source_root_deck}"')
+        else:
+            deck_nids_raw = []
+        
+        if deck_nids_raw:
+            target_ids = [int(n) for n in deck_nids_raw if str(n) not in all_linked]
+            # Batch fetch tags et mod via SQL
+            if target_ids:
+                chunk_size = 500
+                for i in range(0, len(target_ids), chunk_size):
+                    chunk = target_ids[i:i+chunk_size]
+                    try:
+                        rows = col.db.all(
+                            f"SELECT id, tags, mod FROM notes WHERE id IN ({','.join(map(str, chunk))})"
+                        )
+                        
+                        # Batch fetch first card deck for all notes in chunk
+                        nid_to_did = {}
+                        if source_subdeck:
+                            try:
+                                card_rows = col.db.all(
+                                    f"SELECT nid, did FROM cards WHERE nid IN ({','.join(map(str, chunk))}) GROUP BY nid"
+                                )
+                                for crow in card_rows:
+                                    nid_to_did[str(crow[0])] = crow[1]
+                            except Exception:
+                                pass
+                        
+                        for row in rows:
+                            cnid = str(row[0])
+                            if cnid in all_linked:
+                                continue
+                            ctags_norm = _extract_tags_normalized(row[1] or '')
+                            cmod = int(row[2]) if row[2] is not None else 0
+                            
+                            b_score = 0
+                            topic_rel = False
+                            
+                            # Score item tag
+                            c_item_tag = _get_item_tag(ctags_norm)
+                            if source_item_tag and c_item_tag and source_item_tag == c_item_tag:
+                                b_score += 12
+                                topic_rel = True
+                            
+                            # Score spécialité
+                            c_specialty = _get_specialty_tags(ctags_norm)
+                            common_spec = source_specialty_tags & c_specialty
+                            if common_spec:
+                                bonus = min(len(common_spec) * 8, 16)
+                                b_score += bonus
+                                topic_rel = True
+                            
+                            # Score sous-deck
+                            if source_subdeck and cnid in nid_to_did:
+                                try:
+                                    cdid = nid_to_did[cnid]
+                                    cdeck = col.decks.name(cdid)
+                                    if cdeck == source_subdeck:
+                                        b_score += 3
+                                    elif '::' in cdeck and '::' in source_subdeck:
+                                        cparts = cdeck.split("::")
+                                        sparts = source_subdeck.split("::")
+                                        if len(cparts) >= 2 and len(sparts) >= 2 and cparts[:2] == sparts[:2]:
+                                            b_score += 2
+                                except Exception:
+                                    pass
+                                    
+                            # Calculer les bonus de classement (rang, maj)
+                            cranks = {t for t in ctags_norm if 'rang::' in t}
+                            rank_bonus = 2 if (source_ranks & cranks) else 0
+                            
+                            cmajs = {t for t in ctags_norm if 'maj::' in t}
+                            maj_bonus = 2 if (source_majs & cmajs) else 0
+                            
+                            # Calculer la proximité de date à partir de la DB (création et modification)
+                            try:
+                                diff_creation_days = abs(int(current_nid) - int(cnid)) / (1000 * 60 * 60 * 24)
+                                diff_mod_days = abs(source_mod - cmod) / (60 * 60 * 24)
+                                diff_days = min(diff_creation_days, diff_mod_days)
+                                
+                                if diff_days <= 1.0:
+                                    date_bonus = 6
+                                elif diff_days <= 7.0:
+                                    date_bonus = 3
+                                elif diff_days <= 30.0:
+                                    date_bonus = 1
+                                else:
+                                    date_bonus = 0
+                            except Exception:
+                                date_bonus = 0
+                                
+                            if b_score > 0 or date_bonus > 0 or rank_bonus > 0 or maj_bonus > 0:
+                                base_scores[cnid] = b_score
+                                has_topic_relation[cnid] = topic_rel
+                                date_bonuses[cnid] = date_bonus
+                                rank_bonuses[cnid] = rank_bonus
+                                maj_bonuses[cnid] = maj_bonus
+                                
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # === Source 2 : Amis-d'amis (réseau de liens existants) ===
+    fof = defaultdict(int)
+    for linked_nid in list(all_linked - {current_nid}):
+        try:
+            linked_note = col.get_note(int(linked_nid))
+            linked_out = extract_nids_from_fields_list(linked_note.fields)
+            for candidate_nid in linked_out:
+                if candidate_nid not in all_linked:
+                    fof[candidate_nid] += 1
+        except Exception:
+            pass
+        try:
+            backlink_nids = col.find_notes(f'"{linked_nid}"')
+            for bn in backlink_nids:
+                candidate_nid = str(bn)
+                if candidate_nid not in all_linked:
+                    try:
+                        bn_note = col.get_note(bn)
+                        if linked_nid in extract_nids_from_fields_list(bn_note.fields):
+                            fof[candidate_nid] += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    for candidate_nid, count in fof.items():
+        base_scores[candidate_nid] = base_scores.get(candidate_nid, 0) + (count * 5)
+        has_topic_relation[candidate_nid] = True
+        if candidate_nid not in date_bonuses:
+            try:
+                rows_cand = col.db.all("SELECT tags, mod FROM notes WHERE id = ?", int(candidate_nid))
+                if rows_cand:
+                    row_cand = rows_cand[0]
+                    ctags_norm = _extract_tags_normalized(row_cand[0] or '')
+                    cmod = int(row_cand[1]) if row_cand[1] is not None else 0
+                    
+                    cranks = {t for t in ctags_norm if 'rang::' in t}
+                    rank_bonuses[candidate_nid] = 2 if (source_ranks & cranks) else 0
+                    cmajs = {t for t in ctags_norm if 'maj::' in t}
+                    maj_bonuses[candidate_nid] = 2 if (source_majs & cmajs) else 0
+                    
+                    diff_creation_days = abs(int(current_nid) - int(candidate_nid)) / (1000 * 60 * 60 * 24)
+                    diff_mod_days = abs(source_mod - cmod) / (60 * 60 * 24)
+                    diff_days = min(diff_creation_days, diff_mod_days)
+                    
+                    if diff_days <= 1.0:
+                        date_bonuses[candidate_nid] = 6
+                    elif diff_days <= 7.0:
+                        date_bonuses[candidate_nid] = 3
+                    elif diff_days <= 30.0:
+                        date_bonuses[candidate_nid] = 1
+                    else:
+                        date_bonuses[candidate_nid] = 0
+            except Exception:
+                date_bonuses[candidate_nid] = 0
+                rank_bonuses[candidate_nid] = 0
+                maj_bonuses[candidate_nid] = 0
+
+    # === Pré-filtre : générer des scores temporaires avec bonus pour sélectionner les top_candidates ===
+    temp_scores = {}
+    for nid, b_sc in base_scores.items():
+        temp_scores[nid] = b_sc + date_bonuses.get(nid, 0) + rank_bonuses.get(nid, 0) + maj_bonuses.get(nid, 0)
+        
+    top_candidates = sorted(temp_scores.keys(), key=lambda n: temp_scores[n], reverse=True)[:max_results * 4]
+
+    # === Source 3 : Mots-clés communs dans le champ principal ===
+    source_tokens = _extract_keywords(note_fields[0] if note_fields else "")
+    for fld in (note_fields[1:3] if len(note_fields) > 1 else []):
+        source_tokens |= _extract_keywords(fld)
+    
+    if source_tokens:
+        for candidate_nid in top_candidates:
+            try:
+                cnote = col.get_note(int(candidate_nid))
+                if cnote.fields:
+                    candidate_tokens = _extract_keywords(cnote.fields[0])
+                    if len(cnote.fields) > 1:
+                        candidate_tokens |= _extract_keywords(cnote.fields[1])
+                    common_count = len(source_tokens & candidate_tokens)
+                    if common_count >= 2:  # Seuil minimal : au moins 2 mots communs
+                        keyword_score = min(common_count * 2, 10)
+                        base_scores[candidate_nid] = base_scores.get(candidate_nid, 0) + keyword_score
+                        has_topic_relation[candidate_nid] = True
+            except Exception:
+                pass
+
+    # === Calculer le score final en appliquant les bonus conditionnels ===
+    final_scores = {}
+    for nid, b_sc in base_scores.items():
+        if has_topic_relation.get(nid, False):
+            final_scores[nid] = b_sc + date_bonuses.get(nid, 0) + rank_bonuses.get(nid, 0) + maj_bonuses.get(nid, 0)
+        else:
+            final_scores[nid] = b_sc
+
+    # === Filtre final : score minimum ≥ 4 pour être suggéré ===
+    MIN_SCORE = 4
+    qualified = {nid: sc for nid, sc in final_scores.items() if sc >= MIN_SCORE}
+    
+    # Trier et enrichir avec le recto
+    sorted_nids = sorted(qualified.keys(), key=lambda n: qualified[n], reverse=True)[:max_results]
+    results = []
+    for nid in sorted_nids:
+        try:
+            note = col.get_note(int(nid))
+            recto = get_note_recto(note)
+            if recto and recto != "[Vide]":
+                results.append({
+                    "nid": nid,
+                    "recto": recto,
+                    "score": qualified[nid]
+                })
+        except Exception:
+            pass
+    return results
+
 def extract_nids_from_fields_list(fields):
     nids = set()
     for f in fields:
@@ -1485,47 +2111,216 @@ def extract_nids_from_fields_list(fields):
 def extract_nids_from_fields(note):
     return extract_nids_from_fields_list(note.fields)
 
-def get_fields_recto(fields):
+def clean_cloze(text):
+    if not text:
+        return ""
+    import re
+    return re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', text)
+
+def detect_smart_label(source_note, target_note):
+    if not source_note or not target_note:
+        return None
+        
+    def get_raw_text(n):
+        if not n or not n.fields:
+            return ""
+        raw = n.fields[0]
+        if not raw:
+            return ""
+        import re
+        clean = re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', raw)
+        clean = re.sub(r'<[^>]+>', ' ', clean).replace('&nbsp;', ' ')
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        import html
+        return html.unescape(clean).lower()
+        
+    t_source = get_raw_text(source_note)
+    t_target = get_raw_text(target_note)
+    
+    if not t_source or not t_target:
+        return None
+        
+    def get_pathology_key(title):
+        title = title.replace("syndrome du", "").replace("syndrome de la", "").replace("syndrome de l'", "").replace("syndrome de", "").replace("syndrome d'", "")
+        title = title.replace("sémiologie du", "").replace("sémiologie de la", "").replace("sémiologie de l'", "").replace("sémiologie de", "").replace("sémiologie d'", "")
+        title = title.replace("diagnostic du", "").replace("diagnostic de la", "").replace("diagnostic de l'", "").replace("diagnostic de", "").replace("diagnostic d'", "")
+        title = title.replace("traitement du", "").replace("traitement de la", "").replace("traitement de l'", "").replace("traitement de", "").replace("traitement d'", "")
+        title = title.replace("évolutions et complications du", "").replace("complications du", "").replace("complications de", "")
+        return title.strip()
+        
+    key_target = get_pathology_key(t_target)
+    key_source = get_pathology_key(t_source)
+    
+    is_target_syndrome = False
+    try:
+        is_target_syndrome = "syndrome" in target_note.note_type()['name'].lower()
+    except:
+        pass
+        
+    is_source_syndrome = False
+    try:
+        is_source_syndrome = "syndrome" in source_note.note_type()['name'].lower()
+    except:
+        pass
+
+    is_parent = False
+    if is_target_syndrome and not is_source_syndrome:
+        if key_target in t_source:
+            is_parent = True
+    elif key_target in t_source and len(key_target) > 5 and len(t_target) < len(t_source):
+        is_parent = True
+        
+    if is_parent:
+        return "Main"
+        
+    is_child = False
+    if is_source_syndrome and not is_target_syndrome:
+        if key_source in t_target or any(key_source in f.lower() for f in target_note.fields):
+            is_child = True
+    elif key_source in t_target and len(key_source) > 5 and len(t_source) < len(t_target):
+        is_child = True
+        
+    if is_child:
+        if any(w in t_target for w in ["traitement", "chirurgie", "thérapeutique", "médical", "infiltration", "corticoïde", "prise en charge"]):
+            return "Traitements"
+        if any(w in t_target for w in ["enmg", "irm", "scanner", "radio", "biologie", "examen", "complémentaire", "diagnostic", "imagerie", "échographie", "radiographie", "ponction"]):
+            return "Examens complémentaires"
+        is_semiology = False
+        try:
+            is_semiology = "sémiologie" in target_note.note_type()['name'].lower()
+        except:
+            pass
+        if is_semiology or any(w in t_target for w in ["signe", "symptôme", "sémiologie", "clinique", "physiopathologie", "déficit", "douleur", "paresthésie"]):
+            return "Signes"
+            
+    return None
+
+def get_fields_recto(fields, is_cloze=False, fld_names=None, source_note=None, target_note=None):
     try:
         import html as _html
-        raw = fields[0]
-        clean = re.sub(r'<[^>]+>', ' ', raw).replace('&nbsp;', ' ')
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        # Décoder les entités HTML résiduelles (&amp; → &, &lt; → <, etc.)
-        return _html.unescape(clean)[:100] or "[Vide]"
+        config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
+        desc_intelligent = config.get("description_intelligente", True)
+        
+        if desc_intelligent and source_note and target_note:
+            smart_label = detect_smart_label(source_note, target_note)
+            if smart_label:
+                return smart_label
+                
+        # Si c'est une note de type Cloze (Texte à trous) et que la description intelligente est activée,
+        # on extrait le contenu de C2 en priorité, sinon C1
+        if desc_intelligent and is_cloze:
+            try:
+                # 1. Essayer d'extraire C2 en priorité
+                c2_contents = []
+                for raw in fields:
+                    matches = re.findall(r'\{\{c2::(.*?)(?:::[^}]+)?\}\}', raw, re.IGNORECASE | re.DOTALL)
+                    for m in matches:
+                        clean = re.sub(r'<[^>]+>', ' ', m).replace('&nbsp;', ' ')
+                        clean = re.sub(r'\s+', ' ', clean).strip()
+                        clean_decoded = _html.unescape(clean)
+                        if clean_decoded:
+                            c2_contents.append(clean_decoded)
+                if c2_contents:
+                    return " ".join(c2_contents)[:100]
+
+                # 2. Sinon essayer C1
+                c1_contents = []
+                for raw in fields:
+                    matches = re.findall(r'\{\{c1::(.*?)(?:::[^}]+)?\}\}', raw, re.IGNORECASE | re.DOTALL)
+                    for m in matches:
+                        clean = re.sub(r'<[^>]+>', ' ', m).replace('&nbsp;', ' ')
+                        clean = re.sub(r'\s+', ' ', clean).strip()
+                        clean_decoded = _html.unescape(clean)
+                        if clean_decoded:
+                            c1_contents.append(clean_decoded)
+                if c1_contents:
+                    return " ".join(c1_contents)[:100]
+            except:
+                pass
+
+        for raw in fields:
+            clean = clean_cloze(raw)
+            clean = re.sub(r'<[^>]+>', ' ', clean).replace('&nbsp;', ' ')
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            clean_decoded = _html.unescape(clean)
+            if clean_decoded:
+                return clean_decoded[:100]
+        return "[Vide]"
     except:
         return "[Erreur]"
 
-def get_note_recto(note):
-    return get_fields_recto(note.fields)
+def get_note_recto(note, source_note=None):
+    is_cloze = False
+    fld_names = None
+    try:
+        is_cloze = note.note_type()['type'] == 1
+        fld_names = [f['name'] for f in note.note_type()['flds']]
+    except:
+        pass
+    return get_fields_recto(note.fields, is_cloze=is_cloze, fld_names=fld_names, source_note=source_note, target_note=note)
 
 def _bg_fetch_relations(col, current_nid: str, note_fields: list[str]) -> dict:
+    source_note = None
+    try:
+        source_note = col.get_note(int(current_nid))
+    except:
+        pass
+
+    # Dummy Note class to avoid col.get_note lock contention and overhead
+    class DummyNote:
+        def __init__(self, id, fields, mid, col):
+            self.id = id
+            self.fields = fields
+            self.mid = mid
+            self._col = col
+            self._note_type = None
+
+        def note_type(self):
+            if self._note_type is None:
+                try:
+                    self._note_type = self._col.models.get(self.mid)
+                except:
+                    self._note_type = {"name": "", "type": 0, "flds": []}
+            return self._note_type
+
     # 1. Backlinks: Cards pointing to this note
     query = f'"{current_nid}"'
     backlink_nids = col.find_notes(query)
     
     backlinks = []
-    for bnid in backlink_nids:
-        if str(bnid) == current_nid: continue
+    target_backlink_ids = [int(nid) for nid in backlink_nids if str(nid) != current_nid]
+    if target_backlink_ids:
         try:
-            bnote = col.get_note(bnid)
-            bnote_nids = extract_nids_from_fields_list(bnote.fields)
-            if current_nid in bnote_nids:
-                backlinks.append({"nid": str(bnid), "recto": get_fields_recto(bnote.fields)})
-        except:
-            pass
+            rows = col.db.all(f"select id, flds, mid from notes where id in ({','.join(map(str, target_backlink_ids))})")
+            for row in rows:
+                bnid = row[0]
+                row_flds = row[1]
+                mid = row[2]
+                fields = row_flds.split("\x1f")
+                bnote_nids = extract_nids_from_fields_list(fields)
+                if current_nid in bnote_nids:
+                    bnote = DummyNote(bnid, fields, mid, col)
+                    backlinks.append({"nid": str(bnid), "recto": get_note_recto(bnote, source_note=source_note)})
+        except Exception as e:
+            print("Error batch fetching backlinks in _bg_fetch_relations:", e)
 
     # 2. Outgoing links: Cards this note points to
     outgoing_nids = extract_nids_from_fields_list(note_fields)
     
     outgoing = []
-    for onid in outgoing_nids:
-        if onid == current_nid: continue
+    target_outgoing_ids = [int(onid) for onid in outgoing_nids if onid != current_nid]
+    if target_outgoing_ids:
         try:
-            onote = col.get_note(int(onid))
-            outgoing.append({"nid": onid, "recto": get_fields_recto(onote.fields)})
-        except:
-            pass
+            rows = col.db.all(f"select id, flds, mid from notes where id in ({','.join(map(str, target_outgoing_ids))})")
+            for row in rows:
+                onid = row[0]
+                row_flds = row[1]
+                mid = row[2]
+                fields = row_flds.split("\x1f")
+                onote = DummyNote(onid, fields, mid, col)
+                outgoing.append({"nid": str(onid), "recto": get_note_recto(onote, source_note=source_note)})
+        except Exception as e:
+            print("Error batch fetching outgoing in _bg_fetch_relations:", e)
 
     # Compare
     outgoing_nids_set = set(n["nid"] for n in outgoing)
@@ -1535,10 +2330,15 @@ def _bg_fetch_relations(col, current_nid: str, note_fields: list[str]) -> dict:
     mirrors = [n for n in backlinks if n["nid"] in outgoing_nids_set]
     missing_outgoing = [n for n in outgoing if n["nid"] not in backlink_nids_set]
 
+    # Les suggestions sont calculées séparément dans un second QueryOp (chargement différé)
+    # pour éviter de bloquer l'affichage des backlinks/mirrors.
+    existing_nids = outgoing_nids_set | backlink_nids_set
+
     return {
         "missing_backlinks": missing_backlinks,
         "mirrors": mirrors,
-        "missing_outgoing": missing_outgoing
+        "missing_outgoing": missing_outgoing,
+        "existing_nids": existing_nids,
     }
 
 def update_assistant(editor):
@@ -1591,6 +2391,10 @@ def update_assistant(editor):
     except Exception:
         _kbd_next, _kbd_prev, _kbd_open, _kbd_back = "n", "p", "r", "z"
 
+    # Numéro de séquence pour détecter les changements de note pendant le chargement
+    _update_seq = getattr(editor, '_assistant_update_seq', 0) + 1
+    editor._assistant_update_seq = _update_seq
+
     def on_success(res):
         try:
             assistant.objectName()
@@ -1601,10 +2405,13 @@ def update_assistant(editor):
         current_note = getattr(editor, 'note', None)
         if not current_note or str(current_note.id) != current_nid:
             return  # Discard if note changed or editor closed
+        if getattr(editor, '_assistant_update_seq', 0) != _update_seq:
+            return  # Une mise à jour plus récente a déjà été lancée
             
         missing_backlinks = res["missing_backlinks"]
         mirrors = res["mirrors"]
         missing_outgoing = res["missing_outgoing"]
+        existing_nids = res.get("existing_nids", set())
 
         _shortcuts_script = (
             f"<script>window._ednMiroirKeys = {{"
@@ -1615,12 +2422,10 @@ def update_assistant(editor):
         
         def _card_item_html(n, actions_html="", card_class=""):
             recto_esc = n['recto'].replace('&', '&amp;').replace("'", '&#39;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
-            nid_badge = f"<span class='card-nid-badge'>{n['nid']}</span>"
             actions_div = f"<div class='card-actions'>{actions_html}</div>" if actions_html else ""
             return f"""
             <div class='card-item {card_class}' data-nid='{n['nid']}'>
                 <div class='card-title'>{recto_esc}</div>
-                {nid_badge}
                 {actions_div}
             </div>
             """
@@ -1656,8 +2461,20 @@ def update_assistant(editor):
                 html += _card_item_html(n, add_btn, "incoming")
         html += "</div>"
         
+        # Section 4: Liens Suggérés — placeholder spinner (chargement différé)
+        config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
+        suggestions_enabled = config.get("suggestions_de_liens", True)
+        if suggestions_enabled:
+            html += "<h3>💡 Liens Suggérés</h3><div class='section' id='edn-suggestions-section'><div class='suggestions-loading'>Calcul des suggestions…</div></div>"
+        # (section omise si désactivé)
+        
         html += """
         <script>
+        // --- Injection des suggestions depuis Python (chargement différé) ---
+        window._ednInjectSuggestions = function(suggestionsHtml) {
+            var sec = document.getElementById('edn-suggestions-section');
+            if (sec) { sec.innerHTML = suggestionsHtml; }
+        };
         document.addEventListener("click", function(e) {
             // Priorité : bouton action (btn-add / btn-preview)
             var btn = e.target.closest ? e.target.closest('[data-action]') : null;
@@ -1673,6 +2490,38 @@ def update_assistant(editor):
                     sendPycmd('preview_card:' + nid);
                 } else if (action === 'open_browser') {
                     sendPycmd('open_browser:' + nid);
+                } else if (action === 'add_suggested') {
+                    sendPycmd('add_suggested:' + nid + '|||' + recto);
+                    // Masquer visuellement la suggestion ajoutée
+                    var card = btn.closest('.card-item');
+                    if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
+                    e.stopPropagation();
+                    return;
+                }
+                e.stopPropagation();
+                return;
+            }
+            // Bouton "Charger plus"
+            var loadBtn = e.target.closest ? e.target.closest('#edn-load-more-btn') : null;
+            if (loadBtn) {
+                var shown = parseInt(loadBtn.getAttribute('data-shown') || '5', 10);
+                var total = parseInt(loadBtn.getAttribute('data-total') || '0', 10);
+                var pageSize = 5;
+                var items = document.querySelectorAll('.card-item.suggested');
+                var revealed = 0;
+                for (var i = 0; i < items.length; i++) {
+                    if (items[i].classList.contains('suggested-hidden') && revealed < pageSize) {
+                        items[i].classList.remove('suggested-hidden');
+                        revealed++;
+                    }
+                }
+                var newShown = shown + revealed;
+                loadBtn.setAttribute('data-shown', newShown);
+                var remaining = total - newShown;
+                if (remaining <= 0) {
+                    loadBtn.style.display = 'none';
+                } else {
+                    loadBtn.textContent = 'Charger plus (' + remaining + ' restantes)';
                 }
                 e.stopPropagation();
                 return;
@@ -1849,6 +2698,86 @@ def update_assistant(editor):
             assistant.stdHtml(html)
         except RuntimeError:
             editor._editor_assistant_web = None
+            return
+
+        # === Passe 2 : calcul différé des suggestions (sans bloquer l'UI) ===
+        config2 = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
+        if not config2.get("suggestions_de_liens", True):
+            return  # suggestions désactivées : rien à faire
+
+        def _bg_suggestions(col):
+            try:
+                suggestions = _compute_suggestions(
+                    col, current_nid, note_fields, existing_nids
+                )
+                return suggestions
+            except Exception as se:
+                print("Error computing suggestions (deferred):", se)
+                return []
+
+        def _on_suggestions_ready(suggestions):
+            # Vérifications de sécurité
+            try:
+                assistant.objectName()
+            except RuntimeError:
+                return
+            current_note2 = getattr(editor, 'note', None)
+            if not current_note2 or str(current_note2.id) != current_nid:
+                return
+            if getattr(editor, '_assistant_update_seq', 0) != _update_seq:
+                return
+
+            # Construire le HTML des suggestions
+            _PAGE_SIZE = 5
+            if not suggestions:
+                inner_html = "<div class='empty'>Aucune suggestion. Ajoutez des liens pour en voir apparaître.</div>"
+            else:
+                inner_html = ""
+                for idx, n in enumerate(suggestions):
+                    recto_esc = (n['recto']
+                        .replace('&', '&amp;')
+                        .replace("'", '&#39;')
+                        .replace('"', '&quot;')
+                        .replace('<', '&lt;')
+                        .replace('>', '&gt;'))
+                    score_badge = f"<span class='score-badge'>★ {n['score']}</span>"
+                    add_btn = (f"<button class='btn-add' data-action='add_suggested' "
+                               f"data-nid='{n['nid']}' data-recto='{recto_esc}'>+ Ajouter</button>")
+                    hidden_class = " suggested-hidden" if idx >= _PAGE_SIZE else ""
+                    inner_html += (
+                        f"<div class='card-item suggested{hidden_class}' "
+                        f"data-nid='{n['nid']}' data-suggestion-idx='{idx}'>"
+                        f"<div class='card-title'>{recto_esc}{score_badge}</div>"
+                        f"<div class='card-actions'>{add_btn}</div>"
+                        f"</div>"
+                    )
+                if len(suggestions) > _PAGE_SIZE:
+                    remaining = len(suggestions) - _PAGE_SIZE
+                    inner_html += (
+                        f"<button class='btn-load-more' id='edn-load-more-btn' "
+                        f"data-shown='{_PAGE_SIZE}' data-total='{len(suggestions)}'>"
+                        f"Charger plus ({remaining} restantes)</button>"
+                    )
+
+            # Injecter via JS dans la section placeholder (sans recharger la page)
+            import json as _json
+            js_html = _json.dumps(inner_html)
+            try:
+                assistant.page().runJavaScript(
+                    f"window._ednInjectSuggestions({js_html});"
+                )
+            except Exception as je:
+                print("Error injecting suggestions via JS:", je)
+
+        if HAS_QUERY_OP:
+            op2 = QueryOp(
+                parent=mw,
+                op=_bg_suggestions,
+                success=_on_suggestions_ready
+            )
+            op2.run_in_background()
+        else:
+            _on_suggestions_ready(_bg_suggestions(mw.col))
 
     if HAS_QUERY_OP:
         op = QueryOp(
@@ -1963,6 +2892,59 @@ def handle_assistant_message(handled, message, context):
         except Exception as e:
             print("Erreur make_reciprocal:", e)
         return (True, None)
+ 
+    elif message.startswith("add_suggested:"):
+        try:
+            parts = message.split("add_suggested:")[1].split("|||")
+            nid = parts[0].strip()
+            recto = parts[1] if len(parts) > 1 else ""
+            
+            editor = get_active_editor(context)
+            if not editor or not editor.note:
+                return (True, None)
+            
+            # Ajouter le badge dans le champ "Cartes liées" de la note courante
+            recto_escaped = recto.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
+            badge_html = f'{recto_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
+            
+            target_fidx = _find_field_by_name_or_default(editor.note, None)
+            current_note_ref = editor.note
+            
+            def _on_suggested_saved():
+                try:
+                    current_val = current_note_ref.fields[target_fidx].strip()
+                    if not current_val or current_val == "<br>":
+                        new_val = badge_html
+                    else:
+                        new_val = current_val + "<br>" + badge_html
+                    
+                    current_note_ref.fields[target_fidx] = new_val
+                    mw.col.update_note(current_note_ref)
+                    
+                    if hasattr(editor, 'loadNoteKeepingFocus'):
+                        editor.loadNoteKeepingFocus()
+                    else:
+                        editor.loadNote()
+                    update_assistant(editor)
+                    
+                    # Proposer la création du miroir uniquement pour le lien suggéré qui vient d'être ajouté
+                    try:
+                        from .linked_cards import _proposal_queue, _propose_mirror_links_group
+                        updated_note = mw.col.get_note(current_note_ref.id)
+                        _proposal_queue.add(lambda done: _propose_mirror_links_group(
+                            editor, updated_note, [(nid, recto)], done
+                        ))
+                    except Exception as mirror_err:
+                        print("Erreur mirror pour suggestion:", mirror_err)
+                except Exception as save_err:
+                    print("Erreur _on_suggested_saved:", save_err)
+            
+            editor.saveNow(_on_suggested_saved)
+            
+        except Exception as e:
+            print("Erreur add_suggested:", e)
+        return (True, None)
+
  
     elif message.startswith("open_browser:"):
         try:

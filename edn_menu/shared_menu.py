@@ -222,3 +222,29 @@ def open_settings_dialog():
             title="Composants optionnels manquants"
         )
 
+def _initialize_card_styles_on_start():
+    if not mw:
+        return
+    if not hasattr(mw, "_edn_card_styles_initialized"):
+        mw._edn_card_styles_initialized = True
+        try:
+            if __package__:
+                from . import card_styles
+            else:
+                import card_styles
+            
+            card_styles.init_card_styles()
+            
+            # Forcer l'écriture immédiate et la synchronisation initiale
+            card_styles._on_profile_opened()
+            
+            # Enregistrer la construction du menu après l'initialisation de la fenêtre principale
+            from aqt import gui_hooks
+            gui_hooks.main_window_did_init.append(card_styles.setup_card_styles_menu)
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[shared_menu] Erreur initialisation card_styles: {e}")
+
+from aqt import gui_hooks
+gui_hooks.profile_did_open.append(_initialize_card_styles_on_start)
