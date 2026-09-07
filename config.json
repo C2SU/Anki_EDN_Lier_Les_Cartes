@@ -1,17 +1,14 @@
 {
-    "multiple": {
-        "default": true
-    },
+    "assistant_panel_open": false,
+    "description_intelligente": true,
+    "suggestions_de_liens": true,
+    "gui_mirror_cb_state": true,
+    "gui_recto_only_cb_state": false,
     "gui_trigger": "nid:",
-    "kbd_open_card": "n",
-    "kbd_preview": "p",
     "hidden_preview_sections": [
         "sourcesMegaContainer",
         "commentsMegaContainer",
         "tagsMegaContainer"
     ],
-    "kbd_navigate": "Tab",
-    "mirror_link_on_paste": true,
-    "assistant_panel_open": false,
-    "description_intelligente": true
+    "mirror_link_on_paste": true
 }

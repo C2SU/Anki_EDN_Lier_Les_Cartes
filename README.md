@@ -88,7 +88,7 @@ Vous êtes libre de :
 ## 💡 Support
 
 Pour toute question, suggestion ou rapport de bug :
-- [Anki EDN Documentation](https://tools.c2su.org/Anki_EDN/book/)
+- [Anki EDN Documentation](https://c2su.github.io/Anki_EDN/Anki_EDN.html)
 - [Discord Anki EDN](https://discord.gg/2A7zHAEBYt)
 - [GitHub Repository](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)
 - [AnkiWeb Page](https://ankiweb.net/shared/info/445658251)

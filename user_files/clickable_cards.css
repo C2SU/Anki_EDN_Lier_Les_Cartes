@@ -44,13 +44,14 @@ kbd.clickable_cards:focus-visible {
 #edn-preview-box {
   position: fixed;        /* fixed = no layout reflow, spaces don't jump */
   z-index: 99999;
-  max-width: 400px;
+  max-width: 480px;
   max-height: 90vh;       /* limite la hauteur et évite le surplus en bas */
   overflow-y: auto;
   background-color: #f5f6f7;
   border: 2px solid #c0c1c5;
   border-radius: 5px;
-  padding: 10px;
+  padding: 2px 3px !important;
+  box-sizing: border-box !important;
   box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
   color: #1d2129;
   font-size: 16px;

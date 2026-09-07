@@ -12,10 +12,17 @@ import os
 _edn_menu = None
 _config_path = None  # Will be initialized lazily when needed
 
+_local_registry = {}
+
 def _get_registry() -> dict:
     """Get the global module registry shared across all EDN addons via mw."""
+    if mw is None:
+        return _local_registry
     if not hasattr(mw, '_edn_registered_modules'):
         mw._edn_registered_modules = {}
+    if _local_registry:
+        mw._edn_registered_modules.update(_local_registry)
+        _local_registry.clear()
     return mw._edn_registered_modules
 
 def _get_config_path():
@@ -23,7 +30,7 @@ def _get_config_path():
     global _config_path
     if _config_path is None:
         # Prevent crash if profile is not yet loaded (e.g. during addon scan)
-        if not mw.pm or not mw.pm.name:
+        if mw is None or not mw.pm or not mw.pm.name:
             return None
         # CRITICAL: Use profile folder for shared config across all EDN addons
         _config_path = os.path.join(mw.pm.profileFolder(), "edn_shared_config.json")
@@ -54,7 +61,7 @@ def get_edn_menu():
         
         # Add settings action at bottom
         _edn_menu.addSeparator()
-        settings_action = QAction("⚙️ Paramètres EDN...", mw)
+        settings_action = QAction("Paramètres EDN...", mw)
         settings_action.triggered.connect(open_settings_dialog)
         _edn_menu.addAction(settings_action)
         
@@ -100,12 +107,16 @@ def register_action(module_id: str, label: str, callback: Callable,
     action = QAction(label, mw)
     action.triggered.connect(callback)
     
-    # NOTE: We intentionally do NOT apply shortcuts to menu actions.
-    # Shortcuts are managed independently (editor_did_init_shortcuts, browser window actions)
-    # so they don't conflict across contexts. The shortcut info is stored in the registry
-    # for reference and display in the config widget only.
     if shortcut:
-        print(f"[shared_menu] Shortcut '{shortcut}' for '{label}' managed externally (not on menu action)")
+        try:
+            # Get custom shortcut from config or use default
+            custom_shortcut = get_shortcut(f"{module_id}_{label}", shortcut)
+            action.setShortcut(QKeySequence(custom_shortcut))
+            # CRITICAL: Set shortcut context to ApplicationShortcut so it works globally
+            action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            print(f"[shared_menu] Set shortcut '{custom_shortcut}' for {label}")
+        except Exception as e:
+            print(f"[shared_menu] Error setting shortcut: {e}")
     
     # Insert before separator (settings is last)
     actions = menu.actions()
@@ -125,27 +136,27 @@ def register_action(module_id: str, label: str, callback: Callable,
     
     return action
 
-
-def register_action_shortcut_only(module_id: str, label: str, callback: Callable,
-                                  shortcut: Optional[str] = None, icon: Optional[str] = None,
-                                  shortcut_key: Optional[str] = None):
+def register_action_shortcut_only(module_id: str, label: str, callback: Optional[Callable] = None, 
+                                  shortcut: Optional[str] = None, shortcut_key: Optional[str] = None):
     """
-    Register an action in the shortcut config dialog ONLY.
-    The action will NOT appear in the EDN dropdown menu.
-    It is still listed in the registry so it's visible in ShortcutsDialog.
-    
-    shortcut_key: explicit config store key (e.g. 'linked_cards_search').
-                  If None, the key will be computed as '{module_id}_{label}'.
+    Register a shortcut for a module without adding an item to the EDN menu bar dropdown.
+    Allows the shortcut to appear and be configured in the EDN Shortcuts dialog.
     """
     registry = _get_registry()
     if module_id in registry:
         registry[module_id]["actions"].append({
             "label": label,
             "shortcut": shortcut,
-            "action": None,  # No QAction in the menu
-            "shortcut_key": shortcut_key  # explicit config key override
+            "shortcut_key": shortcut_key or f"{module_id}_{label}",
+            "action": None,
+            "callback": callback
         })
-    return None
+
+def register_interface(module_id: str, widget_class):
+    """Register custom configuration widget for a module in settings dialog."""
+    registry = _get_registry()
+    if module_id in registry:
+        registry[module_id]["config_widget"] = widget_class
 
 def get_config() -> dict:
     """Load EDN configuration."""
@@ -222,6 +233,7 @@ def open_settings_dialog():
             title="Composants optionnels manquants"
         )
 
+
 def _initialize_card_styles_on_start():
     if not mw:
         return
@@ -240,7 +252,6 @@ def _initialize_card_styles_on_start():
             
             # Enregistrer la construction du menu après l'initialisation de la fenêtre principale
             from aqt import gui_hooks
-            gui_hooks.main_window_did_init.append(card_styles.setup_card_styles_menu)
         except ImportError:
             pass
         except Exception as e:
@@ -248,3 +259,4 @@ def _initialize_card_styles_on_start():
 
 from aqt import gui_hooks
 gui_hooks.profile_did_open.append(_initialize_card_styles_on_start)
+
