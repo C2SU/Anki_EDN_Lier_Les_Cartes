@@ -893,6 +893,11 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             # Compresser et nettoyer les <br> orphelins ou inutiles dans cartesLiees
             def _clean_cartes_liees(match):
                 inner = match.group(2)
+                try:
+                    from .linked_cards import _move_br_outside_edn_desc
+                    inner = _move_br_outside_edn_desc(inner)
+                except Exception:
+                    pass
                 # Supprimer les br consécutifs ou séparés par des espaces
                 inner = re2.sub(r'(?:\s*<br\s*/?>\s*)+', '<br>', inner, flags=re2.IGNORECASE)
                 # Supprimer les br au tout début
@@ -2485,7 +2490,7 @@ def update_assistant(editor):
         return
         
     try:
-        if not assistant.isVisible():
+        if assistant.isHidden():
             return
     except Exception:
         pass
@@ -2590,7 +2595,7 @@ def update_assistant(editor):
         config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
         suggestions_enabled = config.get("suggestions_de_liens", True)
         if suggestions_enabled:
-            html += "<h3>💡 Liens Suggérés</h3><div class='section' id='edn-suggestions-section'>"
+            html += "<h3>Liens Suggérés</h3><div class='section' id='edn-suggestions-section'>"
             _PAGE_SIZE = 5
             if not suggestions:
                 html += "<div class='empty'>Aucune suggestion. Ajoutez des liens pour en voir apparaître.</div>"
@@ -3332,8 +3337,11 @@ def _setup_assistant_ui(editor):
         assistant.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
         splitter.addWidget(assistant)
-        splitter.setSizes([splitter.width(), 0])
+        splitter.show()
         assistant.hide()  # Fermé par défaut — état mémorisé restauré dans on_editor_did_init
+        
+        w = splitter.width() or (parent_widget.width() if parent_widget else 0) or 800
+        splitter.setSizes([w, 0])
         
         editor._editor_assistant_web = assistant
         
@@ -3341,9 +3349,11 @@ def _setup_assistant_ui(editor):
         print("Failed to setup editor assistant:", e)
 
 def on_editor_did_init(editor):
+    # Toujours pré-initialiser l'UI (splitter + webview cachée)
+    # pour que l'ouverture soit instantanée et sans bug dès le premier clic
+    QTimer.singleShot(100, lambda: _setup_assistant_ui(editor))
     # Restaurer le panneau au démarrage si l'utilisateur l'avait laissé ouvert
     if _get_assistant_should_open():
-        QTimer.singleShot(100, lambda: _setup_assistant_ui(editor))
         QTimer.singleShot(250, lambda: _restore_assistant_state(editor))
 
 def _restore_assistant_state(editor):
@@ -3372,7 +3382,7 @@ def toggle_assistant(editor):
     if not assistant:
         return
 
-    if assistant.isVisible():
+    if not assistant.isHidden():
         assistant.hide()
         _save_assistant_state(False)
         # Masquer aussi le popup de preview
@@ -3387,17 +3397,23 @@ def _show_assistant(editor):
     if not assistant:
         return
     splitter = assistant.parent()
+    if hasattr(splitter, 'show'):
+        splitter.show()
+    assistant.show()
     if hasattr(splitter, 'sizes') and hasattr(splitter, 'setSizes'):
         try:
             total = sum(splitter.sizes())
-            if total > 0:
-                splitter.setSizes([max(300, total * 3 // 4), max(200, total // 4)])
-            else:
-                splitter.setSizes([600, 200])
+            if total <= 200:
+                parent_w = splitter.parentWidget().width() if splitter.parentWidget() else 0
+                total = splitter.width() or parent_w or 800
+            w_assistant = min(350, max(200, total // 4))
+            w_main = max(300, total - w_assistant)
+            splitter.setSizes([w_main, w_assistant])
         except Exception:
             pass
-    assistant.show()
     update_assistant(editor)
+    # Filet de sécurité : garantir la mise à jour dès que le cycle de rendu Qt est actif
+    QTimer.singleShot(100, lambda: update_assistant(editor))
 
 def on_editor_did_load_note(editor):
     # Si le panneau doit être ouvert mais n'a pas encore été configuré
@@ -3408,7 +3424,7 @@ def on_editor_did_load_note(editor):
         if assistant:
             try:
                 assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
-                if not assistant.isVisible():
+                if assistant.isHidden():
                     _show_assistant(editor)
                 else:
                     QTimer.singleShot(200, lambda: update_assistant(editor))
@@ -3416,12 +3432,12 @@ def on_editor_did_load_note(editor):
                 editor._editor_assistant_web = None
         return
 
-    # Si le panneau n'est pas configuré pour s'ouvrir par défaut, ne mettre à jour que s'il est visible
+    # Si le panneau n'est pas configuré pour s'ouvrir par défaut, ne mettre à jour que s'il est affiché
     assistant = getattr(editor, '_editor_assistant_web', None)
     if assistant:
         try:
             assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
-            if assistant.isVisible():
+            if not assistant.isHidden():
                 QTimer.singleShot(200, lambda: update_assistant(editor))
         except RuntimeError:
             editor._editor_assistant_web = None

@@ -414,13 +414,13 @@ def update_link_description_in_note(note, target_nid_str, new_desc):
     space_pattern = r'(?:\s|&nbsp;|&#160;|\xa0)*'
     dash_pattern = r'(?:—|\u2014|–|\u2013|-|&mdash;|&ndash;|&#8212;|&#8211;)'
     
-    pattern_span = r'<span\s+[^>]*class="edn-desc"[^>]*>[^<]*</span>' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
+    pattern_span = r'<span\s+[^>]*class="edn-desc"[^>]*>(?:<br\s*/?>|[^<])*</span>' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
     pattern_text = r'([^<>\n]*?)' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
     
     for i in range(len(note.fields)):
         content = note.fields[i]
         if target_nid_str in content:
-            new_content = content
+            new_content = _move_br_outside_edn_desc(content)
             if re.search(pattern_span, new_content):
                 new_content = re.sub(pattern_span, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(1)}', new_content)
             else:
@@ -429,6 +429,60 @@ def update_link_description_in_note(note, target_nid_str, new_desc):
                 note.fields[i] = new_content
                 modified = True
     return modified
+
+def _is_note_linked_in_target(source_note, target_note) -> bool:
+    """Vérifie si la carte source (note A) est déjà liée dans la carte cible (note B).
+    Prend en compte :
+    - Le Note ID (nid) de source_note
+    - Tous les Card IDs (cid) des cartes associées à source_note
+    - Les champs actuels de target_note (y compris si target_note est ouverte dans un éditeur)
+    - Les NIDs/CIDs extraits via extract_nids_from_fields_list
+    """
+    if not source_note or not target_note:
+        return False
+    try:
+        source_ids = {str(source_note.id)}
+        try:
+            for c in source_note.cards():
+                source_ids.add(str(c.id))
+        except Exception:
+            pass
+
+        target_fields = list(target_note.fields)
+        try:
+            from aqt import mw
+            if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
+                win = mw.app.activeWindow()
+                if hasattr(win, 'editor') and win.editor and getattr(win.editor, 'note', None):
+                    if win.editor.note.id == target_note.id:
+                        target_fields = list(win.editor.note.fields)
+        except Exception:
+            pass
+
+        # 1. Présence directe d'un des IDs de la source dans les champs de la cible
+        for f in target_fields:
+            for sid in source_ids:
+                if sid in f:
+                    return True
+
+        # 2. Analyse des NIDs extraits
+        try:
+            from .editor_assistant import extract_nids_from_fields_list
+            target_nids = extract_nids_from_fields_list(target_fields)
+            if any(sid in target_nids for sid in source_ids):
+                return True
+            for tn in target_nids:
+                try:
+                    c = mw.col.get_card(int(tn))
+                    if c and c.nid == source_note.id:
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except Exception as e:
+        log(f"Error in _is_note_linked_in_target: {e}")
+    return False
 
 def on_add_cards_did_add_note(note: Any) -> None:
     """Triggered after a note has been successfully validated and added from the Add Cards window.
@@ -460,9 +514,20 @@ def on_add_cards_did_add_note(note: Any) -> None:
                 target_nid = int(nid_str)
                 if target_nid == note.id:
                     continue
-                target_note = mw.col.get_note(target_nid)
+                target_note = None
+                try:
+                    target_note = mw.col.get_note(target_nid)
+                except Exception:
+                    try:
+                        card = mw.col.get_card(target_nid)
+                        if card:
+                            target_note = card.note()
+                    except Exception:
+                        pass
+                if not target_note:
+                    continue
                 # Check if it already has a link to source_nid
-                if any(source_nid in field for field in target_note.fields):
+                if _is_note_linked_in_target(note, target_note):
                     continue
                 
                 # Determine target field for this link
@@ -2080,6 +2145,42 @@ def _move_br_outside_kbd(html_text):
     return re.sub(pattern, replace_kbd, html_text, flags=re.DOTALL)
 
 
+def _move_br_outside_edn_desc(html_text):
+    """Déplace les <br> accidentellement insérés dans <span class="edn-desc"> vers l'extérieur."""
+    if not html_text or 'edn-desc' not in html_text:
+        return html_text
+        
+    def replace_desc(match):
+        span_open = match.group(1)
+        desc_content = match.group(2)
+        
+        # Extraire les <br> au début du span
+        leading_br_pattern = r'^(?:(?:\s|&nbsp;|&#160;|\xa0)*<br\s*/?>\s*)+'
+        leading_match = re.match(leading_br_pattern, desc_content, re.IGNORECASE)
+        leading_brs = ""
+        if leading_match:
+            leading_brs = "<br>"
+            desc_content = desc_content[leading_match.end():]
+            
+        # Extraire les <br> à la fin du span
+        trailing_br_pattern = r'(?:(?:\s|&nbsp;|&#160;|\xa0)*<br\s*/?>\s*)+$'
+        trailing_match = re.search(trailing_br_pattern, desc_content, re.IGNORECASE)
+        trailing_brs = ""
+        if trailing_match:
+            trailing_brs = "<br>"
+            desc_content = desc_content[:trailing_match.start()]
+            
+        # Remplacer d'éventuels <br> résiduels internes par un espace
+        desc_content = re.sub(r'<br\s*/?>', ' ', desc_content, flags=re.IGNORECASE)
+        return f'{leading_brs}{span_open}{desc_content}</span>{trailing_brs}'
+        
+    pattern = r'(<span\s+[^>]*class=["\'][^"\']*edn-desc[^"\']*["\'][^>]*>)(.*?)(</span>)'
+    html_text = re.sub(pattern, replace_desc, html_text, flags=re.DOTALL | re.IGNORECASE)
+    # Nettoyer les doublons de br consécutifs créés
+    html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
+    return html_text
+
+
 def _disconnect_app_state(app, dialog):
     """Déconnecte proprement le signal applicationStateChanged du dialog."""
     try:
@@ -2097,8 +2198,9 @@ def _clean_kbd_html(html_text):
     if not html_text:
         return html_text
         
-    # 0. Déplacer les <br> à l'intérieur des <kbd> vers l'extérieur
+    # 0. Déplacer les <br> à l'intérieur des <kbd> et <span class="edn-desc"> vers l'extérieur
     html_text = _move_br_outside_kbd(html_text)
+    html_text = _move_br_outside_edn_desc(html_text)
         
     # 1. Supprimer les <kbd> vides (y compris ceux avec seulement espaces/br)
     empty_kbd = r'<kbd\s+class="clickable_cards"[^>]*>(?:\s|<br\s*/?>)*</kbd>'
@@ -2813,6 +2915,7 @@ def on_js_message_reviewer(handled, message, context):
                         # Compresser et nettoyer les <br> orphelins ou inutiles dans cartesLiees
                         def _clean_cartes_liees(match):
                             inner = match.group(2)
+                            inner = _move_br_outside_edn_desc(inner)
                             # Supprimer les br consécutifs ou séparés par des espaces
                             inner = re.sub(r'(?:\s*<br\s*/?>\s*)+', '<br>', inner, flags=re.IGNORECASE)
                             # Supprimer les br au tout début
@@ -2940,13 +3043,13 @@ def setup_browser_menu(browser: Browser):
     shortcut_search = get_shortcut("linked_cards_search", "Ctrl+Alt+L")
     shortcut_liens = get_shortcut("linked_cards_liens", "Ctrl+Alt+B")
     
-    action_copy = QAction("📋 Copier NID", browser)
+    action_copy = QAction("Copier NID", browser)
     action_copy.triggered.connect(lambda: _copy_nid_smart(browser))
     
-    action_search = QAction("🔗 Rechercher Liens", browser)
+    action_search = QAction("Rechercher Liens", browser)
     action_search.triggered.connect(lambda: _open_search_smart(browser))
     
-    action_focus_liens = QAction("🔗 Aller au champ Liens", browser)
+    action_focus_liens = QAction("Aller au champ Liens", browser)
     action_focus_liens.triggered.connect(lambda: _focus_liens_browser(browser))
     
     # Save reference for context menu
@@ -3522,22 +3625,25 @@ def _do_editor_init(editor: Editor):
                 if (nonEmptyLines.length === 0) return;
                 
                 var allMatch = true;
-                var nidsList = [];
+                var itemsList = [];
                 for (var i = 0; i < nonEmptyLines.length; i++) {
                     var line = nonEmptyLines[i].trim();
-                    var match = line.match(/^(?:(.*?) [\u2014\u2013-] )?(\d{10,})$/);
+                    var match = line.match(/^(?:(.*?)[ \t\s\u00a0\xa0]*[\u2014\u2013-][ \t\s\u00a0\xa0]*)?\[?(\d{10,})\]?$/);
                     if (!match) {
                         allMatch = false;
                         break;
                     }
-                    nidsList.push(match[2].trim());
+                    var pLabel = match[1] ? match[1].trim() : "";
+                    var pNid = match[2].trim();
+                    itemsList.push({nid: pNid, label: pLabel});
                 }
                 
-                if (allMatch && nidsList.length > 0) {
+                if (allMatch && itemsList.length > 0) {
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     
-                    var lineHasDash = false;
+                    var textBefore = "";
+                    var lineEndsWithDash = false;
                     try {
                         var sel2 = window.getSelection();
                         var active2 = document.activeElement;
@@ -3550,47 +3656,32 @@ def _do_editor_init(editor: Editor):
                                 editable2 = editable2.parentNode || (editable2.getRootNode && editable2.getRootNode().host);
                             }
                             if (editable2) {
-                                function getCurrentLineText(r, ed) {
-                                    try {
-                                        var preRange = document.createRange();
-                                        preRange.selectNodeContents(ed);
-                                        preRange.setEnd(r.startContainer, r.startOffset);
-                                        var divPre = document.createElement('div');
-                                        divPre.appendChild(preRange.cloneContents());
-                                        var htmlPre = divPre.innerHTML;
-                                        var cleanHtmlPre = htmlPre.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n');
-                                        var linesPre = cleanHtmlPre.split('\n');
-                                        var lastLinePreHtml = linesPre[linesPre.length - 1];
-                                        var tempDivPre = document.createElement('div');
-                                        tempDivPre.innerHTML = lastLinePreHtml;
-                                        var textPre = tempDivPre.textContent || tempDivPre.innerText || "";
-
-                                        var postRange = document.createRange();
-                                        postRange.selectNodeContents(ed);
-                                        postRange.setStart(r.endContainer, r.endOffset);
-                                        var divPost = document.createElement('div');
-                                        divPost.appendChild(postRange.cloneContents());
-                                        var htmlPost = divPost.innerHTML;
-                                        var cleanHtmlPost = htmlPost.replace(/<br\s*\/?>|<p\s*>|<div\s*>|<li\s*>/gi, '\n');
-                                        var linesPost = cleanHtmlPost.split('\n');
-                                        var firstLinePostHtml = linesPost[0];
-                                        var tempDivPost = document.createElement('div');
-                                        tempDivPost.innerHTML = firstLinePostHtml;
-                                        var textPost = tempDivPost.textContent || tempDivPost.innerText || "";
-
-                                        return (textPre + textPost).trim();
-                                    } catch (e) { return ""; }
-                                }
-                                var lineText2 = getCurrentLineText(range2, editable2);
-                                if (lineText2.includes('\u2014') || lineText2.includes('\u2013') || lineText2.includes('—') || lineText2.includes('–')) {
-                                    lineHasDash = true;
+                                var preRange = document.createRange();
+                                preRange.selectNodeContents(editable2);
+                                preRange.setEnd(range2.startContainer, range2.startOffset);
+                                var divPre = document.createElement('div');
+                                divPre.appendChild(preRange.cloneContents());
+                                var htmlPre = divPre.innerHTML;
+                                var cleanHtmlPre = htmlPre.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n');
+                                var linesPre = cleanHtmlPre.split('\n');
+                                var lastLinePreHtml = linesPre[linesPre.length - 1];
+                                var tempDivPre = document.createElement('div');
+                                tempDivPre.innerHTML = lastLinePreHtml;
+                                textBefore = (tempDivPre.textContent || tempDivPre.innerText || "").trim();
+                                if (textBefore.endsWith('—') || textBefore.endsWith('–') || textBefore.endsWith('-') || textBefore.endsWith('\u2014') || textBefore.endsWith('\u2013')) {
+                                    lineEndsWithDash = true;
                                 }
                             }
                         }
                     } catch(err2) {}
                     
                     if (typeof pycmd !== 'undefined') {
-                        pycmd('edn_paste_smart_link:' + JSON.stringify({nids: nidsList, lineHasDash: lineHasDash}));
+                        pycmd('edn_paste_smart_link:' + JSON.stringify({
+                            items: itemsList,
+                            hasTextBefore: textBefore.length > 0,
+                            lineEndsWithDash: lineEndsWithDash,
+                            textBefore: textBefore
+                        }));
                     }
                 }
             }
@@ -4206,7 +4297,7 @@ def _handle_editor_shortcut_key(editor, key):
     is_visible = False
     if assistant:
         try:
-            is_visible = assistant.isVisible()
+            is_visible = not assistant.isHidden()
         except RuntimeError:
             assistant = None
             
@@ -4293,25 +4384,58 @@ def on_js_message(handled, message, context):
         try:
             import json
             data = json.loads(payload_str)
-            nids = data.get("nids", [])
-            line_has_dash = data.get("lineHasDash", False)
+            raw_items = data.get("items", [])
+            if not raw_items and "nids" in data:
+                raw_items = [{"nid": str(n), "label": ""} for n in data.get("nids", [])]
+
+            has_text_before = data.get("hasTextBefore", False)
+            line_ends_with_dash = data.get("lineEndsWithDash", False)
+            if "lineHasDash" in data and not has_text_before and not line_ends_with_dash:
+                line_ends_with_dash = data["lineHasDash"]
+                has_text_before = data["lineHasDash"]
+            text_before = data.get("textBefore", "")
+
             from .editor_assistant import get_active_editor
             editor = get_active_editor(context)
-            if editor and editor.note and nids:
+            if editor and editor.note and raw_items:
                 source_note = editor.note
                 items = []
-                for nid in nids:
-                    if line_has_dash:
-                        items.append((str(nid), None))
+                for idx, it in enumerate(raw_items):
+                    nid = str(it.get("nid", "")).strip()
+                    pasted_label = str(it.get("label", "")).strip()
+
+                    if pasted_label:
+                        # Un label personnalisé est explicitement présent dans le texte collé (ex: "PeC — 1693481405913")
+                        # Ne pas rétablir le verso/recto de la cible : conserver fidèlement ce label
+                        if idx == 0 and line_ends_with_dash and (
+                            text_before.endswith(pasted_label + ' —') or
+                            text_before.endswith(pasted_label + ' -') or
+                            text_before.endswith(pasted_label + ' –') or
+                            text_before.endswith(pasted_label + ' \u2014') or
+                            text_before.endswith(pasted_label + ' \u2013')
+                        ):
+                            items.append((nid, None))
+                        else:
+                            items.append((nid, pasted_label))
                     else:
-                        target_note = None
-                        try:
-                            target_note = mw.col.get_note(int(nid))
-                        except Exception:
-                            pass
-                        smart_desc = generate_smart_link_label(source_note, target_note) if target_note else None
-                        final_desc = smart_desc if smart_desc else (get_note_recto(target_note) if target_note else "")
-                        items.append((str(nid), final_desc))
+                        # Aucun label n'est présent dans le texte collé (ex: simple NID "1693481405913")
+                        # Règle : nominer le lien UNIQUEMENT s'il n'y a rien avant sur la ligne
+                        if idx == 0 and has_text_before:
+                            items.append((nid, None))
+                        else:
+                            target_note = None
+                            try:
+                                target_note = mw.col.get_note(int(nid))
+                            except Exception:
+                                try:
+                                    card = mw.col.get_card(int(nid))
+                                    if card:
+                                        target_note = card.note()
+                                except Exception:
+                                    pass
+                            smart_desc = generate_smart_link_label(source_note, target_note) if target_note else None
+                            final_desc = smart_desc if smart_desc else (get_note_recto(target_note) if target_note else "")
+                            items.append((nid, final_desc))
                 
                 inserter = LinkInserter(editor)
                 config = mw.addonManager.getConfig(__name__) or {}
@@ -5081,19 +5205,29 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
         valid_targets = []
         source_nid = str(source_note.id)
         
-        # Retrieve all target notes and default field indices
         for target_nid_str, _ in items:
             try:
                 target_nid = int(target_nid_str)
-                target_note = mw.col.get_note(target_nid)
+                target_note = None
+                try:
+                    target_note = mw.col.get_note(target_nid)
+                except Exception:
+                    try:
+                        card = mw.col.get_card(target_nid)
+                        if card:
+                            target_note = card.note()
+                    except Exception:
+                        pass
+                if not target_note:
+                    continue
                 
-                # Check if it already has a link to source_nid
-                if any(source_nid in field for field in target_note.fields):
+                # Vérifier si la carte A est déjà liée dans la B
+                if _is_note_linked_in_target(source_note, target_note):
                     continue
                 
                 # Determine target field
                 fidx_target = _find_target_field_idx(target_note, source_note)
-                valid_targets.append((target_nid_str, target_note, fidx_target))
+                valid_targets.append((str(target_note.id), target_note, fidx_target))
             except Exception:
                 pass
                 
@@ -5558,7 +5692,7 @@ class LinkedCardsDialog(QDialog):
         # Bandeau indicateur si on est en mode hyperlien
         is_night = _is_night_mode()
         if self.selected_text:
-            hint = QLabel(f"🔗 Mode hyperlien — Les mots <b>'{self.selected_text}'</b> deviendront cliquables vers la carte choisie.")
+            hint = QLabel(f"Mode hyperlien — Les mots <b>'{self.selected_text}'</b> deviendront cliquables vers la carte choisie.")
             hint.setWordWrap(True)
             if is_night:
                 hint.setStyleSheet("background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); border-radius:4px; padding:4px 8px; color:#38bdf8; margin-bottom:4px;")
