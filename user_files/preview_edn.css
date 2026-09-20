@@ -48,6 +48,11 @@ hr {
     display: none !important;
 }
 
+[id*="edn-cursor-marker"],
+#edn-cursor-marker {
+    display: none !important;
+}
+
 /* --- Mise en page de la carte d'aperçu --- */
 .card > *:last-child {
     margin-bottom: 0 !important;
@@ -174,6 +179,10 @@ div[class*='section'] {
     display: inline !important;
 }
 
+[id*="edn-cursor-marker"], .items > span[id*="edn-cursor-marker"] {
+    display: none !important;
+}
+
 .items.answer {
     padding: 1px 0 !important;
 }
@@ -243,12 +252,11 @@ div:empty:not(.bar), p:empty {
 }
 
 .cartesLiees br, .items.cartesLiees br {
-    flex-basis: 100% !important;
-    width: 100% !important;
-    height: 0 !important;
+    display: inline !important;
+    content: normal !important;
     margin: 0 !important;
-    display: block !important;
-    content: "" !important;
+    padding: 0 !important;
+    height: auto !important;
 }
 
 .cloze {

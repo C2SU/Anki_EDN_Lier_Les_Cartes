@@ -298,14 +298,44 @@ def _is_editor_alive(editor):
     except (RuntimeError, AttributeError):
         return False
 
+def _get_editor_note(editor):
+    """Extrait de manière sécurisée la note courante, compatible Anki classique (Editor) et Svelte (NewEditor)."""
+    if not editor:
+        return None
+    note = getattr(editor, 'note', None)
+    if note is not None:
+        return note
+    nid = getattr(editor, 'nid', None)
+    if nid:
+        mw = getattr(editor, 'mw', None)
+        if not mw:
+            try:
+                from aqt import mw as aqt_mw
+                mw = aqt_mw
+            except ImportError:
+                mw = None
+        if mw and getattr(mw, 'col', None):
+            try:
+                return mw.col.get_note(nid)
+            except Exception:
+                return None
+    return None
+
 def get_active_editor(context=None):
     from aqt import mw
     from .logger import log
     log(f"get_active_editor context={context}")
     
-    # If context is an Editor, return it directly
+    # If context is an Editor or NewEditor, return it directly
     from aqt.editor import Editor
-    if isinstance(context, Editor):
+    editor_classes = (Editor,)
+    try:
+        from aqt.editor import NewEditor
+        editor_classes = (Editor, NewEditor)
+    except ImportError:
+        pass
+
+    if isinstance(context, editor_classes):
         try:
             if context.web is not None:
                 context.web.objectName()
@@ -890,18 +920,23 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 r'(<div[^>]*class=["\'][^"\']*(section)[^"\']*["\'][^>]*style=["\'])display:\s*none;?',
                 r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
 
+            # Nettoyer les marqueurs de curseur résiduels
+            isolated = re2.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', isolated, flags=re2.IGNORECASE | re2.DOTALL)
+
             # Compresser et nettoyer les <br> orphelins ou inutiles dans cartesLiees
             def _clean_cartes_liees(match):
                 inner = match.group(2)
+                inner = re2.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', inner, flags=re2.IGNORECASE | re2.DOTALL)
                 try:
                     from .linked_cards import _move_br_outside_edn_desc
                     inner = _move_br_outside_edn_desc(inner)
                 except Exception:
                     pass
-                # Supprimer les br consécutifs ou séparés par des espaces
+                # Supprimer les br consécutifs ou séparés par des espaces / nbsp
+                inner = re2.sub(r'(?:\s*&nbsp;\s*)*<br\s*/?>\s*(?:&nbsp;\s*)*', '<br>', inner, flags=re2.IGNORECASE)
                 inner = re2.sub(r'(?:\s*<br\s*/?>\s*)+', '<br>', inner, flags=re2.IGNORECASE)
                 # Supprimer les br au tout début
-                inner = re2.sub(r'^\s*(?:<br\s*/?>\s*)+', '', inner, flags=re2.IGNORECASE)
+                inner = re2.sub(r'^\s*(?:&nbsp;|<br\s*/?>\s*)+', '', inner, flags=re2.IGNORECASE)
                 # Supprimer les br et espaces insécables à la toute fin
                 inner = re2.sub(r'(?:<br\s*/?>\s*|&nbsp;\s*)+$', '', inner, flags=re2.IGNORECASE)
                 return f"{match.group(1)}{inner}</div>"
@@ -2502,7 +2537,7 @@ def update_assistant(editor):
         editor._editor_assistant_web = None
         return
         
-    note = editor.note
+    note = _get_editor_note(editor)
     if not note or not note.id:
         try:
             assistant.stdHtml(f"<style>{_assistant_css}</style><body><div class='empty'>Veuillez sauvegarder la note d'abord.</div></body>")
@@ -2532,7 +2567,7 @@ def update_assistant(editor):
             editor._editor_assistant_web = None
             return
 
-        current_note = getattr(editor, 'note', None)
+        current_note = _get_editor_note(editor)
         if not current_note or str(current_note.id) != current_nid:
             return
         if getattr(editor, '_assistant_update_seq', 0) != _update_seq:
@@ -2949,6 +2984,7 @@ def update_assistant(editor):
         """
         try:
             assistant.stdHtml(html)
+            assistant._has_loaded_content = True
         except RuntimeError:
             editor._editor_assistant_web = None
             return
@@ -2983,7 +3019,8 @@ def handle_assistant_message(handled, message, context):
             recto = parts[1] if len(parts) > 1 else ""
             
             editor = get_active_editor(context)
-            if not editor or not editor.note:
+            note = _get_editor_note(editor)
+            if not editor or not note:
                 return (True, None)
                 
             other_note = None
@@ -2993,7 +3030,7 @@ def handle_assistant_message(handled, message, context):
                 pass
                 
             from .linked_cards import generate_smart_link_label
-            smart_desc = generate_smart_link_label(editor.note, other_note) if other_note else recto
+            smart_desc = generate_smart_link_label(note, other_note) if other_note else recto
             final_desc = smart_desc if smart_desc else recto
             desc_escaped = final_desc.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
             badge_html = f'{desc_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
@@ -3003,26 +3040,28 @@ def handle_assistant_message(handled, message, context):
             try:
                 if other_note:
                     for fld in other_note.note_type()['flds']:
-                        if str(editor.note.id) in other_note[fld['name']]:
+                        if str(note.id) in other_note[fld['name']]:
                             source_field_name = fld['name']
                             break
             except Exception as fe:
                 print("Error finding source field name:", fe)
                 
-            target_fidx = _find_field_by_name_or_default(editor.note, source_field_name)
+            target_fidx = _find_field_by_name_or_default(note, source_field_name)
                 
             def on_saved():
-                current_val = editor.note.fields[target_fidx].strip()
+                current_val = note.fields[target_fidx].strip()
                 if not current_val or current_val == "<br>":
                     new_val = badge_html
                 else:
                     new_val = current_val + "<br>" + badge_html
                 
-                editor.note.fields[target_fidx] = new_val
-                mw.col.update_note(editor.note)
+                note.fields[target_fidx] = new_val
+                mw.col.update_note(note)
                 
                 if hasattr(editor, 'loadNoteKeepingFocus'):
                     editor.loadNoteKeepingFocus()
+                elif hasattr(editor, 'reload_note'):
+                    editor.reload_note()
                 else:
                     editor.loadNote()
                 update_assistant(editor)
@@ -3037,10 +3076,10 @@ def handle_assistant_message(handled, message, context):
         try:
             target_nid = message.split("make_reciprocal:")[1].strip()
             editor = get_active_editor(context)
-            if not editor or not editor.note:
+            current_note = _get_editor_note(editor)
+            if not editor or not current_note:
                 return (True, None)
                 
-            current_note = editor.note
             current_nid = str(current_note.id)
             target_note = None
             try:
@@ -3089,7 +3128,8 @@ def handle_assistant_message(handled, message, context):
             recto = parts[1] if len(parts) > 1 else ""
             
             editor = get_active_editor(context)
-            if not editor or not editor.note:
+            note = _get_editor_note(editor)
+            if not editor or not note:
                 return (True, None)
             
             target_note = None
@@ -3099,13 +3139,13 @@ def handle_assistant_message(handled, message, context):
                 pass
                 
             from .linked_cards import generate_smart_link_label
-            smart_desc = generate_smart_link_label(editor.note, target_note) if target_note else recto
+            smart_desc = generate_smart_link_label(note, target_note) if target_note else recto
             final_desc = smart_desc if smart_desc else recto
             desc_escaped = final_desc.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
             badge_html = f'{desc_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
             
-            target_fidx = _find_field_by_name_or_default(editor.note, None)
-            current_note_ref = editor.note
+            target_fidx = _find_field_by_name_or_default(note, None)
+            current_note_ref = note
             
             def _on_suggested_saved():
                 try:
@@ -3120,6 +3160,8 @@ def handle_assistant_message(handled, message, context):
                     
                     if hasattr(editor, 'loadNoteKeepingFocus'):
                         editor.loadNoteKeepingFocus()
+                    elif hasattr(editor, 'reload_note'):
+                        editor.reload_note()
                     else:
                         editor.loadNote()
                     update_assistant(editor)
@@ -3411,9 +3453,21 @@ def _show_assistant(editor):
             splitter.setSizes([w_main, w_assistant])
         except Exception:
             pass
-    update_assistant(editor)
-    # Filet de sécurité : garantir la mise à jour dès que le cycle de rendu Qt est actif
-    QTimer.singleShot(100, lambda: update_assistant(editor))
+
+    # Invalider le cache pour garantir une analyse fraîche des champs récemment édités
+    note = _get_editor_note(editor)
+    if note and getattr(note, 'id', None):
+        clear_assistant_preview_cache(note.id)
+
+    # Afficher un indicateur propre si aucun contenu n'a encore été chargé
+    try:
+        if not getattr(assistant, '_has_loaded_content', False):
+            assistant.stdHtml(f"<style>{_assistant_css}</style><body><div class='suggestions-loading'>Chargement des liens...</div></body>")
+    except Exception:
+        pass
+
+    # Déclencher la mise à jour une seule fois après un court délai
+    QTimer.singleShot(60, lambda: update_assistant(editor))
 
 def on_editor_did_load_note(editor):
     # Si le panneau doit être ouvert mais n'a pas encore été configuré

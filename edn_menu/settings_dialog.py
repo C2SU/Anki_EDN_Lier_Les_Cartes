@@ -959,12 +959,16 @@ class EDNSettingsDialog(QDialog):
         )
         _update_review_new_state()
 
-        # Toggle 3c : Coloration automatique en Drapeau 2 (Orange) après X Again
+        # Toggle 3c : Drapeau virtuel pour les cartes "leech"
+        again_tooltip = (
+            "Applique un drapeau virtuel autour des cartes ayant atteint le seuil d'échecs (Again) choisi (par défaut 7).\n"
+            "Pour rechercher ces cartes dans le navigateur Anki, entrez : prop:lapses>=X (ex: prop:lapses>=7)."
+        )
         again_row = QHBoxLayout()
         again_row.setSpacing(8)
-        self.cb_again_flag = QCheckBox("Colorer en Orange (Drapeau 2) après plusieurs échecs (Again) :")
+        self.cb_again_flag = QCheckBox('Drapeau virtuel pour les cartes "leech"')
         self.cb_again_flag.setChecked(self.prefs.get("flagAgainEnabled", False))
-        self.cb_again_flag.setToolTip("Colore automatiquement en Orange (Drapeau 2) les cartes ayant atteint le seuil d'échecs (Again) choisi.")
+        self.cb_again_flag.setToolTip(again_tooltip)
         again_row.addWidget(self.cb_again_flag)
 
         self.spin_again_count = QSpinBox()
@@ -972,15 +976,45 @@ class EDNSettingsDialog(QDialog):
         self.spin_again_count.setValue(self.prefs.get("flagAgainCount", 7))
         self.spin_again_count.setSuffix(" fois")
         self.spin_again_count.setMaximumWidth(90)
-        self.spin_again_count.setToolTip("Nombre d'échecs (bouton 'À revoir') avant de déclencher la bordure Orange d'avertissement (seuil leech standard : 7 fois).")
+        self.spin_again_count.setToolTip(again_tooltip)
         again_row.addWidget(self.spin_again_count)
         again_row.addStretch()
         gv_layout.addLayout(again_row)
 
+        self.frame_flag_review_leech = QFrame()
+        self.frame_flag_review_leech.setToolTip(again_tooltip)
+        row_review_leech_layout = QHBoxLayout(self.frame_flag_review_leech)
+        row_review_leech_layout.setContentsMargins(12, 4, 10, 4)
+        row_review_leech_layout.setSpacing(8)
+
+        lbl_review_leech = make_selectable_label("Couleur des cartes <b>leech</b> :")
+        lbl_review_leech.setMinimumWidth(160)
+        self.combo_flag_review_leech = NoWheelComboBox()
+        self.combo_flag_review_leech.setToolTip(again_tooltip)
+        for flag_id, label in ANKI_FLAGS:
+            info = FLAG_COLORS.get(flag_id, {"hex": "#DD6B20"})
+            icon = create_color_icon(info["hex"])
+            self.combo_flag_review_leech.addItem(icon, f" {label}", flag_id)
+        current_rev_leech = self.prefs.get("virtual_flag_color_leech", "flag2")
+        idx_rev_leech = self.combo_flag_review_leech.findData(current_rev_leech)
+        if idx_rev_leech >= 0:
+            self.combo_flag_review_leech.setCurrentIndex(idx_rev_leech)
+
+        row_review_leech_layout.addWidget(lbl_review_leech)
+        row_review_leech_layout.addStretch()
+        row_review_leech_layout.addWidget(self.combo_flag_review_leech)
+        gv_layout.addWidget(self.frame_flag_review_leech)
+
         def _update_again_state():
-            self.spin_again_count.setEnabled(self.cb_again_flag.isChecked())
+            is_active = self.cb_again_flag.isChecked()
+            self.spin_again_count.setEnabled(is_active)
+            self.frame_flag_review_leech.setEnabled(is_active)
+            self._update_flag_row_style(self.combo_flag_review_leech, self.frame_flag_review_leech)
 
         self.cb_again_flag.stateChanged.connect(lambda s: _update_again_state())
+        self.combo_flag_review_leech.currentIndexChanged.connect(
+            lambda idx: self._update_flag_row_style(self.combo_flag_review_leech, self.frame_flag_review_leech)
+        )
         _update_again_state()
 
         layout.addWidget(group_visual)
@@ -1396,6 +1430,10 @@ class EDNSettingsDialog(QDialog):
 
         self.cb_again_flag.setChecked(DEFAULT_PREFS["flagAgainEnabled"])
         self.spin_again_count.setValue(DEFAULT_PREFS["flagAgainCount"])
+        idx_rev_leech = self.combo_flag_review_leech.findData(DEFAULT_PREFS.get("virtual_flag_color_leech", "flag2"))
+        if idx_rev_leech >= 0:
+            self.combo_flag_review_leech.setCurrentIndex(idx_rev_leech)
+        self._update_flag_row_style(self.combo_flag_review_leech, self.frame_flag_review_leech)
 
         # 2. Rétablir Lier les cartes
         self.cb_mirror_on_paste.setChecked(DEFAULT_LINKED_CARDS_CONFIG["mirror_link_on_paste"])
@@ -1493,6 +1531,7 @@ class EDNSettingsDialog(QDialog):
         self.prefs["reviewDualFlags"] = self.cb_dual_flags_review.isChecked()
         self.prefs["flagAgainEnabled"] = self.cb_again_flag.isChecked()
         self.prefs["flagAgainCount"] = self.spin_again_count.value()
+        self.prefs["virtual_flag_color_leech"] = self.combo_flag_review_leech.currentData()
         self.prefs["virtual_flag_color_suspended"] = self.combo_flag_sus.currentData()
         self.prefs["previewDualFlags"] = self.cb_preview_dual_flags.isChecked()
 

@@ -32,13 +32,16 @@ kbd.clickable_cards:focus-visible {
   box-shadow: none !important;
 }
 
+[id*="edn-cursor-marker"], #edn-cursor-marker {
+  display: none !important;
+}
+
 .cartesLiees br, .items.cartesLiees br {
-  flex-basis: 100% !important;
-  width: 100% !important;
-  height: 0 !important;
+  display: inline !important;
+  content: normal !important;
   margin: 0 !important;
-  display: block !important;
-  content: "" !important;
+  padding: 0 !important;
+  height: auto !important;
 }
 
 #edn-preview-box {

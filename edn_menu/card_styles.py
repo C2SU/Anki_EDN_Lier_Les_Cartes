@@ -37,6 +37,7 @@ DEFAULT_PREFS = {
     "previewDualFlags": False,
     "flagAgainEnabled": False,
     "flagAgainCount": 7,
+    "virtual_flag_color_leech": "flag2",
 }
 
 ANKI_FLAGS = [
@@ -192,7 +193,7 @@ def _push_prefs_to_webview(card=None):
             
             lapses = getattr(target_card, 'lapses', 0)
             lapses_val = lapses
-            again_threshold = prefs.get("flagAgainCount", 3)
+            again_threshold = prefs.get("flagAgainCount", 7)
             is_diff = (prefs.get("flagAgainEnabled", False) and lapses >= again_threshold)
             is_diff_js = "true" if is_diff else "false"
 
@@ -226,7 +227,7 @@ def _on_card_will_show(text: str, card, kind: str) -> str:
             is_new_js = "true" if (is_new and prefs.get("virtualBlueFlagForNewCards", False)) else "false"
             
             lapses = getattr(card, 'lapses', 0)
-            again_threshold = prefs.get("flagAgainCount", 3)
+            again_threshold = prefs.get("flagAgainCount", 7)
             is_diff = (prefs.get("flagAgainEnabled", False) and lapses >= again_threshold)
             is_diff_js = "true" if is_diff else "false"
             
@@ -528,33 +529,36 @@ def open_card_styles_dialog():
 def _sync_prefs_from_media_file():
     """
     Lit le fichier _edn_prefs.js dans le dossier média.
-    Si les réglages y sont différents de la configuration locale, met à jour le fichier local.
+    N'écrase les préférences locales QUE si elles n'existent pas encore (premier démarrage/
+    appareil sans JSON local). Si le JSON local existe, il est la source de vérité.
     """
     try:
         import re
         if not mw.col:
             return
+
+        # Si le fichier JSON local existe déjà, il est prioritaire : on ne le remplace jamais.
+        local_path = _prefs_file()
+        if local_path and os.path.exists(local_path):
+            return
+
         media_dir = mw.col.media.dir()
         js_path = os.path.join(media_dir, "_edn_prefs.js")
         if not os.path.exists(js_path):
             return
-            
+
         with open(js_path, "r", encoding="utf-8") as f:
             content = f.read().strip()
-            
+
         match = re.search(r"var\s+edn_prefs\s*=\s*(\{.*?\})\s*;?", content, re.DOTALL)
         if match:
             prefs_str = match.group(1)
             prefs = json.loads(prefs_str)
             if prefs:
-                local_prefs = load_prefs()
                 merged_prefs = {**DEFAULT_PREFS, **prefs}
-                if local_prefs != merged_prefs:
-                    # Sauvegarder localement sans réécrire le fichier média
-                    p = _prefs_file()
-                    with open(p, "w", encoding="utf-8") as f:
-                        json.dump(merged_prefs, f, ensure_ascii=False, indent=2)
-                    print(f"[EDN Card Styles] Prefs localisees mises a jour depuis _edn_prefs.js")
+                with open(local_path, "w", encoding="utf-8") as f:
+                    json.dump(merged_prefs, f, ensure_ascii=False, indent=2)
+                print(f"[EDN Card Styles] Prefs initialisees depuis _edn_prefs.js (premier demarrage)")
     except Exception as e:
         print(f"[EDN Card Styles] Erreur sync depuis _edn_prefs.js: {e}")
 
@@ -564,9 +568,9 @@ def setup_card_styles_menu():
     pass
 
 def _on_profile_opened():
-    # Synchroniser les préférences locales à partir de _edn_prefs.js
+    # 1) Initialiser depuis _edn_prefs.js uniquement si le JSON local est absent (premier démarrage sur cet appareil)
     _sync_prefs_from_media_file()
-    # Forcer l'écriture des préférences locales dans le dossier média au cas où le fichier serait absent
+    # 2) Toujours (ré)écrire le _edn_prefs.js depuis le JSON local — le JSON local est la source de vérité
     try:
         p = load_prefs()
         _write_prefs_to_media_folder(p)

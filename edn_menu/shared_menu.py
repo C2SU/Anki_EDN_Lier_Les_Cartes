@@ -62,6 +62,7 @@ def get_edn_menu():
         # Add settings action at bottom
         _edn_menu.addSeparator()
         settings_action = QAction("Paramètres EDN...", mw)
+        settings_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.triggered.connect(open_settings_dialog)
         _edn_menu.addAction(settings_action)
         
