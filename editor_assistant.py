@@ -4,6 +4,7 @@ from aqt import mw
 from aqt.qt import *
 from aqt import gui_hooks
 from .logger import log
+from .edn_editor_compat import get_editor_note, editor_save_now, editor_reload_note
 
 try:
     from aqt.operations import QueryOp
@@ -299,27 +300,7 @@ def _is_editor_alive(editor):
         return False
 
 def _get_editor_note(editor):
-    """Extrait de manière sécurisée la note courante, compatible Anki classique (Editor) et Svelte (NewEditor)."""
-    if not editor:
-        return None
-    note = getattr(editor, 'note', None)
-    if note is not None:
-        return note
-    nid = getattr(editor, 'nid', None)
-    if nid:
-        mw = getattr(editor, 'mw', None)
-        if not mw:
-            try:
-                from aqt import mw as aqt_mw
-                mw = aqt_mw
-            except ImportError:
-                mw = None
-        if mw and getattr(mw, 'col', None):
-            try:
-                return mw.col.get_note(nid)
-            except Exception:
-                return None
-    return None
+    return get_editor_note(editor)
 
 def get_active_editor(context=None):
     from aqt import mw
@@ -3058,15 +3039,10 @@ def handle_assistant_message(handled, message, context):
                 note.fields[target_fidx] = new_val
                 mw.col.update_note(note)
                 
-                if hasattr(editor, 'loadNoteKeepingFocus'):
-                    editor.loadNoteKeepingFocus()
-                elif hasattr(editor, 'reload_note'):
-                    editor.reload_note()
-                else:
-                    editor.loadNote()
+                editor_reload_note(editor)
                 update_assistant(editor)
             
-            editor.saveNow(on_saved)
+            editor_save_now(editor, on_saved)
             
         except Exception as e:
             print("Erreur add_mirror:", e)
@@ -3158,12 +3134,7 @@ def handle_assistant_message(handled, message, context):
                     current_note_ref.fields[target_fidx] = new_val
                     mw.col.update_note(current_note_ref)
                     
-                    if hasattr(editor, 'loadNoteKeepingFocus'):
-                        editor.loadNoteKeepingFocus()
-                    elif hasattr(editor, 'reload_note'):
-                        editor.reload_note()
-                    else:
-                        editor.loadNote()
+                    editor_reload_note(editor)
                     update_assistant(editor)
                     
                     # Proposer la création du miroir uniquement pour le lien suggéré qui vient d'être ajouté
@@ -3178,7 +3149,7 @@ def handle_assistant_message(handled, message, context):
                 except Exception as save_err:
                     print("Erreur _on_suggested_saved:", save_err)
             
-            editor.saveNow(_on_suggested_saved)
+            editor_save_now(editor, _on_suggested_saved)
             
         except Exception as e:
             print("Erreur add_suggested:", e)

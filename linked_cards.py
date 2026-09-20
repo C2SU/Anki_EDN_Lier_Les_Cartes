@@ -25,30 +25,14 @@ try:
 except Exception:
     better_search_on_text_change = None
 
+from .edn_editor_compat import get_editor_note, editor_save_now, editor_reload_note
+
 # Global reference
 _current_editor = None
 _active_dialog = None
 
 def _get_editor_note(editor):
-    """Extrait de maniere securisee la note courante, compatible Anki classique (Editor) et Svelte (NewEditor)."""
-    if not editor:
-        return None
-    note = getattr(editor, 'note', None)
-    if note is not None:
-        return note
-    nid = getattr(editor, 'nid', None)
-    if nid:
-        col = None
-        if 'mw' in globals() and hasattr(mw, 'col'):
-            col = mw.col
-        elif getattr(editor, 'mw', None) and hasattr(editor.mw, 'col'):
-            col = editor.mw.col
-        if col:
-            try:
-                return col.get_note(nid)
-            except Exception:
-                return None
-    return None
+    return get_editor_note(editor)
 
 def _is_active_dialog_alive():
     global _active_dialog
@@ -2481,7 +2465,6 @@ def _on_editor_unfocus_field(changed, note, current_field_idx):
     """Invalide le cache de la note quand l'utilisateur quitte un champ modifié dans l'éditeur et nettoie tout marker résiduel."""
     try:
         if note and getattr(note, 'fields', None):
-            cleaned_any = False
             for i, f in enumerate(note.fields):
                 cleaned_val = f
                 if 'edn-cursor-marker' in cleaned_val:
@@ -2490,10 +2473,7 @@ def _on_editor_unfocus_field(changed, note, current_field_idx):
                     cleaned_val = _clean_kbd_html(cleaned_val)
                 if cleaned_val != f:
                     note.fields[i] = cleaned_val
-                    cleaned_any = True
-            if cleaned_any:
-                changed = True
-        if changed and note and note.id:
+        if note and getattr(note, 'id', None):
             clear_hover_preview_cache(note.id)
             try:
                 from .editor_assistant import clear_assistant_preview_cache, refresh_active_preview_if_open
@@ -2503,6 +2483,11 @@ def _on_editor_unfocus_field(changed, note, current_field_idx):
                 pass
     except Exception as e:
         log(f"_on_editor_unfocus_field error: {e}")
+    # IMPORTANT: Ne JAMAIS forcer changed = True ici.
+    # Dans Anki, si editor_did_unfocus_field retourne True, Anki déclenche un timer
+    # loadNoteKeepingFocus() qui réinitialise le focus sur le premier champ et interrompt
+    # la saisie en cours.
+    return changed
 
 
 def _on_editor_typing_timer(note_or_editor):
@@ -2525,12 +2510,11 @@ def _on_editor_typing_timer(note_or_editor):
 
 
 def _on_editor_load_note(editor):
-    """Invalide le cache hover lors du chargement de la note et nettoie les markers orphelins et HTML corrompu persistés."""
+    """Invalide le cache hover lors du chargement de la note et nettoie les markers orphelins persistés sans recharger l'éditeur."""
     try:
         note = _get_editor_note(editor)
         if editor and note and getattr(note, 'id', None):
             if getattr(note, 'fields', None):
-                cleaned_any = False
                 for i, f in enumerate(note.fields):
                     cleaned_val = f
                     if 'edn-cursor-marker' in cleaned_val:
@@ -2539,12 +2523,6 @@ def _on_editor_load_note(editor):
                         cleaned_val = _clean_kbd_html(cleaned_val)
                     if cleaned_val != f:
                         note.fields[i] = cleaned_val
-                        cleaned_any = True
-                if cleaned_any:
-                    if hasattr(editor, 'loadNoteKeepingFocus'):
-                        editor.loadNoteKeepingFocus()
-                    elif hasattr(editor, 'reload_note'):
-                        editor.reload_note()
             clear_hover_preview_cache(note.id)
             try:
                 from .editor_assistant import clear_assistant_preview_cache
@@ -3379,7 +3357,7 @@ def _focus_liens_field(editor):
             # Laisser un court délai pour que les signaux IPC (blur/key) d'Anki
             # soient pleinement intégrés par Editor.onBridgeCmd avant d'ouvrir
             QTimer.singleShot(50, _do_toggle)
-        editor.saveNow(on_saved)
+        editor_save_now(editor, on_saved)
     except Exception as e:
         log(f"toggle_assistant error: {e}")
 
@@ -4515,6 +4493,8 @@ def _do_editor_init(editor: Editor):
         
         function _isElementEditable(el) {{
             if (!el) return false;
+            if (el.nodeType === 3) el = el.parentElement;
+            if (!el) return false;
             var tag = el.tagName ? el.tagName.toUpperCase() : '';
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') {{
                 return true;
@@ -4525,34 +4505,46 @@ def _do_editor_init(editor: Editor):
             if (el.isContentEditable || el.contentEditable === 'true') {{
                 return true;
             }}
-            if (el.classList && (el.classList.contains('editable') || el.classList.contains('input') || el.classList.contains('text-input'))) {{
+            if (el.classList && (el.classList.contains('editable') || el.classList.contains('input') || el.classList.contains('text-input') || el.classList.contains('rich-text-editable'))) {{
                 return true;
             }}
             return false;
         }}
 
-        function _isEditable() {{
-            var active = document.activeElement;
-            if (!active) return false;
-            if (active.shadowRoot && active.shadowRoot.activeElement) {{
-                if (_isElementEditable(active.shadowRoot.activeElement)) return true;
+        function _isEventInEditable(e) {{
+            if (!e) return false;
+            if (typeof e.composedPath === 'function') {{
+                var path = e.composedPath();
+                for (var i = 0; i < path.length; i++) {{
+                    var node = path[i];
+                    if (node && node.nodeType === 1) {{
+                        if (_isElementEditable(node)) return true;
+                    }}
+                }}
             }}
-            var target = active;
+            var target = e.target;
             while (target) {{
-                if (_isElementEditable(target)) return true;
+                if (target.nodeType === 1 && _isElementEditable(target)) return true;
                 target = target.parentNode || (target.getRootNode && target.getRootNode().host) || target.host;
+            }}
+            var active = document.activeElement;
+            while (active) {{
+                if (active.nodeType === 1 && _isElementEditable(active)) return true;
+                if (active.shadowRoot && active.shadowRoot.activeElement) {{
+                    var sActive = active.shadowRoot.activeElement;
+                    while (sActive) {{
+                        if (sActive.nodeType === 1 && _isElementEditable(sActive)) return true;
+                        sActive = sActive.parentNode;
+                    }}
+                }}
+                active = active.parentNode || (active.getRootNode && active.getRootNode().host) || active.host;
             }}
             return false;
         }}
 
-        function _isTargetEditable(e) {{
-            var target = e.target;
-            while (target) {{
-                if (_isElementEditable(target)) return true;
-                target = target.parentNode || (target.getRootNode && target.getRootNode().host) || target.host;
-            }}
-            return false;
-        }}
+        document.addEventListener('focusin', function() {{
+            window._ednBuffer = '';
+        }}, true);
         
         document.addEventListener('keydown', function(e) {{
             var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -4562,7 +4554,9 @@ def _do_editor_init(editor: Editor):
                                k === window._ednMiroirKeys.back.toLowerCase() ||
                                e.key === 'Escape');
                                
-            if (isMiroirKey && !_isEditable() && !_isTargetEditable(e)) {{
+            var insideEditable = _isEventInEditable(e);
+
+            if (isMiroirKey && !insideEditable) {{
                 e.preventDefault();
                 e.stopPropagation();
                 if (typeof pycmd !== 'undefined') pycmd('edn_editor_key:' + e.key);
@@ -4582,6 +4576,11 @@ def _do_editor_init(editor: Editor):
                 return;
             }}
             
+            if (!insideEditable) {{
+                window._ednBuffer = '';
+                return;
+            }}
+
             if (e.key && e.key.length === 1) {{
                 window._ednBuffer += e.key;
                 if (window._ednBuffer.length > window._ednTriggerLen) {{
@@ -4603,7 +4602,35 @@ def _do_editor_init(editor: Editor):
                 }}
                 
                 window._ednSavedRange = null;
+                window._ednSavedFieldIndex = -1;
+
+                // Find active editable element and determine its index
+                let editables = Array.from(document.querySelectorAll('anki-editable'));
                 let active = document.activeElement;
+                let activeEditable = null;
+                if (typeof e.composedPath === 'function') {{
+                    let path = e.composedPath();
+                    for (let p = 0; p < path.length; p++) {{
+                        if (path[p] && path[p].tagName === 'ANKI-EDITABLE') {{
+                            activeEditable = path[p];
+                            break;
+                        }}
+                    }}
+                }}
+                if (!activeEditable && active) {{
+                    let node = active;
+                    while (node) {{
+                        if (node.tagName === 'ANKI-EDITABLE') {{
+                            activeEditable = node;
+                            break;
+                        }}
+                        node = node.parentNode || (node.getRootNode && node.getRootNode().host) || node.host;
+                    }}
+                }}
+                if (activeEditable) {{
+                    window._ednSavedFieldIndex = editables.indexOf(activeEditable);
+                }}
+
                 let sel = null;
                 if (active && active.shadowRoot) sel = active.shadowRoot.getSelection();
                 else sel = window.getSelection();
@@ -4616,7 +4643,7 @@ def _do_editor_init(editor: Editor):
                         let marker = document.createElement("span");
                         marker.id = "edn-cursor-marker";
                         r.insertNode(marker);
-                    }} catch(e) {{}}
+                    }} catch(err) {{}}
                 }}
                 
                 if (typeof pycmd !== 'undefined') pycmd('edn_nid_trigger');
@@ -5715,11 +5742,7 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
                 # Refresh assistant side panel
                 from .editor_assistant import update_assistant
                 if editor:
-                    try:
-                        editor.saveNow(lambda: update_assistant(editor))
-                    except Exception as se:
-                        log(f"Error saving editor/updating assistant: {se}")
-                        update_assistant(editor)
+                    editor_save_now(editor, lambda: update_assistant(editor))
     except Exception as e:
         log(f"Error in _propose_mirror_links_group: {e}")
     finally:
@@ -5933,11 +5956,7 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                     # Refresh assistant side panel
                     from .editor_assistant import update_assistant
                     if editor:
-                        try:
-                            editor.saveNow(lambda: update_assistant(editor))
-                        except Exception as se:
-                            log(f"Error saving editor/updating assistant: {se}")
-                            update_assistant(editor)
+                        editor_save_now(editor, lambda: update_assistant(editor))
             finally:
                 on_done()
                         
@@ -6420,11 +6439,25 @@ class LinkedCardsDialog(QDialog):
                         note.fields[i] = cleaned
                         changed = True
                 if changed:
-                    # Sauvegarder la note sans les markers via saveNow
-                    try:
-                        self.editor.saveNow(lambda: None)
-                    except Exception:
-                        pass
+                    # Sauvegarder la note sans les markers en preservant le focus
+                    editor_save_now(self.editor, keep_focus=True)
+
+            # Restaurer explicitement le focus sur le champ actif precedemment memorise
+            if self.editor and self.editor.web:
+                self.editor.web.eval("""
+                    (function() {
+                        if (typeof window._ednSavedFieldIndex === 'number' && window._ednSavedFieldIndex >= 0) {
+                            var editables = document.querySelectorAll('anki-editable');
+                            var ed = editables[window._ednSavedFieldIndex];
+                            if (ed) {
+                                var inner = (ed.shadowRoot && ed.shadowRoot.querySelector('[contenteditable]')) || ed;
+                                if (inner && typeof inner.focus === 'function') {
+                                    inner.focus();
+                                }
+                            }
+                        }
+                    })();
+                """)
         except Exception:
             pass
 
@@ -8812,44 +8845,52 @@ def _patch_editor_save_now():
     This prevents 'Uncaught ReferenceError: saveNow is not defined' which can happen if the
     editor is closed/destroyed before Svelte is fully initialized, or when called on a non-editor webview.
     """
-    from aqt.editor import Editor
-    
-    # Store original method
-    original_call_after_note_saved = Editor.call_after_note_saved
-    
-    def patched_call_after_note_saved(self, callback, keepFocus=False):
-        # Quick check for deleted or uninitialized webview
-        if not getattr(self, "web", None):
-            original_call_after_note_saved(self, callback, keepFocus)
-            return
-            
-        try:
-            from aqt.qt import sip
-            if sip.isdeleted(self.web):
-                from aqt import mw
-                mw.progress.single_shot(10, callback)
-                return
-        except:
-            pass
-            
-        def on_check(defined):
-            if defined:
-                original_call_after_note_saved(self, callback, keepFocus)
-            else:
-                # saveNow is not defined in JS (e.g. editor is closing/loading or it's a non-editor webview).
-                # Run the callback directly via single_shot to maintain asynchronous execution contract.
-                from aqt import mw
-                mw.progress.single_shot(10, callback)
-                
-        try:
-            self.web.evalWithCallback("typeof saveNow !== 'undefined'", on_check)
-        except Exception:
-            # Fallback if eval fails or object is destroyed
-            original_call_after_note_saved(self, callback, keepFocus)
-            
-    # Apply patches
-    Editor.call_after_note_saved = patched_call_after_note_saved
-    Editor.saveNow = patched_call_after_note_saved
+    try:
+        import aqt.editor as editor_mod
+    except ImportError:
+        return
+
+    editor_classes = [getattr(editor_mod, "Editor", None), getattr(editor_mod, "NewEditor", None)]
+
+    for cls in editor_classes:
+        if not cls:
+            continue
+        orig_fn = getattr(cls, "call_after_note_saved", None) or getattr(cls, "saveNow", None)
+        if not orig_fn:
+            continue
+
+        def _make_patched(orig_method):
+            def patched_call_after_note_saved(self, callback, keepFocus=False):
+                if not getattr(self, "web", None):
+                    orig_method(self, callback, keepFocus)
+                    return
+
+                try:
+                    from aqt.qt import sip
+                    if sip.isdeleted(self.web):
+                        from aqt import mw
+                        mw.progress.single_shot(10, callback)
+                        return
+                except Exception:
+                    pass
+
+                def on_check(defined):
+                    if defined:
+                        orig_method(self, callback, keepFocus)
+                    else:
+                        from aqt import mw
+                        mw.progress.single_shot(10, callback)
+
+                try:
+                    self.web.evalWithCallback("typeof saveNow !== 'undefined'", on_check)
+                except Exception:
+                    orig_method(self, callback, keepFocus)
+
+            return patched_call_after_note_saved
+
+        patched = _make_patched(orig_fn)
+        cls.call_after_note_saved = patched
+        cls.saveNow = patched
 
 
 # --- Learn Now & Grade Now Context Menu Integration ---
