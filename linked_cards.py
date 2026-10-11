@@ -31,6 +31,23 @@ from .edn_editor_compat import get_editor_note, editor_save_now, editor_reload_n
 _current_editor = None
 _active_dialog = None
 
+def _profiler_log(category: str, message: str, elapsed_ms: Optional[float] = None, caller: Optional[str] = None):
+    try:
+        import sys
+        profiler = sys.modules.get("00_EDN_Debug_Profiler")
+        if profiler and hasattr(profiler, "log"):
+            profiler.log(category, message, elapsed_ms=elapsed_ms, caller=caller or "LinkedCards")
+            return
+    except Exception:
+        pass
+    try:
+        from .logger import log
+        ms_str = f" | took {elapsed_ms:.2f}ms" if elapsed_ms is not None else ""
+        c_str = f" [{caller}]" if caller else ""
+        log(f"[{category}]{c_str} {message}{ms_str}")
+    except Exception:
+        pass
+
 def _get_editor_note(editor):
     return get_editor_note(editor)
 
@@ -573,23 +590,15 @@ def on_add_cards_did_add_note(note: Any) -> None:
                 
             # 4. Perform the mirroring
             for nid_str, target_note, fidx, custom_recto in selected_targets:
-                update_link_description_in_note(note, nid_str, custom_recto)
-                
                 # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
-                source_recto_escaped = custom_recto.replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
-                badge_html = (
-                    f'<br><span class="edn-desc">{source_recto_escaped}</span>&nbsp;\u2014&nbsp;'
-                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{source_nid}"'
-                    f'><span class="edn-nid">{source_nid}</span></kbd>'
-                )
+                link_html = make_card_link(source_nid, custom_recto)
                 current_field_content = target_note.fields[fidx].strip()
-                tb = badge_html
                 if not current_field_content or current_field_content == '<br>':
-                    tb = tb.replace('<br>', '', 1)
-                target_note.fields[fidx] += tb
+                    target_note.fields[fidx] = link_html
+                else:
+                    target_note.fields[fidx] = current_field_content + '<br>' + link_html
                 mw.col.update_note(target_note)
                 
-            mw.col.update_note(note)
             tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
             
             # 5. Propose inter-linking between target cards
@@ -627,33 +636,22 @@ def on_add_cards_did_add_note(note: Any) -> None:
                                 smart_desc_c = generate_smart_link_label(note_b, note_c)
                                 recto_c = smart_desc_c if smart_desc_c else get_note_recto(note_c, 240)
                                 
-                                recto_b_escaped = recto_b.replace('"', '&quot;').replace("'", '&#39;').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                                recto_c_escaped = recto_c.replace('"', '&quot;').replace("'", '&#39;').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                                
                                 # Add C's badge to B
-                                badge_c = (
-                                    f'<br>{recto_c_escaped}&nbsp;\u2014&nbsp;'
-                                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid_c}"'
-                                    f'><span class="edn-nid">{nid_c}</span></kbd>'
-                                )
+                                link_c = make_card_link(nid_c, recto_c)
                                 current_field_b = note_b.fields[fidx_b].strip()
-                                tb_c = badge_c
                                 if not current_field_b or current_field_b == '<br>':
-                                    tb_c = tb_c.replace('<br>', '', 1)
-                                note_b.fields[fidx_b] += tb_c
+                                    note_b.fields[fidx_b] = link_c
+                                else:
+                                    note_b.fields[fidx_b] = current_field_b + '<br>' + link_c
                                 mw.col.update_note(note_b)
                                 
                                 # Add B's badge to C
-                                badge_b = (
-                                    f'<br>{recto_b_escaped}&nbsp;\u2014&nbsp;'
-                                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid_b}"'
-                                    f'><span class="edn-nid">{nid_b}</span></kbd>'
-                                )
+                                link_b = make_card_link(nid_b, recto_b)
                                 current_field_c = note_c.fields[fidx_c].strip()
-                                tb_b = badge_b
                                 if not current_field_c or current_field_c == '<br>':
-                                    tb_b = tb_b.replace('<br>', '', 1)
-                                note_c.fields[fidx_c] += tb_b
+                                    note_c.fields[fidx_c] = link_b
+                                else:
+                                    note_c.fields[fidx_c] = current_field_c + '<br>' + link_b
                                 mw.col.update_note(note_c)
                                 
                             tooltip(f"Liens croisés créés entre {len(selected_pairs)} paires de cartes.")
@@ -780,6 +778,48 @@ def init_linked_cards():
 def setup_edn_submenu():
     """Obsolète : Les réglages de liens sont désormais intégrés dans Paramètres EDN."""
     pass
+
+
+def make_clickable_card_badge(nid: Any, custom_text: Optional[str] = None) -> str:
+    """Génère le HTML d'un badge <kbd> pour une carte liée.
+    Comprend les styles inline complets pour garantir un rendu parfait
+    y compris à l'intérieur du Shadow DOM des champs Svelte d'Anki.
+    """
+    safe_nid = str(nid).strip()
+    if custom_text:
+        safe_custom = (
+            str(custom_text)
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;')
+            .replace("'", '&#39;')
+        )
+        display_content = f'<span class="edn-nid" style="display:none;font-size:0;line-height:0">{safe_nid}</span>{safe_custom}'
+    else:
+        display_content = f'<span class="edn-nid">{safe_nid}</span>'
+
+    return f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{safe_nid}">{display_content}</kbd>'
+
+
+def make_card_link(nid: Any, recto: Optional[str] = None) -> str:
+    """Génère le HTML propre d'un lien de carte (titre + tiret + badge)."""
+    safe_nid = str(nid).strip()
+    badge = make_clickable_card_badge(safe_nid)
+    if recto is None:
+        return badge
+    elif recto == "":
+        return f'&nbsp;—&nbsp;{badge}'
+    else:
+        recto_escaped = (
+            str(recto)
+            .replace('&', '&amp;')
+            .replace('"', '&quot;')
+            .replace("'", '&#39;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+        )
+        return f'<span class="edn-desc">{recto_escaped}</span>&nbsp;—&nbsp;{badge}'
 
 
 def add_css(web_content: aqt.webview.WebContent, context: Optional[Any]) -> None:
@@ -1744,7 +1784,7 @@ if (!window._ednListenersAttached) {
         if (!active) return;
         
         var sel = null;
-        if (active.shadowRoot) {
+        if (active.shadowRoot && typeof active.shadowRoot.getSelection === 'function') {
             sel = active.shadowRoot.getSelection();
         } else {
             sel = window.getSelection();
@@ -1916,51 +1956,78 @@ if (!window._ednListenersAttached) {
                 }
             }
             
+            function applyDualBorder(el, leftColor, rightColor) {
+                if (!el) return;
+                el.style.borderImage = "none";
+                el.style.borderColor = "transparent";
+                var bg = window.getComputedStyle(el).backgroundColor;
+                if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
+                    var isNight = document.body && (document.body.classList.contains("nightMode") || document.body.classList.contains("night_mode"));
+                    bg = isNight ? "#373a41" : "#f5f6f7";
+                }
+                var existingBg = el.style.backgroundImage;
+                if (existingBg && !existingBg.includes("linear-gradient")) {
+                    el.style.backgroundImage = existingBg + ", linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                } else {
+                    el.style.backgroundImage = "linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                }
+                el.style.backgroundOrigin = "border-box";
+                el.style.backgroundClip = "padding-box, border-box";
+            }
+
+            function clearDualBorder(el) {
+                if (!el) return;
+                el.style.borderImage = "none";
+                el.style.backgroundOrigin = "";
+                el.style.backgroundClip = "";
+                var existingBg = el.style.backgroundImage;
+                if (existingBg && existingBg.includes("linear-gradient")) {
+                    el.style.backgroundImage = "";
+                }
+            }
+
             var dualFlags = prefs.hasOwnProperty('previewDualFlags') ? prefs.previewDualFlags : false;
             var sections = box.getElementsByClassName("section");
             var hiders = box.getElementsByClassName("barHider");
             var barsList = box.getElementsByClassName("bar");
             
             if (showFlags && dualFlags && virtualFlagColor && realColor) {
-                var dualGradient = "linear-gradient(to right, " + virtualFlagColor + " 50%, " + realColor + " 50%) 1";
                 for (var sIdx = 0; sIdx < sections.length; sIdx++) {
-                    sections[sIdx].style.borderColor = "transparent";
-                    sections[sIdx].style.borderImage = dualGradient;
+                    applyDualBorder(sections[sIdx], virtualFlagColor, realColor);
                 }
                 for (var hIdx = 0; hIdx < hiders.length; hIdx++) {
-                    hiders[hIdx].style.borderColor = "transparent";
-                    hiders[hIdx].style.borderImage = dualGradient;
+                    applyDualBorder(hiders[hIdx], virtualFlagColor, realColor);
                 }
                 for (var bIdx = 0; bIdx < barsList.length; bIdx++) {
-                    barsList[bIdx].style.borderImage = "none";
+                    clearDualBorder(barsList[bIdx]);
                     barsList[bIdx].style.borderColor = virtualFlagColor;
                 }
             } else {
                 var activeColor = showFlags ? (realColor || virtualFlagColor) : null;
                 if (activeColor) {
                     for (var sIdx = 0; sIdx < sections.length; sIdx++) {
-                        sections[sIdx].style.borderImage = "none";
+                        clearDualBorder(sections[sIdx]);
                         sections[sIdx].style.borderColor = activeColor;
                     }
                     for (var hIdx = 0; hIdx < hiders.length; hIdx++) {
-                        hiders[hIdx].style.borderImage = "none";
+                        clearDualBorder(hiders[hIdx]);
                         hiders[hIdx].style.borderColor = activeColor;
                     }
                     for (var bIdx = 0; bIdx < barsList.length; bIdx++) {
-                        barsList[bIdx].style.borderImage = "none";
+                        clearDualBorder(barsList[bIdx]);
                         barsList[bIdx].style.borderColor = activeColor;
                     }
                 } else {
                     for (var sIdx = 0; sIdx < sections.length; sIdx++) {
-                        sections[sIdx].style.borderImage = "none";
+                        clearDualBorder(sections[sIdx]);
                         sections[sIdx].style.borderColor = "";
                     }
                     for (var hIdx = 0; hIdx < hiders.length; hIdx++) {
-                        hiders[hIdx].style.borderImage = "none";
+                        clearDualBorder(hiders[hIdx]);
                         hiders[hIdx].style.borderColor = "";
                     }
                     for (var bIdx = 0; bIdx < barsList.length; bIdx++) {
-                        barsList[bIdx].style.borderImage = "none";
+                        clearDualBorder(barsList[bIdx]);
                         barsList[bIdx].style.borderColor = "";
                     }
                 }
@@ -2146,7 +2213,7 @@ def _move_br_outside_kbd(html_text):
     return re.sub(pattern, replace_kbd, html_text, flags=re.DOTALL)
 
 
-def _move_br_outside_edn_desc(html_text):
+def _move_br_outside_edn_desc(html_text, clean_duplicate_br=False):
     """Déplace les <br> accidentellement insérés dans <span class="edn-desc"> vers l'extérieur."""
     if not html_text or 'edn-desc' not in html_text:
         return html_text
@@ -2177,8 +2244,9 @@ def _move_br_outside_edn_desc(html_text):
         
     pattern = r'(<span\s+[^>]*class=["\'][^"\']*edn-desc[^"\']*["\'][^>]*>)(.*?)(</span>)'
     html_text = re.sub(pattern, replace_desc, html_text, flags=re.DOTALL | re.IGNORECASE)
-    # Nettoyer les doublons de br consécutifs créés
-    html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
+    # Nettoyer les doublons de br consécutifs créés seulement si l'option est activée
+    if clean_duplicate_br:
+        html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
     return html_text
 
 
@@ -2194,14 +2262,27 @@ def _disconnect_app_state(app, dialog):
 
 
 def _clean_kbd_html(html_text):
-
     """Nettoie le HTML des badges <kbd> : supprime les vides, corrige les imbriqués."""
     if not html_text:
         return html_text
-        
+
+    try:
+        from .edn_menu.card_styles import load_prefs
+        prefs = load_prefs()
+    except Exception:
+        try:
+            from edn_menu.card_styles import load_prefs
+            prefs = load_prefs()
+        except Exception:
+            prefs = {}
+
+    clean_duplicate_br = prefs.get("cleanDuplicateLineBreaks", True)
+    auto_lb_linked = prefs.get("autoLineBreakLinkedCards", True)
+
     # 0. Déplacer les <br> à l'intérieur des <kbd> et <span class="edn-desc"> vers l'extérieur
-    html_text = _move_br_outside_kbd(html_text)
-    html_text = _move_br_outside_edn_desc(html_text)
+    if auto_lb_linked:
+        html_text = _move_br_outside_kbd(html_text)
+        html_text = _move_br_outside_edn_desc(html_text, clean_duplicate_br=clean_duplicate_br)
         
     # 1. Supprimer les <kbd> vides (y compris ceux avec seulement espaces/br)
     empty_kbd = r'<kbd\s+class="clickable_cards"[^>]*>(?:\s|<br\s*/?>)*</kbd>'
@@ -2230,9 +2311,9 @@ def _clean_kbd_html(html_text):
             
             # Retourner le badge aplati et propre
             if text_outside:
-                return f'{text_outside} — <kbd class="clickable_cards" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>'
+                return make_card_link(nid, text_outside)
             else:
-                return f'<kbd class="clickable_cards" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>'
+                return make_clickable_card_badge(nid)
         return match.group(0)
 
     # Aplatir récursivement les kbd imbriqués
@@ -2241,38 +2322,55 @@ def _clean_kbd_html(html_text):
     # 3. Supprimer les <kbd> vides résiduels (après nettoyage des imbriqués)
     html_text = re.sub(empty_kbd, '', html_text)
     
-    # 4. Nettoyer les <br> orphelins en début de contenu ou après un <br><kbd vide>
-    html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
+    # 4. Nettoyer les <br> orphelins consécutifs SEULEMENT si l'option est activée
+    if clean_duplicate_br:
+        html_text = re.sub(r'(?:<br\s*/?>\s*)+(?=<br\s*/?>)', '', html_text)
     
-    # 5. Nettoyer les <br> accidentels situés juste devant un badge <kbd> (séparant le titre et le NID)
-    html_text = re.sub(
-        r'([—–-](?:&nbsp;|\s)*)<br\s*/?>\s*(<kbd\s+class="clickable_cards")',
-        r'\1\2',
-        html_text,
-        flags=re.IGNORECASE
-    )
+    # 5. Nettoyer les <br> accidentels situés autour du tiret et du badge <kbd> si saut auto activé
+    if auto_lb_linked:
+        html_text = re.sub(
+            r'([—–-](?:&nbsp;|\s)*)<br\s*/?>\s*(<kbd\s+class="clickable_cards")',
+            r'\1\2',
+            html_text,
+            flags=re.IGNORECASE
+        )
+        html_text = re.sub(
+            r'<br\s*/?>\s*([—–-](?:&nbsp;|\s)*<kbd\s+class="clickable_cards")',
+            r'&nbsp;\1',
+            html_text,
+            flags=re.IGNORECASE
+        )
+        # Nettoyer les <br> accidentels placés immédiatement avant un badge incrusté dans un mot (ex: l'<br><kbd...)
+        html_text = re.sub(
+            r'([a-zA-Z0-9\u00C0-\u017F\'’])<br\s*/?>\s*(<kbd\s+class="clickable_cards")',
+            r'\1\2',
+            html_text,
+            flags=re.IGNORECASE
+        )
 
-    # 6. Rapatrier les badges <kbd> orphelins placés juste après la fermeture d\'un bloc <div> ou <p>
-    html_text = re.sub(
-        r'(<div[^>]*>.*?)(?:&nbsp;|\s)*</div>\s*(<kbd\s+class="clickable_cards"[^>]*>.*?</kbd>(?:&nbsp;|\s)*)',
-        r'\1&nbsp;\2</div>',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL
-    )
-    html_text = re.sub(
-        r'(<p[^>]*>.*?)(?:&nbsp;|\s)*</p>\s*(<kbd\s+class="clickable_cards"[^>]*>.*?</kbd>(?:&nbsp;|\s)*)',
-        r'\1&nbsp;\2</p>',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL
-    )
+        # 6. Rapatrier les badges <kbd> orphelins placés juste après la fermeture d\'un bloc <div> ou <p>
+        html_text = re.sub(
+            r'(<div[^>]*>.*?)(?:&nbsp;|\s)*</div>\s*(<kbd\s+class="clickable_cards"[^>]*>.*?</kbd>(?:&nbsp;|\s)*)',
+            r'\1&nbsp;\2</div>',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        html_text = re.sub(
+            r'(<p[^>]*>.*?)(?:&nbsp;|\s)*</p>\s*(<kbd\s+class="clickable_cards"[^>]*>.*?</kbd>(?:&nbsp;|\s)*)',
+            r'\1&nbsp;\2</p>',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
     
     return html_text
 
 def on_card_render(output, context):
     script = build_add_to_card_script()
-    # Nettoyer les badges <kbd> vides et imbriqués
-    output.question_text = _clean_kbd_html(output.question_text)
-    output.answer_text = _clean_kbd_html(output.answer_text)
+    # Nettoyer les badges <kbd> vides et imbriqués UNIQUEMENT si des liens sont présents dans le contenu
+    if output.question_text and ('clickable_cards' in output.question_text or 'edn-desc' in output.question_text):
+        output.question_text = _clean_kbd_html(output.question_text)
+    if output.answer_text and ('clickable_cards' in output.answer_text or 'edn-desc' in output.answer_text):
+        output.answer_text = _clean_kbd_html(output.answer_text)
     
     # Remplacer onclick/ondblclick par data-onclick/data-ondblclick pour éviter les violations de Content Security Policy (CSP)
     import re as re2
@@ -2381,12 +2479,7 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
             recto = get_note_recto(note, 240)
         except:
             recto = "[Vide]"
-        recto_escaped = recto.replace('"', '&quot;').replace("'", '&#39;')
-        html = (
-            f'{recto_escaped} — '
-            f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
-            f'><span class="edn-nid">{nid}</span></kbd>&nbsp;'
-        )
+        html = make_card_link(nid, recto)
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
         mime.setHtml(html)
@@ -2533,17 +2626,16 @@ def _on_editor_load_note(editor):
         pass
 
 
-def _get_virtual_flag_color(note, cards=None) -> str:
-    """Détermine la couleur du drapeau virtuel (#E53E3E si suspendue, #3182CE si new, ou '' sinon)."""
+def _get_virtual_flag_color(note, cards=None, prefs=None) -> str:
+    """Détermine la couleur du drapeau virtuel (leech, suspendue, new, ou '' sinon)."""
     try:
-        from .edn_menu.card_styles import load_prefs
-        prefs = load_prefs()
+        if prefs is None:
+            from .edn_menu.card_styles import load_prefs
+            prefs = load_prefs()
         show_flags = prefs.get("showFlagBorders", True)
         if not show_flags:
             return ""
-        if not prefs.get("virtualBlueFlagForNewCards", False):
-            return ""
-            
+
         _ANKI_FLAG_COLORS = {
             "flag1": "#E53E3E",  # Rouge
             "flag2": "#DD6B20",  # Orange
@@ -2561,19 +2653,21 @@ def _get_virtual_flag_color(note, cards=None) -> str:
             v = val.strip().lower()
             return _ANKI_FLAG_COLORS.get(v, val)
 
-        _addon_cfg = mw.addonManager.getConfig(__name__) or {}
-        _color_new = _resolve_flag_color(
-            prefs.get("virtual_flag_color_new") or _addon_cfg.get("virtual_flag_color_new", "flag4"), "#3182CE"
-        )
-        _color_sus = _resolve_flag_color(
-            prefs.get("virtual_flag_color_suspended") or _addon_cfg.get("virtual_flag_color_suspended", "flag1"), "#E53E3E"
-        )
+        _color_leech = _resolve_flag_color(prefs.get("virtual_flag_color_leech"), "#DD6B20")
+        _color_new = _resolve_flag_color(prefs.get("virtual_flag_color_new"), "#3182CE")
+        _color_sus = _resolve_flag_color(prefs.get("virtual_flag_color_suspended"), "#E53E3E")
 
         if cards is None and note is not None:
             try:
                 cards = note.cards()
             except Exception:
                 cards = []
+
+        if prefs.get("flagAgainEnabled", False) and cards:
+            again_threshold = prefs.get("flagAgainCount", 7)
+            if any(getattr(c, 'lapses', 0) >= again_threshold for c in cards):
+                return _color_leech
+
         if not cards:
             return ""
 
@@ -2581,7 +2675,7 @@ def _get_virtual_flag_color(note, cards=None) -> str:
         all_new = all(c.type == 0 and c.queue >= 0 for c in cards)
         if any_suspended:
             return _color_sus
-        elif all_new:
+        elif all_new and prefs.get("virtualBlueFlagForNewCards", False):
             return _color_new
     except Exception as e:
         print("Error resolving virtual flag color:", e)
@@ -2727,7 +2821,7 @@ div[class*='section'] {
 }
 
 .items ul, .items ol {
-    padding-top: 2px !important;
+    padding-top: 0 !important;
     padding-bottom: 2px !important;
     margin-top: 0 !important;
     margin-bottom: 0 !important;
@@ -2817,12 +2911,18 @@ div:empty:not(.bar), p:empty {
     padding: 3px 5px !important;
     margin: 3px !important;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    background: #fffbf5 !important;
+    color: #b45309 !important;
+    border: 1px solid #e5c98e !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
 }
 
 .clickable_cards:hover {
-    background-color: #3b82f6 !important;
-    color: white !important;
+    background: #f5f3ff !important;
+    color: #7c3aed !important;
+    border-color: #a78bfa !important;
 }
 
 .items.cartesLiees {
@@ -3130,6 +3230,19 @@ def setup_browser_menu(browser: Browser):
     browser.addAction(action_search)
     browser.addAction(action_focus_liens)
     
+    # Nettoyer d'éventuels QShortcuts résiduels sur le browser ayant les mêmes touches (évite l'ambiguïté Qt)
+    _b_target_seqs = {
+        QKeySequence(shortcut_search).toString(),
+        QKeySequence(shortcut_copy).toString(),
+        QKeySequence(shortcut_liens).toString()
+    }
+    for _child in browser.findChildren(QShortcut):
+        try:
+            if _child.key().toString() in _b_target_seqs:
+                _child.setEnabled(False)
+        except Exception:
+            pass
+
     # Un seul QShortcut sur le browser, avec comportement contextuel
     sc_copy = QShortcut(QKeySequence(shortcut_copy), browser)
     sc_copy.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -3266,11 +3379,7 @@ def copy_nid_from_browser(browser: Browser):
         )
         
         lines_text.append(f"{recto} — {nid}")
-        lines_html.append(
-            f'{recto_escaped} — '
-            f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
-            f'><span class="edn-nid">{nid}</span></kbd>&nbsp;'
-        )
+        lines_html.append(make_card_link(nid, recto))
         
     text_content = "\n".join(lines_text)
     html_content = "<br>".join(lines_html)
@@ -3294,15 +3403,7 @@ def copy_nid_from_editor(editor: Editor):
             recto = get_note_recto(note, 240)
         except:
             recto = "[Vide]"
-        recto_escaped = recto.replace('&', '&amp;').replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
-        # HTML riche : recto visible dans le badge, NID uniquement dans data-nid + span caché
-        # Le texte visible du <kbd> est le recto (pas le NID) pour éviter la duplication
-        # quand le HTML est collé puis converti en texte brut par Anki
-        html = (
-            f'{recto_escaped} — '
-            f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
-            f'><span class="edn-nid">{nid}</span></kbd>&nbsp;'
-        )
+        html = make_card_link(nid, recto)
         mime = QMimeData()
         mime.setText(f"{recto} — {nid}")
         mime.setHtml(html)
@@ -3365,60 +3466,91 @@ def handle_editor_button(editor):
     """Smart Link: Direct link if selection is NID, else Search GUI."""
     editor.web.evalWithCallback("""
         (function() {
-            // Nettoyer tout ancien marker
-            let markers = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
-            document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                if (el.shadowRoot) {
-                    markers = markers.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                    el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {
-                       if (inner.shadowRoot) markers = markers.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                    });
+            function _getAllRoots(root) {
+                root = root || document.body;
+                var roots = [];
+                if (!root) return roots;
+                if (root.shadowRoot) roots.push(root.shadowRoot);
+                var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i].shadowRoot) {
+                        roots.push(all[i].shadowRoot);
+                        roots.push(..._getAllRoots(all[i].shadowRoot));
+                    }
                 }
+                return roots;
+            }
+            function _queryAll(sel) {
+                if (typeof window._ednQueryAllRoots === 'function') return window._ednQueryAllRoots(sel);
+                var res = Array.from(document.querySelectorAll(sel));
+                var sRoots = _getAllRoots(document.body);
+                for (var i = 0; i < sRoots.length; i++) {
+                    var list = sRoots[i].querySelectorAll(sel);
+                    for (var j = 0; j < list.length; j++) {
+                        if (!res.includes(list[j])) res.push(list[j]);
+                    }
+                }
+                return res;
+            }
+
+            // Nettoyer tout ancien marker
+            _queryAll('[id="edn-cursor-marker"]').forEach(function(m) {
+                try { m.parentNode.removeChild(m); } catch(e) {}
             });
-            markers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
 
             window._ednSavedRange = null;
             let textValue = '';
             let isFullField = false;
             let active = document.activeElement;
-            let sel = null;
-            // Chercher la sélection dans TOUS les shadow roots (pas seulement activeElement)
-            // pour que cursorin fonctionne quelle que soit la box active
-            function _findActiveSel() {
-                // Essayer d'abord activeElement et son shadowRoot
-                if (active && active.shadowRoot) {
+            let sel = (typeof window._ednGetEditorSelection === 'function')
+                ? window._ednGetEditorSelection()
+                : null;
+
+            if (!sel) {
+                if (active && active.shadowRoot && active.shadowRoot.getSelection) {
                     var s = active.shadowRoot.getSelection();
-                    if (s && s.rangeCount > 0) return s;
+                    if (s && s.rangeCount > 0) sel = s;
                 }
-                // Chercher dans tous les anki-editor / anki-editable shadow roots
-                var allHosts = Array.from(document.querySelectorAll('anki-editor, anki-editable'));
-                for (var hi = 0; hi < allHosts.length; hi++) {
-                    var h = allHosts[hi];
-                    if (h.shadowRoot) {
-                        var s2 = h.shadowRoot.getSelection ? h.shadowRoot.getSelection() : null;
-                        if (s2 && s2.rangeCount > 0) return s2;
-                        // Chercher les anki-editable imbriqués
-                        var inner = Array.from(h.shadowRoot.querySelectorAll('anki-editable'));
-                        for (var ii = 0; ii < inner.length; ii++) {
-                            if (inner[ii].shadowRoot) {
-                                var s3 = inner[ii].shadowRoot.getSelection ? inner[ii].shadowRoot.getSelection() : null;
-                                if (s3 && s3.rangeCount > 0) return s3;
-                            }
+                if (!sel) {
+                    var sRoots = _getAllRoots(document.body);
+                    for (var hi = 0; hi < sRoots.length; hi++) {
+                        var sr = sRoots[hi];
+                        if (sr.getSelection) {
+                            var s2 = sr.getSelection();
+                            if (s2 && s2.rangeCount > 0) { sel = s2; break; }
                         }
                     }
                 }
-                return window.getSelection();
+                if (!sel) sel = window.getSelection();
             }
-            sel = _findActiveSel();
+
+            // Sauvegarder l'index du champ actif pour restauration
+            var curFieldIdx = (typeof window._ednResolveActiveFieldIndex === 'function')
+                ? window._ednResolveActiveFieldIndex()
+                : -1;
+            if (curFieldIdx >= 0) {
+                window._ednSavedFieldIndex = curFieldIdx;
+                window._ednLastActiveField = curFieldIdx;
+            } else if (typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) {
+                window._ednSavedFieldIndex = window._ednLastActiveField;
+            }
 
             function _insertMarkerAtCursor(selection) {
                 if (!selection || selection.rangeCount === 0) return;
                 try {
-                    let r = selection.getRangeAt(0).cloneRange();
+                    let r = selection.getRangeAt(0);
                     r.deleteContents();
                     let m = document.createElement('span');
                     m.id = 'edn-cursor-marker';
                     r.insertNode(m);
+                    let editable = m.closest ? m.closest('anki-editable') : null;
+                    if (!editable) {
+                        let rn = m.getRootNode ? m.getRootNode() : null;
+                        if (rn && rn.host && rn.host.tagName === 'ANKI-EDITABLE') editable = rn.host;
+                    }
+                    if (editable) {
+                        editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    }
                 } catch(e) {}
             }
 
@@ -3430,7 +3562,7 @@ def handle_editor_button(editor):
 
             if (!textValue.trim() && active) {
                 let editable = null;
-                if (active.tagName === 'ANKI-EDITABLE') editable = active;
+                if (active.tagName === 'ANKI-EDITABLE' || active.isContentEditable) editable = active;
                 else if (active.shadowRoot) {
                     let activeInner = active.shadowRoot.activeElement;
                     if (activeInner && (activeInner.tagName === 'ANKI-EDITABLE' || activeInner.isContentEditable)) {
@@ -3440,7 +3572,7 @@ def handle_editor_button(editor):
                 if (!editable && window._ednSavedRange) {
                     let node = window._ednSavedRange.commonAncestorContainer;
                     while (node) {
-                        if (node.tagName === 'ANKI-EDITABLE' || (node.classList && node.classList.contains('field'))) {
+                        if (node.tagName === 'ANKI-EDITABLE' || node.isContentEditable || (node.classList && node.classList.contains('field'))) {
                             editable = node;
                             break;
                         }
@@ -3453,27 +3585,18 @@ def handle_editor_button(editor):
                     if (/^\\d{10,}$/.test(inner)) {
                         textValue = inner;
                         isFullField = true;
-                        // Placer le curseur à la fin du champ
                         let range = document.createRange();
                         range.selectNodeContents(editable);
                         range.collapse(false);
                         if (sel) { sel.removeAllRanges(); sel.addRange(range); }
                         window._ednSavedRange = range.cloneRange();
                         
-                        let cleanOld = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
-                        document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                            if (el.shadowRoot) {
-                                cleanOld = cleanOld.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                                el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {
-                                   if (inner.shadowRoot) cleanOld = cleanOld.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                                });
-                            }
+                        _queryAll('[id="edn-cursor-marker"]').forEach(function(m) {
+                            try { m.parentNode.removeChild(m); } catch(e) {}
                         });
-                        cleanOld.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
                         
                         _insertMarkerAtCursor(sel || { rangeCount: 1, getRangeAt: () => range });
                     }
-                    // Champ vide : le marker a déjà été placé (ou il sera à la fin par défaut)
                 }
             }
             return JSON.stringify({text: textValue.toString(), isFullField: isFullField});
@@ -3522,7 +3645,7 @@ def _on_selection_check(editor, result):
                         try {
                             var active = document.activeElement;
                             var sel = null;
-                            if (active && active.shadowRoot) sel = active.shadowRoot.getSelection();
+                            if (active && active.shadowRoot && typeof active.shadowRoot.getSelection === 'function') sel = active.shadowRoot.getSelection();
                             else sel = window.getSelection();
                             
                             var range = (window._ednSavedRange) ? window._ednSavedRange : (sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null);
@@ -3641,6 +3764,33 @@ def _setup_editor_window_shortcuts(editor: Editor):
             except:
                 pass
 
+    # Désactiver tout QShortcut en doublon sur editor.widget ou ses enfants
+    # (par ex. installé par anki_import_diff ou Customize Keyboard Shortcuts)
+    # afin d'éviter l'ambiguïté Qt ("Ambiguous shortcut overload") qui désactive le raccourci
+    target_seqs = {
+        QKeySequence(shortcut_search).toString(),
+        QKeySequence(shortcut_copy).toString(),
+        QKeySequence(shortcut_liens).toString()
+    }
+    if hasattr(editor, 'widget') and editor.widget:
+        for child_sc in editor.widget.findChildren(QShortcut):
+            try:
+                if child_sc.key().toString() in target_seqs:
+                    child_sc.setEnabled(False)
+            except Exception:
+                pass
+
+    if parent_win:
+        for child_sc in parent_win.findChildren(QShortcut):
+            try:
+                if child_sc not in (getattr(parent_win, '_edn_sc_search_editor', None),
+                                    getattr(parent_win, '_edn_sc_copy_editor', None),
+                                    getattr(parent_win, '_edn_sc_liens_editor', None)):
+                    if child_sc.key().toString() in target_seqs:
+                        child_sc.setEnabled(False)
+            except Exception:
+                pass
+
     sc_search = QShortcut(QKeySequence(shortcut_search), parent_win)
     sc_search.setContext(Qt.ShortcutContext.WindowShortcut)
     sc_search.activated.connect(lambda: handle_editor_button(editor))
@@ -3685,6 +3835,98 @@ def _do_editor_init(editor: Editor):
         if (window._ednEditorHoverInit) return;
         window._ednEditorHoverInit = true;
         
+        function _injectEdnShadowStyles() {
+            var css = `
+                kbd.clickable_cards {
+                    font-family: "Lucida console", Monaco, monospace !important;
+                    font-weight: 600 !important;
+                    color: #b45309 !important;
+                    background: #fffbf5 !important;
+                    background-color: #fffbf5 !important;
+                    border-radius: 4px !important;
+                    border: 1px solid #e5c98e !important;
+                    display: inline-block !important;
+                    font-size: 13px !important;
+                    line-height: 16px !important;
+                    padding: 2px 6px !important;
+                    margin: 1px 3px !important;
+                    text-align: center !important;
+                    cursor: pointer !important;
+                    width: auto !important;
+                    max-width: fit-content !important;
+                    box-sizing: border-box !important;
+                    vertical-align: middle !important;
+                    white-space: nowrap !important;
+                    box-shadow: none !important;
+                }
+                kbd.clickable_cards:hover {
+                    color: #7c3aed !important;
+                    border-color: #a78bfa !important;
+                    background: #f5f3ff !important;
+                }
+                kbd.clickable_cards:focus,
+                kbd.clickable_cards:focus-visible {
+                    outline: none !important;
+                    box-shadow: none !important;
+                }
+                .nightMode kbd.clickable_cards,
+                .night_mode kbd.clickable_cards,
+                .night-mode kbd.clickable_cards,
+                body.nightMode kbd.clickable_cards,
+                body.night_mode kbd.clickable_cards,
+                body.night-mode kbd.clickable_cards {
+                    background: #2e3238 !important;
+                    background-color: #2e3238 !important;
+                    border: 1px solid #4a4d52 !important;
+                    color: #FFA630 !important;
+                }
+                .nightMode kbd.clickable_cards:hover,
+                .night_mode kbd.clickable_cards:hover,
+                .night-mode kbd.clickable_cards:hover,
+                body.nightMode kbd.clickable_cards:hover,
+                body.night_mode kbd.clickable_cards:hover,
+                body.night-mode kbd.clickable_cards:hover {
+                    color: #BD93BD !important;
+                    border-color: #BD93BD !important;
+                }
+                kbd.clickable_cards .edn-nid {
+                    color: inherit !important;
+                    font-family: inherit !important;
+                    font-weight: inherit !important;
+                }
+                .edn-desc, span.edn-desc {
+                    display: inline !important;
+                }
+                .cartesLiees br, .items.cartesLiees br {
+                    display: block !important;
+                    content: "" !important;
+                }
+                [id*="edn-cursor-marker"], #edn-cursor-marker {
+                    display: none !important;
+                }
+            `;
+
+            var editables = document.querySelectorAll('anki-editable');
+            for (var i = 0; i < editables.length; i++) {
+                var ed = editables[i];
+                if (ed.shadowRoot && !ed.shadowRoot.getElementById('edn-shadow-styles')) {
+                    var st = document.createElement('style');
+                    st.id = 'edn-shadow-styles';
+                    st.textContent = css;
+                    ed.shadowRoot.appendChild(st);
+                }
+            }
+        }
+        window._ednInjectShadowStyles = _injectEdnShadowStyles;
+        _injectEdnShadowStyles();
+        document.addEventListener('focusin', _injectEdnShadowStyles, true);
+        if (window.MutationObserver && !window._ednEditorShadowObserver) {
+            window._ednEditorShadowObserver = new MutationObserver(_injectEdnShadowStyles);
+            if (document.body) {
+                window._ednEditorShadowObserver.observe(document.body, { childList: true, subtree: true });
+            }
+        }
+
         window.toggle = window.toggle || function(id) {
             var e = document.getElementById(id);
             if (e) {
@@ -3692,79 +3934,162 @@ def _do_editor_init(editor: Editor):
             }
         };
 
+        function _escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         document.addEventListener('paste', function(e) {
             var text = (e.clipboardData || window.clipboardData).getData('text');
-            if (text) {
-                var lines = text.split(/\r?\n/);
-                var nonEmptyLines = lines.filter(function(l) { return l.trim().length > 0; });
-                if (nonEmptyLines.length === 0) return;
-                
-                var allMatch = true;
-                var itemsList = [];
-                for (var i = 0; i < nonEmptyLines.length; i++) {
-                    var line = nonEmptyLines[i].trim();
-                    var match = line.match(/^(?:(.*?)[ \t\s\u00a0\xa0]*[\u2014\u2013-][ \t\s\u00a0\xa0]*)?\[?(\d{10,})\]?$/);
-                    if (!match) {
-                        allMatch = false;
-                        break;
-                    }
-                    var pLabel = match[1] ? match[1].trim() : "";
-                    var pNid = match[2].trim();
-                    itemsList.push({nid: pNid, label: pLabel});
+            if (!text) return;
+
+            var lines = text.split(/\r?\n/);
+            var nonEmptyLines = lines.filter(function(l) { return l.trim().length > 0; });
+            if (nonEmptyLines.length === 0) return;
+
+            var allMatch = true;
+            var itemsList = [];
+            for (var i = 0; i < nonEmptyLines.length; i++) {
+                var line = nonEmptyLines[i].trim();
+                var match = line.match(/^(?:(.*?)[ \t\s\u00a0\xa0]*[\u2014\u2013-][ \t\s\u00a0\xa0]*)?\[?(\d{10,})\]?$/);
+                if (!match) {
+                    allMatch = false;
+                    break;
                 }
-                
-                if (allMatch && itemsList.length > 0) {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    
-                    var textBefore = "";
-                    var lineEndsWithDash = false;
-                    try {
-                        var sel2 = window.getSelection();
-                        var active2 = document.activeElement;
-                        if (active2 && active2.shadowRoot) sel2 = active2.shadowRoot.getSelection();
-                        if (sel2 && sel2.rangeCount > 0) {
-                            var range2 = sel2.getRangeAt(0);
-                            window._ednSavedRange = range2.cloneRange();
-                            try {
-                                var marker = document.createElement('span');
-                                marker.id = 'edn-cursor-marker';
-                                range2.insertNode(marker);
-                            } catch(mErr) {}
-                            var container2 = range2.startContainer;
-                            var editable2 = container2;
-                            while (editable2 && editable2.tagName !== 'ANKI-EDITABLE' && !editable2.isContentEditable) {
-                                editable2 = editable2.parentNode || (editable2.getRootNode && editable2.getRootNode().host);
-                            }
-                            if (editable2) {
-                                var preRange = document.createRange();
-                                preRange.selectNodeContents(editable2);
-                                preRange.setEnd(range2.startContainer, range2.startOffset);
-                                var divPre = document.createElement('div');
-                                divPre.appendChild(preRange.cloneContents());
-                                var htmlPre = divPre.innerHTML;
-                                var cleanHtmlPre = htmlPre.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n');
-                                var linesPre = cleanHtmlPre.split('\n');
-                                var lastLinePreHtml = linesPre[linesPre.length - 1];
-                                var tempDivPre = document.createElement('div');
-                                tempDivPre.innerHTML = lastLinePreHtml;
-                                textBefore = (tempDivPre.textContent || tempDivPre.innerText || "").trim();
-                                if (textBefore.endsWith('—') || textBefore.endsWith('–') || textBefore.endsWith('-') || textBefore.endsWith('\u2014') || textBefore.endsWith('\u2013')) {
-                                    lineEndsWithDash = true;
-                                }
-                            }
+                var pLabel = match[1] ? match[1].trim() : "";
+                var pNid = match[2].trim();
+                itemsList.push({nid: pNid, label: pLabel});
+            }
+
+            if (!allMatch || itemsList.length === 0) return;
+
+            e.preventDefault();
+            e.stopImmediatePropagation();
+
+            // Obtenir la sélection actuelle (compatible shadow DOM et standard)
+            var sel = null;
+            var active = document.activeElement;
+            if (active && active.shadowRoot && typeof active.shadowRoot.getSelection === 'function') {
+                sel = active.shadowRoot.getSelection();
+            }
+            if (!sel && typeof window._ednGetEditorSelection === 'function') {
+                sel = window._ednGetEditorSelection();
+            }
+            if (!sel) sel = window.getSelection();
+
+            var textBefore = "";
+            var lineEndsWithDash = false;
+            if (sel && sel.rangeCount > 0) {
+                try {
+                    var range = sel.getRangeAt(0);
+                    var block = range.startContainer;
+                    while (block && block.parentNode && block !== block.parentNode) {
+                        if (block.nodeType === 1 && (['P', 'DIV', 'LI', 'BR', 'ANKI-EDITABLE'].includes(block.tagName) || block.isContentEditable)) {
+                            break;
                         }
-                    } catch(err2) {}
-                    
-                    if (typeof pycmd !== 'undefined') {
-                        pycmd('edn_paste_smart_link:' + JSON.stringify({
-                            items: itemsList,
-                            hasTextBefore: textBefore.length > 0,
-                            lineEndsWithDash: lineEndsWithDash,
-                            textBefore: textBefore
-                        }));
+                        block = block.parentNode;
+                    }
+                    if (!block) block = range.startContainer.parentNode || range.startContainer;
+
+                    var preRange = document.createRange();
+                    preRange.setStart(block, 0);
+                    preRange.setEnd(range.startContainer, range.startOffset);
+                    var divPre = document.createElement('div');
+                    divPre.appendChild(preRange.cloneContents());
+                    var htmlPre = divPre.innerHTML.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n');
+                    var linesPre = htmlPre.split('\n');
+                    var lastLineHtml = linesPre[linesPre.length - 1];
+                    var tDiv = document.createElement('div');
+                    tDiv.innerHTML = lastLineHtml;
+                    textBefore = (tDiv.textContent || tDiv.innerText || "").trim();
+                    if (/[-—–\u2014\u2013]\s*$/.test(textBefore)) {
+                        lineEndsWithDash = true;
+                    }
+                } catch(err2) {
+                    textBefore = "";
+                    lineEndsWithDash = false;
+                }
+            }
+
+            var htmlLines = [];
+            var pastedNids = [];
+            for (var i = 0; i < itemsList.length; i++) {
+                var it = itemsList[i];
+                var nid = it.nid;
+                var label = it.label;
+                pastedNids.push(nid);
+
+                var badgeHtml = '<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="' + nid + '"><span class="edn-nid">' + nid + '</span></kbd>&nbsp;';
+
+                if (label) {
+                    var labelEscaped = _escapeHtml(label);
+                    if (i === 0 && (lineEndsWithDash || textBefore.endsWith(label))) {
+                        if (lineEndsWithDash) {
+                            htmlLines.push(badgeHtml);
+                        } else {
+                            htmlLines.push('&nbsp;—&nbsp;' + badgeHtml);
+                        }
+                    } else {
+                        htmlLines.push('<span class="edn-desc">' + labelEscaped + '</span>&nbsp;—&nbsp;' + badgeHtml);
+                    }
+                } else {
+                    htmlLines.push(badgeHtml);
+                }
+            }
+            var fullHtml = htmlLines.join('<br>');
+
+            // Insertion directe au niveau du curseur / de la sélection
+            var inserted = false;
+            try {
+                inserted = document.execCommand('insertHTML', false, fullHtml);
+            } catch(eCmd) {
+                inserted = false;
+            }
+            if (!inserted && sel && sel.rangeCount > 0) {
+                try {
+                    var curRange = sel.getRangeAt(0);
+                    curRange.deleteContents();
+                    var tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = fullHtml;
+                    var frag = document.createDocumentFragment();
+                    var childNode, lastChildNode;
+                    while ((childNode = tempDiv.firstChild)) {
+                        lastChildNode = frag.appendChild(childNode);
+                    }
+                    curRange.insertNode(frag);
+                    if (lastChildNode) {
+                        var afterRange = document.createRange();
+                        afterRange.setStartAfter(lastChildNode);
+                        afterRange.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(afterRange);
+                    }
+                    inserted = true;
+                } catch(eRange) {}
+            }
+
+            // Déclencher l'événement input pour synchroniser Svelte et la note Anki
+            var activeElement = document.activeElement;
+            if (activeElement) {
+                activeElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                if (activeElement.shadowRoot) {
+                    var innerEd = activeElement.shadowRoot.querySelector('[contenteditable="true"]');
+                    if (innerEd) {
+                        innerEd.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                     }
                 }
+            }
+            if (typeof _dispatchInput === 'function') {
+                _dispatchInput(activeElement);
+            }
+
+            // Proposer les liens miroirs si configuré
+            if (pastedNids.length > 0 && typeof pycmd !== 'undefined') {
+                pycmd('edn_pasted_nids:' + pastedNids.join(','));
             }
         }, true);
 
@@ -3773,7 +4098,13 @@ def _do_editor_init(editor: Editor):
         // and Anki strips onclick/ondblclick attributes from <kbd> elements
         document.addEventListener('paste', function(e) {
             setTimeout(function() {
-                document.querySelectorAll('.clickable_cards').forEach(function(kbd) {
+                var allBadges = [];
+                if (typeof window._ednQueryAllRoots === 'function') {
+                    allBadges = window._ednQueryAllRoots('.clickable_cards');
+                } else {
+                    allBadges = Array.from(document.querySelectorAll('.clickable_cards'));
+                }
+                allBadges.forEach(function(kbd) {
                     var nid = '';
                     if (kbd.dataset && kbd.dataset.nid) nid = kbd.dataset.nid;
                     else if (kbd.getAttribute('data-nid')) nid = kbd.getAttribute('data-nid');
@@ -4478,12 +4809,17 @@ def _do_editor_init(editor: Editor):
     
     js = rf"""
     (function() {{
-        if (window._ednnidInit) return;
+        if (window._ednnidInit && window._ednFocusGuardsInstalled) return;
         window._ednnidInit = true;
         window._ednBuffer = '';
         window._ednPreventing = false;
         window._ednTrigger = '{trigger}';
         window._ednTriggerLen = {trigger_len};
+        window._ednLastActiveField = 0;
+        window._ednLastInputTime = 0;
+        window._ednLastKeyTime = 0;
+        window._ednLastPointerTime = 0;
+        window._ednLastTabTime = 0;
         window._ednMiroirKeys = {{
             next: '{_kbd_next}',
             prev: '{_kbd_prev}',
@@ -4491,70 +4827,475 @@ def _do_editor_init(editor: Editor):
             back: '{_kbd_back}'
         }};
         
-        function _isElementEditable(el) {{
-            if (!el) return false;
-            if (el.nodeType === 3) el = el.parentElement;
-            if (!el) return false;
-            var tag = el.tagName ? el.tagName.toUpperCase() : '';
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') {{
-                return true;
+        function _getAllShadowRoots(root) {{
+            root = root || document.body;
+            var roots = [];
+            if (!root) return roots;
+            if (root.shadowRoot) roots.push(root.shadowRoot);
+            var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+            for (var i = 0; i < all.length; i++) {{
+                if (all[i].shadowRoot) {{
+                    roots.push(all[i].shadowRoot);
+                    roots.push(..._getAllShadowRoots(all[i].shadowRoot));
+                }}
             }}
-            if (tag.startsWith('ANKI-') && tag !== 'ANKI-EDITOR') {{
-                return true;
-            }}
-            if (el.isContentEditable || el.contentEditable === 'true') {{
-                return true;
-            }}
-            if (el.classList && (el.classList.contains('editable') || el.classList.contains('input') || el.classList.contains('text-input') || el.classList.contains('rich-text-editable'))) {{
-                return true;
-            }}
-            return false;
+            return roots;
         }}
+
+        function _queryAllRoots(selector, root) {{
+            root = root || document.body;
+            var res = [];
+            if (!root) return res;
+            if (root.querySelectorAll) {{
+                var list = root.querySelectorAll(selector);
+                for (var i = 0; i < list.length; i++) res.push(list[i]);
+            }}
+            var sRoots = _getAllShadowRoots(root);
+            for (var i = 0; i < sRoots.length; i++) {{
+                var list = sRoots[i].querySelectorAll(selector);
+                for (var j = 0; j < list.length; j++) {{
+                    if (!res.includes(list[j])) res.push(list[j]);
+                }}
+            }}
+            return res;
+        }}
+        window._ednQueryAllRoots = _queryAllRoots;
+
+        function _getFieldIdxFromNode(node) {{
+            if (!node) return -1;
+            var curr = node;
+            while (curr) {{
+                if (curr.dataset && typeof curr.dataset.index !== 'undefined') {{
+                    var di = parseInt(curr.dataset.index, 10);
+                    if (!isNaN(di)) return di;
+                }}
+                if (curr.getAttribute && curr.getAttribute('data-index') !== null) {{
+                    var ai = parseInt(curr.getAttribute('data-index'), 10);
+                    if (!isNaN(ai)) return ai;
+                }}
+                curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host) || curr.host;
+            }}
+            var editables = Array.from(document.querySelectorAll('anki-editable'));
+            if (editables.length === 0) {{
+                editables = (typeof window._ednQueryAllRoots === 'function')
+                    ? window._ednQueryAllRoots('anki-editable')
+                    : Array.from(document.querySelectorAll('anki-editable'));
+            }}
+            if (editables.length === 0) {{
+                editables = Array.from(document.querySelectorAll('.editing-area'));
+            }}
+            curr = node;
+            while (curr) {{
+                if (curr.tagName === 'ANKI-EDITABLE') {{
+                    var idx = editables.indexOf(curr);
+                    if (idx >= 0) return idx;
+                }}
+                if (curr.classList && curr.classList.contains('editing-area')) {{
+                    var idx2 = editables.indexOf(curr);
+                    if (idx2 >= 0) return idx2;
+                }}
+                curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host) || curr.host;
+            }}
+            return -1;
+        }}
+
+        function _resolveActiveFieldIndex(e) {{
+            if (e) {{
+                if (typeof e.composedPath === 'function') {{
+                    var path = e.composedPath();
+                    for (var i = 0; i < path.length; i++) {{
+                        var idx = _getFieldIdxFromNode(path[i]);
+                        if (idx >= 0) return idx;
+                    }}
+                }}
+                if (e.target) {{
+                    var tIdx = _getFieldIdxFromNode(e.target);
+                    if (tIdx >= 0) return tIdx;
+                }}
+                if (e.nodeType) {{
+                    var nIdx = _getFieldIdxFromNode(e);
+                    if (nIdx >= 0) return nIdx;
+                }}
+                return -1;
+            }}
+            var act = document.activeElement;
+            while (act) {{
+                var idx = _getFieldIdxFromNode(act);
+                if (idx >= 0) return idx;
+                if (act.shadowRoot && act.shadowRoot.activeElement) {{
+                    var sIdx = _getFieldIdxFromNode(act.shadowRoot.activeElement);
+                    if (sIdx >= 0) return sIdx;
+                }}
+                act = act.parentNode || (act.getRootNode && act.getRootNode().host) || act.host;
+            }}
+            return -1;
+        }}
+        window._ednResolveActiveFieldIndex = _resolveActiveFieldIndex;
+
+        function _findEditableAncestor(node) {{
+            if (!node) return null;
+            var curr = node;
+            while (curr) {{
+                if (curr.nodeType === 1) {{
+                    if (curr.tagName === 'ANKI-EDITABLE' || curr.isContentEditable || curr.contentEditable === 'true') return curr;
+                    if (curr.classList && (curr.classList.contains('editing-area') || curr.classList.contains('rich-text-input'))) return curr;
+                    var tag = curr.tagName.toUpperCase();
+                    if (tag === 'INPUT' || tag === 'TEXTAREA') return curr;
+                }}
+                curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host) || curr.host;
+            }}
+            return null;
+        }}
+        window._ednFindEditableAncestor = _findEditableAncestor;
 
         function _isEventInEditable(e) {{
             if (!e) return false;
+            if (e.target && _findEditableAncestor(e.target)) return true;
+            if (e.nodeType && _findEditableAncestor(e)) return true;
             if (typeof e.composedPath === 'function') {{
                 var path = e.composedPath();
                 for (var i = 0; i < path.length; i++) {{
-                    var node = path[i];
-                    if (node && node.nodeType === 1) {{
-                        if (_isElementEditable(node)) return true;
-                    }}
+                    if (path[i] && _findEditableAncestor(path[i])) return true;
                 }}
             }}
-            var target = e.target;
-            while (target) {{
-                if (target.nodeType === 1 && _isElementEditable(target)) return true;
-                target = target.parentNode || (target.getRootNode && target.getRootNode().host) || target.host;
-            }}
-            var active = document.activeElement;
-            while (active) {{
-                if (active.nodeType === 1 && _isElementEditable(active)) return true;
-                if (active.shadowRoot && active.shadowRoot.activeElement) {{
-                    var sActive = active.shadowRoot.activeElement;
-                    while (sActive) {{
-                        if (sActive.nodeType === 1 && _isElementEditable(sActive)) return true;
-                        sActive = sActive.parentNode;
-                    }}
-                }}
-                active = active.parentNode || (active.getRootNode && active.getRootNode().host) || active.host;
-            }}
+            var act = document.activeElement;
+            if (act && _findEditableAncestor(act)) return true;
+            if (act && act.shadowRoot && act.shadowRoot.activeElement && _findEditableAncestor(act.shadowRoot.activeElement)) return true;
             return false;
         }}
 
-        document.addEventListener('focusin', function() {{
-            window._ednBuffer = '';
+        function _getEditorSelection() {{
+            var act = document.activeElement;
+            if (act && act.shadowRoot && act.shadowRoot.getSelection) {{
+                var s = act.shadowRoot.getSelection();
+                if (s && s.rangeCount > 0) return s;
+            }}
+            var sRoots = _getAllShadowRoots(document.body);
+            for (var i = 0; i < sRoots.length; i++) {{
+                if (sRoots[i].getSelection) {{
+                    var s = sRoots[i].getSelection();
+                    if (s && s.rangeCount > 0) return s;
+                }}
+            }}
+            var winSel = window.getSelection();
+            if (winSel && winSel.rangeCount > 0) return winSel;
+            return null;
+        }}
+        window._ednGetEditorSelection = _getEditorSelection;
+
+        function _isUserEditingNow() {{
+            var now = Date.now();
+            return (now - (window._ednLastInputTime || 0)) < 3000 ||
+                   (now - (window._ednLastKeyTime || 0)) < 3000;
+        }}
+
+        function _hasActiveFieldFocus() {{
+            try {{
+                var act = document.activeElement;
+                if (act && _findEditableAncestor(act)) return true;
+                if (act && act.shadowRoot && act.shadowRoot.activeElement) {{
+                    if (_findEditableAncestor(act.shadowRoot.activeElement)) return true;
+                }}
+                var sRoots = _getAllShadowRoots(document.body);
+                for (var i = 0; i < sRoots.length; i++) {{
+                    if (sRoots[i].activeElement && _findEditableAncestor(sRoots[i].activeElement)) return true;
+                }}
+            }} catch(e) {{}}
+            return false;
+        }}
+
+        // --- Patchs anti-focus jump Svelte ---
+        function _installSvelteFocusGuards() {{
+            // 0. Intercepter window.fetch pour bloquer updateNotes stale pendant les operations EDN
+            try {{
+                if (!window._ednOrigFetch && typeof window.fetch === 'function') {{
+                    window._ednOrigFetch = window.fetch;
+                    window.fetch = async function(url, options) {{
+                        if (window._ednBlockUpdateNotes && typeof url === 'string' && url.includes('/_anki/updateNotes')) {{
+                            console.log('[EDN] Suppressed stale updateNotes during EDN programmatic reload');
+                            return new Response(new Uint8Array(0), {{
+                                status: 200,
+                                headers: {{ 'Content-Type': 'application/binary' }}
+                            }});
+                        }}
+                        return window._ednOrigFetch.apply(this, arguments);
+                    }};
+                }}
+            }} catch(e) {{}}
+
+            // 1. Intercepter globalThis.anki.onOperationDidExecute pour empêcher le rechargement intempestif
+            // déclenché par Anki Svelte NoteEditor (a2 / nt.noteText -> I4() reloadNote)
+            try {{
+                globalThis.anki = globalThis.anki || {{}};
+                if (!window._ednOrigOnOperationDidExecute && typeof globalThis.anki.onOperationDidExecute === 'function') {{
+                    window._ednOrigOnOperationDidExecute = globalThis.anki.onOperationDidExecute;
+                    globalThis.anki.onOperationDidExecute = function(op) {{
+                        if (op && op.noteText) {{
+                            if (window._ednForceReload) {{
+                                return window._ednOrigOnOperationDidExecute.apply(this, arguments);
+                            }}
+                            if (_isUserEditingNow() || _hasActiveFieldFocus()) {{
+                                var safeOp = Object.assign({{}}, op, {{ noteText: false }});
+                                return window._ednOrigOnOperationDidExecute.call(this, safeOp);
+                            }}
+                        }}
+                        return window._ednOrigOnOperationDidExecute.apply(this, arguments);
+                    }};
+                }} else if (!globalThis.anki._ednOpHookDefined) {{
+                    globalThis.anki._ednOpHookDefined = true;
+                    var _realOp = globalThis.anki.onOperationDidExecute;
+                    Object.defineProperty(globalThis.anki, 'onOperationDidExecute', {{
+                        configurable: true,
+                        enumerable: true,
+                        get: function() {{
+                            return function(op) {{
+                                if (op && op.noteText) {{
+                                    if (window._ednForceReload) {{
+                                        return _realOp ? _realOp.apply(this, arguments) : undefined;
+                                    }}
+                                    if (_isUserEditingNow() || _hasActiveFieldFocus()) {{
+                                        var safeOp = Object.assign({{}}, op, {{ noteText: false }});
+                                        return _realOp ? _realOp.call(this, safeOp) : undefined;
+                                    }}
+                                }}
+                                return _realOp ? _realOp.apply(this, arguments) : undefined;
+                            }};
+                        }},
+                        set: function(fn) {{
+                            _realOp = fn;
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            // 2. Intercepter globalThis.reloadNote pour empêcher la perte de focus pendant la saisie
+            try {{
+                if (!window._ednReloadNoteGuarded) {{
+                    window._ednReloadNoteGuarded = true;
+                    var _realReload = globalThis.reloadNote;
+                    // Exposer la fonction réelle pour permettre un bypass intentionnel depuis Python
+                    globalThis._ednRealReloadNote = function() {{
+                        return _realReload ? _realReload.apply(this, arguments) : undefined;
+                    }};
+                    Object.defineProperty(globalThis, 'reloadNote', {{
+                        configurable: true,
+                        enumerable: true,
+                        get: function() {{
+                            return function() {{
+                                if (window._ednForceReload) {{
+                                    return _realReload ? _realReload.apply(this, arguments) : undefined;
+                                }}
+                                if (_isUserEditingNow()) {{
+                                    return;
+                                }}
+                                return _realReload ? _realReload.apply(this, arguments) : undefined;
+                            }};
+                        }},
+                        set: function(fn) {{
+                            _realReload = fn;
+                            // Mettre à jour aussi le bypass direct
+                            globalThis._ednRealReloadNote = function() {{
+                                return _realReload ? _realReload.apply(this, arguments) : undefined;
+                            }};
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            // 3. Intercepter globalThis.loadNote pour préserver le champ actif au lieu de refocus vers 0
+            try {{
+                if (!window._ednLoadNoteGuarded) {{
+                    window._ednLoadNoteGuarded = true;
+                    var _realLoad = globalThis.loadNote;
+                    Object.defineProperty(globalThis, 'loadNote', {{
+                        configurable: true,
+                        enumerable: true,
+                        get: function() {{
+                            return function(args) {{
+                                if (args && typeof args === 'object') {{
+                                    if (_hasActiveFieldFocus() && _isUserEditingNow()) {{
+                                        var curIdx = _resolveActiveFieldIndex();
+                                        if (curIdx < 0 && typeof window._ednLastActiveField === 'number') {{
+                                            curIdx = window._ednLastActiveField;
+                                        }}
+                                        if (curIdx > 0 && (args.focusTo === 0 || typeof args.focusTo === 'undefined')) {{
+                                            args.focusTo = curIdx;
+                                        }}
+                                    }}
+                                }}
+                                return _realLoad ? _realLoad.apply(this, arguments) : undefined;
+                            }};
+                        }},
+                        set: function(fn) {{
+                            _realLoad = fn;
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            // 4. Intercepter globalThis.focusField
+            try {{
+                if (!window._ednFocusFieldGuarded) {{
+                    window._ednFocusFieldGuarded = true;
+                    var _origFocusField = globalThis.focusField;
+                    Object.defineProperty(globalThis, 'focusField', {{
+                        configurable: true,
+                        enumerable: true,
+                        get: function() {{
+                            return function(idx) {{
+                                if (_hasActiveFieldFocus() && _isUserEditingNow()) {{
+                                    var isExplicitNav = (Date.now() - (window._ednLastPointerTime || 0) < 400) ||
+                                                        (Date.now() - (window._ednLastTabTime || 0) < 400);
+                                    if (!isExplicitNav) {{
+                                        var curIdx = _resolveActiveFieldIndex();
+                                        if (curIdx < 0 && typeof window._ednLastActiveField === 'number') {{
+                                            curIdx = window._ednLastActiveField;
+                                        }}
+                                        // Empêcher de ramener le curseur au dernier caractère du recto (champ 0)
+                                        if (curIdx > 0 && (idx === 0 || idx === null || typeof idx === 'undefined')) {{
+                                            return;
+                                        }}
+                                    }}
+                                }}
+                                return _origFocusField ? _origFocusField.call(this, idx) : undefined;
+                            }};
+                        }},
+                        set: function(fn) {{
+                            _origFocusField = fn;
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            window._ednFocusGuardsInstalled = true;
+        }}
+        _installSvelteFocusGuards();
+        setTimeout(_installSvelteFocusGuards, 300);
+        setTimeout(_installSvelteFocusGuards, 800);
+        setTimeout(_installSvelteFocusGuards, 1500);
+
+        function _trackSelection() {{
+            try {{
+                var oldM = (typeof window._ednQueryAllRoots === 'function')
+                    ? window._ednQueryAllRoots('[id="edn-cursor-marker"]')
+                    : Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+                oldM.forEach(function(m) {{ try {{ m.parentNode.removeChild(m); }} catch(e) {{}} }});
+            }} catch(e) {{}}
+            var sel = _getEditorSelection();
+            if (sel && sel.rangeCount > 0) {{
+                var r = sel.getRangeAt(0);
+                var node = r.commonAncestorContainer;
+                var editable = _findEditableAncestor(node);
+                if (editable) {{
+                    window._ednLastValidRange = r.cloneRange();
+                    window._ednPersistentRange = r.cloneRange();
+                    window._ednSavedRange = r.cloneRange();
+                    var idx = _resolveActiveFieldIndex({{ target: node }});
+                    if (idx >= 0) {{
+                        window._ednLastActiveField = idx;
+                        window._ednSavedFieldIndex = idx;
+                    }}
+                }}
+            }}
+        }}
+        document.addEventListener('selectionchange', _trackSelection, true);
+        document.addEventListener('mouseup', _trackSelection, true);
+        document.addEventListener('keyup', _trackSelection, true);
+
+        document.addEventListener('focusin', function(e) {{
+            _installSvelteFocusGuards();
+            // Ne mettre à jour le champ actif que si l'événement vient d'un champ éditable
+            // (pas d'un bouton de toolbar ou d'un widget non-champ)
+            if (!_isEventInEditable(e)) return;
+            var idx = _resolveActiveFieldIndex(e);
+            if (idx >= 0) {{
+                window._ednLastActiveField = idx;
+                window._ednSavedFieldIndex = idx;
+                window._ednBuffer = '';
+            }}
+        }}, true);
+
+        document.addEventListener('input', function(e) {{
+            window._ednLastInputTime = Date.now();
+            var idx = _resolveActiveFieldIndex(e);
+            if (idx >= 0) {{
+                window._ednLastActiveField = idx;
+                window._ednSavedFieldIndex = idx;
+            }}
+            _trackSelection();
+        }}, true);
+
+        document.addEventListener('beforeinput', function(e) {{
+            window._ednLastInputTime = Date.now();
+            var idx = _resolveActiveFieldIndex(e);
+            if (idx >= 0) {{
+                window._ednLastActiveField = idx;
+                window._ednSavedFieldIndex = idx;
+            }}
+        }}, true);
+
+        document.addEventListener('compositionstart', function(e) {{
+            window._ednLastInputTime = Date.now();
+        }}, true);
+
+        document.addEventListener('compositionupdate', function(e) {{
+            window._ednLastInputTime = Date.now();
+        }}, true);
+
+        document.addEventListener('pointerdown', function(e) {{
+            window._ednLastPointerTime = Date.now();
+            // Ne mettre à jour que si on clique dans un champ éditable
+            if (!_isEventInEditable(e)) return;
+            var idx = _resolveActiveFieldIndex(e);
+            if (idx >= 0) {{
+                window._ednLastActiveField = idx;
+                window._ednSavedFieldIndex = idx;
+            }}
+        }}, true);
+
+        document.addEventListener('mousedown', function(e) {{
+            window._ednLastPointerTime = Date.now();
+            // Ne mettre à jour que si on clique dans un champ éditable
+            if (!_isEventInEditable(e)) return;
+            var idx = _resolveActiveFieldIndex(e);
+            if (idx >= 0) {{
+                window._ednLastActiveField = idx;
+                window._ednSavedFieldIndex = idx;
+            }}
         }}, true);
         
         document.addEventListener('keydown', function(e) {{
+            window._ednLastKeyTime = Date.now();
+            if (e.key === 'Tab') {{
+                window._ednLastTabTime = Date.now();
+                window._ednLastInputTime = 0;
+            }}
+            var insideEditable = _isEventInEditable(e);
+            if (insideEditable) {{
+                window._ednLastInputTime = Date.now();
+                var curIdx = _resolveActiveFieldIndex(e);
+                if (curIdx >= 0) window._ednLastActiveField = curIdx;
+            }}
+
+            // Touche Echap : TOUJOURS active, qu'on soit dans un champ editable ou non
+            if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {{
+                window._ednBuffer = '';
+                var overlay = document.querySelector('.mathjax-overlay, [role="menu"], [role="listbox"], .popover');
+                if (overlay && overlay.offsetParent !== null) {{
+                    return;
+                }}
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof pycmd !== 'undefined') pycmd('edn_editor_escape');
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('edn_editor_escape');
+                return;
+            }}
+
             var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             var isMiroirKey = (k === window._ednMiroirKeys.next.toLowerCase() ||
                                k === window._ednMiroirKeys.prev.toLowerCase() ||
                                k === window._ednMiroirKeys.open.toLowerCase() ||
-                               k === window._ednMiroirKeys.back.toLowerCase() ||
-                               e.key === 'Escape');
-                               
-            var insideEditable = _isEventInEditable(e);
+                               k === window._ednMiroirKeys.back.toLowerCase());
 
             if (isMiroirKey && !insideEditable) {{
                 e.preventDefault();
@@ -4564,7 +5305,7 @@ def _do_editor_init(editor: Editor):
                 return;
             }}
 
-            if (e.key === 'Escape' || e.key === 'Enter') {{
+            if (e.key === 'Enter') {{
                 window._ednBuffer = '';
                 return;
             }}
@@ -4581,7 +5322,7 @@ def _do_editor_init(editor: Editor):
                 return;
             }}
 
-            if (e.key && e.key.length === 1) {{
+            if (e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {{
                 window._ednBuffer += e.key;
                 if (window._ednBuffer.length > window._ednTriggerLen) {{
                     window._ednBuffer = window._ednBuffer.slice(-window._ednTriggerLen);
@@ -4590,57 +5331,35 @@ def _do_editor_init(editor: Editor):
                 window._ednBuffer = window._ednBuffer.slice(0, -1);
             }}
             
-            if (window._ednBuffer === window._ednTrigger) {{
+            if (window._ednBuffer.toLowerCase() === window._ednTrigger.toLowerCase()) {{
                 e.preventDefault();
                 e.stopPropagation();
                 
                 window._ednBuffer = '';
                 window._ednPreventing = true;
                 
-                for (let i = 0; i < window._ednTriggerLen - 1; i++) {{
+                // Effacer le trigger dans le champ de saisie
+                for (var i = 0; i < window._ednTriggerLen - 1; i++) {{
                     document.execCommand('delete', false, null);
                 }}
                 
                 window._ednSavedRange = null;
-                window._ednSavedFieldIndex = -1;
+                window._ednSavedFieldIndex = window._ednLastActiveField;
 
-                // Find active editable element and determine its index
-                let editables = Array.from(document.querySelectorAll('anki-editable'));
-                let active = document.activeElement;
-                let activeEditable = null;
-                if (typeof e.composedPath === 'function') {{
-                    let path = e.composedPath();
-                    for (let p = 0; p < path.length; p++) {{
-                        if (path[p] && path[p].tagName === 'ANKI-EDITABLE') {{
-                            activeEditable = path[p];
-                            break;
-                        }}
-                    }}
-                }}
-                if (!activeEditable && active) {{
-                    let node = active;
-                    while (node) {{
-                        if (node.tagName === 'ANKI-EDITABLE') {{
-                            activeEditable = node;
-                            break;
-                        }}
-                        node = node.parentNode || (node.getRootNode && node.getRootNode().host) || node.host;
-                    }}
-                }}
-                if (activeEditable) {{
-                    window._ednSavedFieldIndex = editables.indexOf(activeEditable);
+                var curFieldIdx = _resolveActiveFieldIndex(e);
+                if (curFieldIdx >= 0) {{
+                    window._ednSavedFieldIndex = curFieldIdx;
+                    window._ednLastActiveField = curFieldIdx;
                 }}
 
-                let sel = null;
-                if (active && active.shadowRoot) sel = active.shadowRoot.getSelection();
-                else sel = window.getSelection();
-                
+                // Sauvegarder la position du curseur
+                var sel = _getEditorSelection();
                 if (sel && sel.rangeCount > 0) {{
                     window._ednSavedRange = sel.getRangeAt(0).cloneRange();
                     try {{
-                        let r = window._ednSavedRange.cloneRange();
+                        var r = window._ednSavedRange.cloneRange();
                         r.collapse(false);
-                        let marker = document.createElement("span");
+                        var marker = document.createElement("span");
                         marker.id = "edn-cursor-marker";
                         r.insertNode(marker);
                     }} catch(err) {{}}
@@ -4659,6 +5378,15 @@ def _do_editor_init(editor: Editor):
 def _handle_editor_shortcut_key(editor, key):
     from .logger import log
     log(f"_handle_editor_shortcut_key: key={key}")
+
+    if key.lower() == 'escape':
+        from .editor_assistant import _close_editor, _hide_card_preview_popup, _is_preview_popup_alive, _preview_popup
+        if _is_preview_popup_alive() and _preview_popup.isVisible():
+            _hide_card_preview_popup()
+            return
+        _close_editor(editor)
+        return
+
     from .editor_assistant import toggle_assistant
     try:
         from .edn_menu import get_shortcut
@@ -4740,7 +5468,16 @@ def on_js_message(handled, message, context):
         _last_right_clicked_default_text = ""
         _right_clicked_on_preview_page = True
         return (True, None)
-    if message.startswith("edn_editor_key:"):
+    if message == "edn_editor_escape":
+        from .editor_assistant import get_active_editor, _close_editor, _hide_card_preview_popup, _is_preview_popup_alive, _preview_popup
+        if _is_preview_popup_alive() and _preview_popup.isVisible():
+            _hide_card_preview_popup()
+            return (True, None)
+        editor = get_active_editor(context)
+        if editor:
+            _close_editor(editor)
+        return (True, None)
+    elif message.startswith("edn_editor_key:"):
         key = message[len("edn_editor_key:"):]
         from .editor_assistant import get_active_editor
         editor = get_active_editor(context)
@@ -4768,6 +5505,9 @@ def on_js_message(handled, message, context):
                 line_ends_with_dash = data["lineHasDash"]
                 has_text_before = data["lineHasDash"]
             text_before = data.get("textBefore", "")
+            target_fidx = data.get("fieldIndex", None)
+            if target_fidx is not None and target_fidx < 0:
+                target_fidx = None
 
             from .editor_assistant import get_active_editor
             editor = get_active_editor(context)
@@ -4778,43 +5518,20 @@ def on_js_message(handled, message, context):
                     nid = str(it.get("nid", "")).strip()
                     pasted_label = str(it.get("label", "")).strip()
 
-                    if pasted_label:
-                        # Un label personnalisé est explicitement présent dans le texte collé (ex: "PeC — 1693481405913")
-                        # Ne pas rétablir le verso/recto de la cible : conserver fidèlement ce label
-                        if idx == 0 and line_ends_with_dash and (
-                            text_before.endswith(pasted_label + ' —') or
-                            text_before.endswith(pasted_label + ' -') or
-                            text_before.endswith(pasted_label + ' –') or
-                            text_before.endswith(pasted_label + ' \u2014') or
-                            text_before.endswith(pasted_label + ' \u2013')
-                        ):
-                            items.append((nid, None))
-                        else:
-                            items.append((nid, pasted_label))
+                    if line_ends_with_dash:
+                        # La ligne se termine déjà par un tiret : insérer uniquement le badge NID
+                        items.append((nid, None))
+                    elif pasted_label:
+                        # Un label personnalisé est présent dans le texte collé
+                        items.append((nid, pasted_label))
                     else:
-                        # Aucun label n'est présent dans le texte collé (ex: simple NID "1693481405913")
-                        # Règle : nominer le lien UNIQUEMENT s'il n'y a rien avant sur la ligne
-                        if idx == 0 and has_text_before:
-                            items.append((nid, None))
-                        else:
-                            target_note = None
-                            try:
-                                target_note = mw.col.get_note(int(nid))
-                            except Exception:
-                                try:
-                                    card = mw.col.get_card(int(nid))
-                                    if card:
-                                        target_note = card.note()
-                                except Exception:
-                                    pass
-                            smart_desc = generate_smart_link_label(source_note, target_note) if target_note else None
-                            final_desc = smart_desc if smart_desc else (get_note_recto(target_note) if target_note else "")
-                            items.append((nid, final_desc))
+                        # Aucun label n'est présent dans le texte collé : insérer uniquement le badge NID
+                        items.append((nid, None))
                 
                 inserter = LinkInserter(editor)
                 config = mw.addonManager.getConfig(__name__) or {}
                 mirror_req = config.get("mirror_link_on_paste", True)
-                inserter.insert_link(items, mirror_requested=mirror_req)
+                inserter.insert_link(items, mirror_requested=mirror_req, target_fidx=target_fidx)
         except Exception as e:
             log(f"Error handling edn_paste_smart_link: {e}")
         return (True, None)
@@ -5267,268 +5984,259 @@ class LinkInserter:
     def __init__(self, editor):
         self.editor = editor
         
-    def insert_link(self, items, override_html=None, mirror_requested=False):
-        is_direct_replacement = all(recto is None for _, recto in items)
-        
-        html_parts = []
-        for nid, recto in items:
-            if recto is None:
-                html_parts.append(
-                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
-                    f'><span class="edn-nid">{nid}</span></kbd>'
-                )
-            else:
-                recto_escaped = recto.replace('&', '&amp;').replace('"', '&quot;').replace("'", '&#39;').replace('<', '&lt;').replace('>', '&gt;')
-                html_parts.append(
-                    f'<span class="edn-desc">{recto_escaped}</span>&nbsp;—&nbsp;'
-                    f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"'
-                    f'><span class="edn-nid">{nid}</span></kbd>'
-                )
-
-                
-        html = "<br>".join(html_parts)
-        if html:
-            html += "&nbsp;"
-        if override_html is not None:
-            html = override_html
-        
-        js = f"""
-        (function() {{
-            let htmlToInsert = `{html}`;
-            let inserted = false;
-
-            // ── Étape 1 : trouver le champ actif et la racine DOM ──────────────────────
-            // Le champ éditable Anki est un <anki-editable> dont le contenu réel
-            // se trouve dans son propre document (shadowRoot ou lui-même si contenteditable).
-
-            function _findEditableRoot(el) {{
-                // Renvoie [editableElement, rootNode] où rootNode est le document dans
-                // lequel on peut faire des sélections / manipulations.
-                if (!el) return [null, document];
-                if (el.shadowRoot) {{
-                    let inner = el.shadowRoot.querySelector('[contenteditable]');
-                    if (inner) return [inner, el.shadowRoot];
-                }}
-                if (el.isContentEditable || el.tagName === 'ANKI-EDITABLE') return [el, el.getRootNode ? el.getRootNode() : document];
-                return [null, document];
-            }}
-
-            let activeEditable = null;
-            let editRoot = document;  // racine DOM du champ (shadow ou document)
-
-            // Chercher d'abord via l'élément actif
-            let focused = document.activeElement;
-            if (focused && focused.tagName === 'ANKI-EDITABLE') {{
-                let [el, root] = _findEditableRoot(focused);
-                if (el) {{ activeEditable = el; editRoot = root; }}
-            }} else if (focused && focused.shadowRoot) {{
-                // ex: anki-editor qui wrape les champs
-                let inner = focused.shadowRoot.querySelector('anki-editable:focus, [contenteditable]:focus');
-                if (!inner) inner = focused.shadowRoot.querySelector('anki-editable');
-                if (inner) {{
-                    let [el, root] = _findEditableRoot(inner);
-                    if (el) {{ activeEditable = el; editRoot = root; }}
-                }}
-            }}
-                // Fallback : index du champ sauvegardé
-            if (!activeEditable && window._ednSavedFieldIndex >= 0) {{
-                let allAE = Array.from(document.querySelectorAll('anki-editable'));
-                let target = allAE[window._ednSavedFieldIndex];
-                if (target) {{
-                    let [el, root] = _findEditableRoot(target);
-                    if (el) {{ activeEditable = el; editRoot = root; }}
-                }}
-            }}
-
-            // Dernier recours : premier champ
-            if (!activeEditable) {{
-                let allAE = Array.from(document.querySelectorAll('anki-editable'));
-                if (allAE.length) {{
-                    let [el, root] = _findEditableRoot(allAE[0]);
-                    if (el) {{ activeEditable = el; editRoot = root; }}
-                }}
-            }}
-
-            if (!activeEditable) return;
-
-            // ── Étape 2 : rechercher le marker dans TOUTES les racines ─────────────────
-            let markers = [];
-            if (editRoot) {{
-                markers = Array.from(editRoot.querySelectorAll('[id="edn-cursor-marker"]'));
-            }}
-
-            if (!markers.length) {{
-                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {{
-                    if (el.shadowRoot) {{
-                        markers = markers.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                        el.shadowRoot.querySelectorAll('anki-editable').forEach(inner => {{
-                           if (inner.shadowRoot) markers = markers.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                        }});
-                    }}
-                }});
-            }}
-            if (!markers.length) {{
-                markers = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
-            }}
-
-            // Garder seulement le dernier (le plus récent)
-            let marker = markers.length > 0 ? markers[markers.length - 1] : null;
-            for (let i = 0; i < markers.length - 1; i++) {{
-                try {{ markers[i].parentNode.removeChild(markers[i]); }} catch(e) {{}}
-            }}
-            
-            if (!marker && !activeEditable) return;
-
-            // ── Étape 3 : insérer le HTML ─────────────────────────────────────────────
-            if (marker) {{
-                let curr = marker.parentNode;
-                if (!activeEditable) {{
-                    while (curr) {{
-                        if (curr.tagName === 'ANKI-EDITABLE' || curr.isContentEditable) {{
-                            activeEditable = curr;
-                            break;
-                        }}
-                        curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host);
-                    }}
-                }}
-                
-                let temp = document.createElement('template');
-                temp.innerHTML = htmlToInsert;
-                let frag = temp.content;
-                if (marker.nextSibling) {{
-                    marker.parentNode.insertBefore(frag, marker.nextSibling);
-                }} else {{
-                    marker.parentNode.appendChild(frag);
-                }}
-                marker.parentNode.removeChild(marker);
-                inserted = true;
-            }} else {{
-                // Pas de marker : restaurer le range sauvegardé et execCommand
-                let sel = editRoot.getSelection ? editRoot.getSelection() : window.getSelection();
-                if (window._ednSavedRange && sel) {{
-                    try {{
-                        sel.removeAllRanges();
-                        sel.addRange(window._ednSavedRange);
-                    }} catch(e) {{}}
-                }}
-                try {{
-                    inserted = document.execCommand("insertHTML", false, htmlToInsert);
-                }} catch(e) {{}}
-
-                if (!inserted) {{
-                    try {{
-                        let template = document.createElement('template');
-                        template.innerHTML = htmlToInsert;
-                        let targetBlock = activeEditable.lastElementChild;
-                        if (targetBlock && (targetBlock.tagName === 'DIV' || targetBlock.tagName === 'P')) {{
-                            targetBlock.appendChild(template.content);
-                        }} else {{
-                            activeEditable.appendChild(template.content);
-                        }}
-                        inserted = true;
-                    }} catch(e) {{}}
-                }}
-
-                // Fallback ultime : ajouter à la fin avec <br> si non vide
-                if (!inserted) {{
-                    try {{
-                        let innerText = (activeEditable.innerText || activeEditable.textContent || '').trim();
-                        let template = document.createElement('template');
-                        template.innerHTML = htmlToInsert;
-                        let targetBlock = activeEditable.lastElementChild;
-                        if (innerText.length > 0) {{
-                            if (targetBlock && (targetBlock.tagName === 'DIV' || targetBlock.tagName === 'P')) {{
-                                targetBlock.appendChild(document.createElement('br'));
-                                targetBlock.appendChild(template.content);
-                            }} else {{
-                                activeEditable.appendChild(document.createElement('br'));
-                                activeEditable.appendChild(template.content);
-                            }}
-                        }} else {{
-                            activeEditable.appendChild(template.content);
-                        }}
-                        inserted = true;
-                    }} catch(e) {{}}
-                }}
-            }}
-
-            // Nettoyage de sécurité : supprimer tout autre marker restant dans toutes les racines
-            try {{
-                let leftover = Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
-                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {{
-                    if (el.shadowRoot) {{
-                        leftover = leftover.concat(Array.from(el.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                        el.shadowRoot.querySelectorAll('anki-editable').forEach(function(inner) {{
-                            if (inner.shadowRoot) leftover = leftover.concat(Array.from(inner.shadowRoot.querySelectorAll('[id="edn-cursor-marker"]')));
-                        }});
-                    }}
-                }});
-                leftover.forEach(function(m) {{ try {{ m.parentNode.removeChild(m); }} catch(e) {{}} }});
-            }} catch(e) {{}}
-
-            // Notifier Anki que le contenu a changé
-            let dispatchTarget = activeEditable.isContentEditable ? activeEditable
-                : (activeEditable.closest ? activeEditable.closest('anki-editable') : activeEditable);
-            if (!dispatchTarget) dispatchTarget = activeEditable;
-            try {{
-                dispatchTarget.dispatchEvent(new Event("input", {{ bubbles: true, composed: true }}));
-            }} catch(e) {{}}
-            window._ednSavedRange = null;
-        }})();
+    def insert_link(self, items, override_html=None, mirror_requested=False, target_fidx=None):
+        """Insère les liens de cartes directement dans la note courante.
+        Persistance garantie à 100% dans la collection SQLite via col_note.fields[fidx].
+        100% rétro-compatible avec Svelte ON (NewEditor) et Svelte OFF (Legacy Editor).
         """
-        self.editor.web.eval(js)
+        caller = "LinkInserter:insert_link"
+        _profiler_log("LINK_INSERTER", f"insert_link() CALLED: items_count={len(items)}, target_fidx={target_fidx}, mirror={mirror_requested}, override_html={'yes' if override_html else 'no'}", caller=caller)
+        if not self.editor:
+            _profiler_log("LINK_INSERTER", "editor is None -> aborted", caller=caller)
+            return
 
-        # Nettoyage direct dans self.editor.note.fields par précaution
-        try:
-            ed_note = _get_editor_note(self.editor)
-            if self.editor and ed_note and ed_note.fields:
-                for i, f in enumerate(ed_note.fields):
-                    if 'edn-cursor-marker' in f:
-                        ed_note.fields[i] = re.sub(
-                            r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>',
-                            '', f, flags=re.IGNORECASE | re.DOTALL
+        def _do_commit():
+            commit_caller = "LinkInserter:_do_commit"
+            import traceback
+            try:
+                source_note = _get_editor_note(self.editor)
+                if not source_note:
+                    _profiler_log("LINK_INSERTER:_do_commit", "source_note is None -> aborted", caller=commit_caller)
+                    return
+
+                is_existing = bool(getattr(source_note, 'id', None) and source_note.id != 0)
+                _profiler_log("LINK_INSERTER:_do_commit", f"source_note id={source_note.id}, is_existing={is_existing}, num_fields={len(source_note.fields) if source_note.fields else 0}", caller=commit_caller)
+
+                if is_existing:
+                    col_note = mw.col.get_note(source_note.id)
+                else:
+                    col_note = source_note
+
+                if not col_note or not col_note.fields:
+                    _profiler_log("LINK_INSERTER:_do_commit", "col_note or col_note.fields is empty -> aborted", caller=commit_caller)
+                    return
+
+                # Déterminer le champ cible
+                fidx = target_fidx
+                efidx = getattr(self.editor, 'currentField', None)
+                last_fld = getattr(self.editor, 'last_field_index', None)
+                if fidx is None or fidx < 0 or fidx >= len(col_note.fields):
+                    if efidx is not None and 0 <= efidx < len(col_note.fields):
+                        fidx = efidx
+                    elif last_fld is not None and 0 <= last_fld < len(col_note.fields):
+                        fidx = last_fld
+                    else:
+                        fidx = _find_target_field_idx(col_note)
+
+                if fidx < 0 or fidx >= len(col_note.fields):
+                    fidx = len(col_note.fields) - 1
+
+                fld_name = col_note.note_type()['flds'][fidx]['name'] if (col_note.note_type() and 'flds' in col_note.note_type() and fidx < len(col_note.note_type()['flds'])) else f"idx_{fidx}"
+                _profiler_log("LINK_INSERTER:_do_commit", f"FIELD RESOLUTION: target_fidx={target_fidx}, currentField={efidx}, last_field={last_fld} -> CHOSEN fidx={fidx} ('{fld_name}') [total_fields={len(col_note.fields)}]", caller=commit_caller)
+
+                # Construction du HTML propre des liens
+                if override_html is not None:
+                    html = override_html
+                else:
+                    html_parts = []
+                    for nid, recto in items:
+                        html_parts.append(make_card_link(str(nid), recto))
+                    is_inline_mode = all(recto is None or recto == "" for _, recto in items)
+                    if is_inline_mode:
+                        html = "&nbsp;".join(html_parts)
+                    else:
+                        html = "<br>".join(html_parts)
+                    if html:
+                        html += "&nbsp;"
+
+                # Mise à jour directe du contenu du champ
+                cur_val = col_note.fields[fidx].strip()
+                marker_pattern = r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>'
+                has_marker = bool(re.search(marker_pattern, cur_val, flags=re.IGNORECASE))
+
+                is_inline = all(recto is None or recto == "" for _, recto in items) if override_html is None else False
+
+                # Scanner le champ : s'il y a un tiret orphelin (sans contenu ni badge <kbd> à la suite),
+                # on s'incruste immédiatement après ce tiret (avant un éventuel <br>) au lieu de créer une nouvelle ligne.
+                pending_dash_pattern = r'([—–-](?:&nbsp;|\s)*)(?:<br\s*/?>\s*)?$'
+                dash_match = re.search(pending_dash_pattern, cur_val, flags=re.IGNORECASE)
+
+                # Nettoyage si on remplace un NID sélectionné ou en fin de ligne
+                # pour éviter le doublon "Titre — 1691321445398 <kbd>1691321445398</kbd>"
+                single_nid_str = str(items[0][0]) if (items and len(items) == 1) else None
+
+                if has_marker:
+                    # Emplacement exact du curseur mémorisé : insérer le HTML directement à cette position.
+                    # Si le NID brut sélectionné n'a pas été effacé du DOM (ex. juste avant ou après le marker), on le retire.
+                    if single_nid_str:
+                        # 1) NID brut juste avant le marker (avec éventuel espace/&nbsp;)
+                        cur_val = re.sub(
+                            rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*' + marker_pattern,
+                            '<span id="edn-cursor-marker"></span>',
+                            cur_val,
+                            count=1,
+                            flags=re.IGNORECASE
                         )
-        except Exception:
-            pass
+                        # 2) NID brut à l'intérieur du marker
+                        cur_val = re.sub(
+                            rf'<span\s+id=["\']edn-cursor-marker["\'][^>]*>(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*</span>',
+                            '<span id="edn-cursor-marker"></span>',
+                            cur_val,
+                            count=1,
+                            flags=re.IGNORECASE
+                        )
+                    new_val = re.sub(marker_pattern, html, cur_val, count=1, flags=re.IGNORECASE)
+                elif is_inline:
+                    # Si le champ se termine par le NID brut (ex. l'utilisateur a sélectionné le NID en bout de ligne)
+                    if single_nid_str:
+                        trailing_nid_pat = rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$'
+                        if re.search(trailing_nid_pat, cur_val, flags=re.IGNORECASE):
+                            cur_val = re.sub(trailing_nid_pat, '', cur_val, count=1, flags=re.IGNORECASE).rstrip()
 
-        if len(items) == 1:
-            tooltip(f"Lien créé vers {items[0][0]}")
-        else:
-            tooltip(f"{len(items)} liens créés")
-        
-        # --- Lien miroir : proposer de lier la carte source dans la carte cible ---
-        config = mw.addonManager.getConfig(__name__) or {}
-        if mirror_requested:
-            source_note = _get_editor_note(self.editor)
-            if source_note and getattr(source_note, 'id', None):
-                _proposal_queue.add(lambda done: _propose_mirror_links_group(
-                    self.editor, source_note, items, done
-                ))
-                if len(items) > 1:
-                    target_nids = [int(nid) for nid, _ in items]
-                    _proposal_queue.add(lambda done: _propose_cross_links(
-                        self.editor, source_note, target_nids, done
+                    if cur_val.endswith('&nbsp;') or cur_val.endswith(' '):
+                        new_val = cur_val + html
+                    elif cur_val.endswith('—') or cur_val.endswith('–') or cur_val.endswith('-'):
+                        new_val = cur_val + '&nbsp;' + html
+                    else:
+                        new_val = (cur_val + '&nbsp;' + html) if cur_val else html
+                elif dash_match and len(items) == 1 and override_html is None:
+                    # Un tiret en attente a été trouvé dans le champ : on insère uniquement le badge
+                    # sans description ni tiret supplémentaire, exactement là où se trouve le tiret
+                    single_nid = str(items[0][0])
+                    badge_html = make_clickable_card_badge(single_nid)
+                    prefix = cur_val[:dash_match.end(1)]
+                    # S'assurer d'un espacement propre après le tiret
+                    if not prefix.endswith('&nbsp;') and not prefix.endswith(' '):
+                        prefix += '&nbsp;'
+                    new_val = prefix + badge_html + '&nbsp;'
+                else:
+                    # Si le champ se termine par le NID brut, le remplacer au lieu d'ajouter après
+                    if single_nid_str:
+                        trailing_nid_pat = rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$'
+                        if re.search(trailing_nid_pat, cur_val, flags=re.IGNORECASE):
+                            cur_val = re.sub(trailing_nid_pat, '', cur_val, count=1, flags=re.IGNORECASE).rstrip()
+                    if not cur_val or cur_val == '<br>':
+                        new_val = html
+                    else:
+                        new_val = cur_val + '<br>' + html
+
+                new_val = _clean_kbd_html(new_val)
+
+                _profiler_log("LINK_INSERTER:_do_commit", f"FIELD PREVIEW: cur_val len={len(cur_val)}: {cur_val[:60]!r}", caller=commit_caller)
+                _profiler_log("LINK_INSERTER:_do_commit", f"HTML TO INSERT len={len(html)}: {html[:60]!r}", caller=commit_caller)
+                _profiler_log("LINK_INSERTER:_do_commit", f"NEW_VAL len={len(new_val)}: {new_val[:60]!r}", caller=commit_caller)
+
+                col_note.fields[fidx] = new_val
+
+                if is_existing:
+                    _profiler_log("LINK_INSERTER:_do_commit", f"calling mw.col.update_note(nid={col_note.id})", caller=commit_caller)
+                    mw.col.update_note(col_note)
+                    _profiler_log("LINK_INSERTER:_do_commit", f"mw.col.update_note finished", caller=commit_caller)
+
+                    # Verification immediate dans SQLite
+                    try:
+                        check_note = mw.col.get_note(col_note.id)
+                        f_match = (check_note.fields[fidx] == new_val) or (new_val in check_note.fields[fidx])
+                        _profiler_log("LINK_INSERTER:_do_commit", f"SQLITE VERIFY 1 (immediate): nid={col_note.id}, field[{fidx}] match={f_match}, len={len(check_note.fields[fidx])}", caller=commit_caller)
+                    except Exception as e_chk:
+                        _profiler_log("LINK_INSERTER:_do_commit", f"SQLITE VERIFY 1 ERROR: {e_chk}", caller=commit_caller)
+
+                # Synchronisation immediate des caches de l'editeur en memoire
+                try:
+                    if hasattr(self.editor, "_note_compat_cache"):
+                        self.editor._note_compat_cache = col_note
+                    if hasattr(self.editor, "note") and not isinstance(type(self.editor).note, property):
+                        self.editor.note = col_note
+                    elif hasattr(self.editor, "note"):
+                        try:
+                            self.editor.note = col_note
+                        except Exception:
+                            pass
+                except Exception as e:
+                    _profiler_log("LINK_INSERTER:_do_commit", f"cache sync warning: {e}", caller=commit_caller)
+
+                # Nettoyage cote DOM des eventuels marqueurs residuels
+                try:
+                    self.editor.web.eval("""(function() {
+                        try {
+                            var markers = (typeof window._ednQueryAllRoots === 'function')
+                                ? window._ednQueryAllRoots('[id*="edn-cursor-marker"]')
+                                : Array.from(document.querySelectorAll('[id*="edn-cursor-marker"]'));
+                            markers.forEach(function(m) { try { m.remove(); } catch(e) {} });
+                        } catch(e) {}
+                    })();""")
+                except Exception as e:
+                    _profiler_log("LINK_INSERTER:_do_commit", f"DOM marker cleanup warning: {e}", caller=commit_caller)
+
+                # Rechargement propre de la note dans l'editeur avec synchronisation des stores et focus
+                _profiler_log("LINK_INSERTER:_do_commit", f"calling editor_reload_note(keep_focus=True, target_fidx={fidx})", caller=commit_caller)
+                editor_reload_note(self.editor, keep_focus=True, note=col_note, target_fidx=fidx)
+                _profiler_log("LINK_INSERTER:_do_commit", "editor_reload_note call dispatched", caller=commit_caller)
+
+                # Verification post-reload a 600ms pour s'assurer qu'aucun blur n'a ecrase SQLite
+                if is_existing:
+                    from aqt.qt import QTimer
+                    def _verify_later(nid_to_check=col_note.id, target_idx=fidx, expected_val=new_val):
+                        try:
+                            c_note = mw.col.get_note(nid_to_check)
+                            is_intact = (c_note.fields[target_idx] == expected_val) or (expected_val in c_note.fields[target_idx])
+                            _profiler_log("LINK_INSERTER:POST_VERIFY", f"SQLITE VERIFY 2 (+600ms post-blur): nid={nid_to_check}, field[{target_idx}] intact={is_intact}, cur_len={len(c_note.fields[target_idx])}", caller="LinkInserter:_verify_later")
+                        except Exception as ex:
+                            _profiler_log("LINK_INSERTER:POST_VERIFY", f"SQLITE VERIFY 2 ERROR: {ex}", caller="LinkInserter:_verify_later")
+                    QTimer.singleShot(600, _verify_later)
+
+                # Mise a jour de l'assistant lateral
+                try:
+                    from .editor_assistant import update_assistant, clear_assistant_preview_cache
+                    if is_existing:
+                        clear_assistant_preview_cache(col_note.id)
+                    _profiler_log("LINK_INSERTER:_do_commit", "triggering update_assistant()", caller=commit_caller)
+                    update_assistant(self.editor)
+                except Exception as e:
+                    _profiler_log("LINK_INSERTER:_do_commit", f"update_assistant error: {e}", caller=commit_caller)
+
+                # Notification utilisateur
+                if len(items) == 1:
+                    tooltip(f"Lien créé vers {items[0][0]}")
+                else:
+                    tooltip(f"{len(items)} liens créés")
+
+                # Liens miroirs
+                if mirror_requested and is_existing:
+                    _proposal_queue.add(lambda done: _propose_mirror_links_group(
+                        self.editor, col_note, items, done
                     ))
+                    if len(items) > 1:
+                        target_nids = [int(nid) for nid, _ in items]
+                        _proposal_queue.add(lambda done: _propose_cross_links(
+                            self.editor, col_note, target_nids, done
+                        ))
 
-    def insert_link_with_text(self, nid, display_text, mirror_requested=False):
+            except Exception as e:
+                _profiler_log("LINK_INSERTER:ERROR", f"CRITICAL Exception in _do_commit: {e}\n{traceback.format_exc()}", caller=commit_caller)
+                log(f"LinkInserter error: {e}")
+
+        # Bloquer preventativement les updateNotes intempestifs declenches par le blur
+        if hasattr(self.editor, "web") and self.editor.web:
+            try:
+                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
+            except Exception:
+                pass
+
+        # Sauvegarder d'abord les saisies en cours dans l'editeur avant d'appliquer la mise a jour
+        _profiler_log("LINK_INSERTER", "calling editor_save_now before _do_commit", caller=caller)
+        editor_save_now(self.editor, _do_commit, keep_focus=True)
+
+    def insert_link_with_text(self, nid, display_text, mirror_requested=False, target_fidx=None):
         """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid
         ET dans un <span class="edn-nid"> invisible. Ce double stockage garantit que le NID
         survive au sanitizer HTML d'Anki qui supprime parfois data-* et onclick.
-        
-        Contrairement à insert_link(), remplace le texte sélectionné par le badge.
-        Le marker edn-cursor-marker est déjà posé Là où se trouvait la sélection.
         """
-        safe_text = display_text.replace('`', '\\`').replace('"', '&quot;')
         safe_nid = str(nid)
-        # Le span .edn-nid est invisible (display:none CSS) mais survit au sanitizer Anki
-        html = (
-            f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{safe_nid}"'
-            f'><span class="edn-nid" style="display:none;font-size:0;line-height:0">{safe_nid}</span>'
-            f'{safe_text}</kbd>&nbsp;'
-        )
-        # Réutilise la même logique d'insertion que insert_link()
-        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested)
-        tooltip(f"Lien '{display_text}' → carte {nid}")
+        badge = make_clickable_card_badge(safe_nid, custom_text=display_text)
+        html = f'{badge}&nbsp;'
+        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested, target_fidx=target_fidx)
+        tooltip(f"Lien '{display_text}' -> carte {nid}")
 
 
 def _find_target_field_idx(note, ref_note=None, ref_field_idx=-1):
@@ -5594,19 +6302,12 @@ def _add_badge_to_note(target_nid, fidx, source_nid, source_recto):
         return
     source_recto_badge = strip_html(source_recto)[:240] if source_recto else "[Vide]"
     source_recto_badge = source_recto_badge or "[Vide]"
-    source_recto_escaped = source_recto_badge.replace('"', '&quot;').replace("'", '&#39;')
-    
-    badge_html = (
-        f'<br><span class="edn-desc">{source_recto_escaped}</span>&nbsp;\u2014&nbsp;'
-        f'<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{source_nid}"'
-        f'><span class="edn-nid">{source_nid}</span></kbd>'
-    )
-    
+    link_html = make_card_link(source_nid, source_recto_badge)
     current_field_content = target_note.fields[fidx].strip()
     if not current_field_content or current_field_content == '<br>':
-        badge_html = badge_html.replace('<br>', '', 1)
-        
-    target_note.fields[fidx] += badge_html
+        target_note.fields[fidx] = link_html
+    else:
+        target_note.fields[fidx] = current_field_content + '<br>' + link_html
     mw.col.update_note(target_note)
 
 
@@ -5658,91 +6359,18 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
         if result == accepted_code:
             selected_targets = dialog.get_selected_targets()
             if selected_targets:
+                source_nid = str(source_note.id)
                 for nid_str, target_note, fidx, custom_recto in selected_targets:
-                    # Update description in editor (JavaScript)
-                    safe_desc = custom_recto.replace('`', '\\`').replace('$', '\\$')
-                    js = f"""
-                    (function() {{
-                        let nid = "{nid_str}";
-                        let newDesc = `{safe_desc}`;
-                        let kbds = [];
-                        let allKbds = Array.from(document.querySelectorAll('kbd.clickable_cards[data-nid="' + nid + '"]'));
-                        document.querySelectorAll('anki-editable').forEach(edn => {{
-                            let root = edn.shadowRoot || edn;
-                            root.querySelectorAll('kbd.clickable_cards[data-nid="' + nid + '"]').forEach(k => {{
-                                if (!kbds.includes(k)) kbds.push(k);
-                            }});
-                        }});
-                        allKbds.forEach(k => {{
-                            if (!kbds.includes(k)) kbds.push(k);
-                        }});
-                        
-                        kbds.forEach(kbd => {{
-                            let foundSpan = null;
-                            let curr = kbd.previousSibling;
-                            for (let i = 0; i < 4 && curr; i++) {{
-                                if (curr.nodeType === Node.ELEMENT_NODE && curr.classList && curr.classList.contains('edn-desc')) {{
-                                    foundSpan = curr;
-                                    break;
-                                }}
-                                curr = curr.previousSibling;
-                            }}
-                            if (foundSpan) {{
-                                foundSpan.textContent = newDesc;
-                            }} else {{
-                                let currNode = kbd.previousSibling;
-                                for (let i = 0; i < 3 && currNode; i++) {{
-                                    if (currNode.nodeType === Node.TEXT_NODE) {{
-                                        let val = currNode.nodeValue;
-                                        let match = val.match(/^(.*?)([\\s\\xa0\\u00a0]*[\\u2014\\u2013-][\\s\\xa0\\u00a0]*)$/);
-                                        if (match) {{
-                                            currNode.nodeValue = newDesc + match[2];
-                                            break;
-                                        }} else {{
-                                            let lastDashIdx = -1;
-                                            for (let char of ['\\u2014', '\\u2013', '-']) {{
-                                                let idx = val.lastIndexOf(char);
-                                                if (idx > lastDashIdx) {{
-                                                    lastDashIdx = idx;
-                                                }}
-                                            }}
-                                            if (lastDashIdx >= 0) {{
-                                                currNode.nodeValue = newDesc + val.substring(lastDashIdx);
-                                                break;
-                                            }}
-                                        }}
-                                    }}
-                                    currNode = currNode.previousSibling;
-                                }}
-                            }}
-                        }});
-                        
-                        let active = document.activeElement;
-                        if (active) {{
-                            let dispatchTarget = active.closest ? active.closest('anki-editable') : active;
-                            if (dispatchTarget) {{
-                                dispatchTarget.dispatchEvent(new Event("input", {{ bubbles: true, composed: true }}));
-                            }}
-                        }}
-                    }})();
-                    """
-                    editor.web.eval(js)
-                    
-                    # Update description in DB for the source note (if it has already been saved)
-                    update_link_description_in_note(source_note, nid_str, custom_recto)
-                    
                     # Add mirror badge to the target note
                     # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
-                    source_nid = str(source_note.id)
                     _add_badge_to_note(int(nid_str), fidx, source_nid, custom_recto)
                     
-                mw.col.update_note(source_note)
                 tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
                 
                 # Refresh assistant side panel
                 from .editor_assistant import update_assistant
                 if editor:
-                    editor_save_now(editor, lambda: update_assistant(editor))
+                    update_assistant(editor)
     except Exception as e:
         log(f"Error in _propose_mirror_links_group: {e}")
     finally:
@@ -5956,7 +6584,7 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                     # Refresh assistant side panel
                     from .editor_assistant import update_assistant
                     if editor:
-                        editor_save_now(editor, lambda: update_assistant(editor))
+                        update_assistant(editor)
             finally:
                 on_done()
                         
@@ -5973,17 +6601,121 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
         on_done()
 
 
+def _clean_text_for_comparison(text: str) -> str:
+    if not text:
+        return ""
+    import html
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'^[•\-\*\d\.\)\s]+', '', text).strip()
+    text = re.sub(r'[\s:;]+$', '', text).strip().lower()
+    return text
+
+
+def _detect_link_insertion_mode(text_before: str, has_dash: bool, candidate_names: list) -> str:
+    """
+    Détermine le mode d'insertion du lien :
+    - 'bare'      : le tiret est déjà présent sur la ligne -> insère uniquement <kbd>[nid]</kbd>
+    - 'dash_only' : le nom de la carte est déjà saisi sur la ligne mais sans tiret -> insère &nbsp;—&nbsp;<kbd>[nid]</kbd>
+    - 'full'      : ligne vide ou texte différent -> insère <span class="edn-desc">Nom</span>&nbsp;—&nbsp;<kbd>[nid]</kbd>
+    """
+    if has_dash:
+        return "bare"
+    cleaned_line = _clean_text_for_comparison(text_before)
+    if not cleaned_line:
+        return "full"
+    for cand in candidate_names:
+        c_clean = _clean_text_for_comparison(cand)
+        if not c_clean:
+            continue
+        if cleaned_line == c_clean or cleaned_line.endswith(c_clean):
+            return "dash_only"
+        if len(cleaned_line) >= 3 and (c_clean.startswith(cleaned_line) or c_clean.endswith(cleaned_line)):
+            return "dash_only"
+        c_noparen = re.sub(r'\s*[\(\[].*?[\)\]]', '', c_clean).strip()
+        if c_noparen and (cleaned_line == c_noparen or cleaned_line.endswith(c_noparen)):
+            return "dash_only"
+    return "full"
+
+
+def _profiler_log(category: str, message: str, elapsed_ms: Optional[float] = None, caller: Optional[str] = None):
+    try:
+        import sys
+        profiler = sys.modules.get("00_EDN_Debug_Profiler")
+        if profiler and hasattr(profiler, "log"):
+            profiler.log(category, message, elapsed_ms=elapsed_ms, caller="LinkedCardsDialog")
+            return
+    except Exception:
+        pass
+    try:
+        from .logger import log
+        ms_str = f" | took {elapsed_ms:.2f}ms" if elapsed_ms is not None else ""
+        log(f"[{category}] {message}{ms_str}")
+    except Exception:
+        pass
+
+
+class _LinkedCardsAppClickFilter(QObject):
+    """Filtre d'evenement global pour fermer la preview des que l'utilisateur clique hors du bouton ou de la popup."""
+    def __init__(self, dialog):
+        super().__init__(dialog)
+        self.dialog = dialog
+
+    def eventFilter(self, watched, event):
+        try:
+            etype = event.type()
+            mouse_press = getattr(QEvent.Type, "MouseButtonPress", None) or getattr(QEvent, "MouseButtonPress", None)
+            if etype == mouse_press:
+                if not self.dialog.isVisible():
+                    self.dialog.hide_preview_popup()
+                    return False
+
+                dlg = getattr(self.dialog, '_preview_dlg', None)
+                if dlg and dlg.isVisible():
+                    pos = QCursor.pos()
+                    # Si le clic se produit dans la popup preview elle-meme, laisser passer
+                    if dlg.geometry().contains(pos):
+                        return False
+
+                    # Si le clic est sur le bouton Voir actif, laisser passer
+                    btn = getattr(self.dialog, '_preview_current_widget', None)
+                    if btn:
+                        try:
+                            from aqt.qt import sip
+                            if not sip.isdeleted(btn) and btn.isVisible():
+                                btn_global = btn.mapToGlobal(QPoint(0, 0))
+                                btn_rect = QRect(btn_global, btn.size())
+                                if btn_rect.contains(pos):
+                                    return False
+                        except Exception:
+                            pass
+
+                    # Tout autre clic (dialogue, table, fermeture, autre fenetre) ferme la preview
+                    self.dialog.hide_preview_popup()
+        except Exception:
+            pass
+        return False
+
+
 class LinkedCardsDialog(QDialog):
+    COL_RECTO = 0
+    COL_SCORE = 1
+    COL_NID = 2
+    COL_ACTIONS = 3
+
     def __init__(self, editor, selected_text=""):
         parent = editor.parentWindow if hasattr(editor, 'parentWindow') else mw
         super().__init__(parent)
         self.editor = editor
         self.inserter = LinkInserter(editor)
+        self.target_fidx = getattr(editor, 'currentField', None)
+        if self.target_fidx is None:
+            self.target_fidx = getattr(editor, 'last_field_index', None)
         self.selected_nid = None
         self.selected_recto = None
         self.selected_text = selected_text  # Texte à afficher dans le badge (mode hyperlien)
-        self.setWindowTitle("Rechercher une carte liée")
-        self.setMinimumSize(350, 500)
+        self.setWindowTitle("Lier les cartes")
+        self.setMinimumSize(480, 500)
         self.setModal(False)
         self._preview_stack = []
         self._context_menu_active = False
@@ -5996,12 +6728,30 @@ class LinkedCardsDialog(QDialog):
         self._search_timer.timeout.connect(self._on_search_timeout)
         
         self._suggestions_cache = None
+        self._scores_map = {}
         self._all_target_nids = []
         self._search_offset = 0
         self._current_results_type = None
         self._current_query = ""
         self._search_type_label = "résultats"
         
+        from collections import OrderedDict
+        self._preview_cache = OrderedDict()
+        self._prefetch_timer = None
+        self._pending_prefetch_nids = []
+        self._card_prefs_cache = None
+        self._preview_edn_css_cache = None
+        self._preview_shell_ready = False
+        self._preview_current_widget = None
+        self._preview_current_nid = None
+        self._pending_show_nid = None
+        self._pending_show_widget = None
+
+        self._app_click_filter = _LinkedCardsAppClickFilter(self)
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self._app_click_filter)
+
         self.setup_ui()
 
     def _on_search_text_changed(self, text):
@@ -6027,7 +6777,7 @@ class LinkedCardsDialog(QDialog):
                         self._search_timer.stop()
                         self.do_search(newtext)
                     else:
-                        self._search_timer.start(250)
+                        self._search_timer.start(380)
                     return
             except Exception as e:
                 print(f"Error in BetterSearch integration: {e}")
@@ -6036,7 +6786,7 @@ class LinkedCardsDialog(QDialog):
             self._search_timer.stop()
             self.do_search("")
         else:
-            self._search_timer.start(250)  # Délai de 250ms
+            self._search_timer.start(380)  # Délai de 380ms
 
     def _on_search_timeout(self):
         self.do_search(self.search_bar.text())
@@ -6044,6 +6794,12 @@ class LinkedCardsDialog(QDialog):
     def keyPressEvent(self, event):
         """Transmet les touches p/r/n/z/Escape à la preview webview même si le focus est dans le GUI."""
         key = event.key()
+        if key == Qt.Key.Key_Escape:
+            if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
+                self.hide_preview_popup()
+                event.accept()
+                return
+
         if key == Qt.Key.Key_P:
             self.cycle_gui_results_and_preview()
             event.accept()
@@ -6084,8 +6840,8 @@ class LinkedCardsDialog(QDialog):
         self.results_table.scrollTo(self.results_table.model().index(next_row, 0))
         
         try:
-            item_nid = self.results_table.item(next_row, 1).text()
-            btn = self.results_table.cellWidget(next_row, 2)
+            item_nid = self.results_table.item(next_row, self.COL_NID).text()
+            btn = self.results_table.cellWidget(next_row, self.COL_ACTIONS)
             if item_nid and btn:
                 self._preview_current_widget = btn
                 self.show_preview_popup(item_nid, position_widget=btn)
@@ -6214,10 +6970,12 @@ class LinkedCardsDialog(QDialog):
         self.load_more_btn.setVisible(False)
         layout.addWidget(self.load_more_btn)
         
-        self.results_table.setColumnCount(3)
-        self.results_table.setHorizontalHeaderLabels(["Recto", "NID", "Actions"])
-        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.results_table.setColumnWidth(2, 80)
+        self.results_table.setColumnCount(4)
+        self.results_table.setHorizontalHeaderLabels(["Recto", "Score", "NID", "Actions"])
+        self.results_table.horizontalHeader().setSectionResizeMode(self.COL_RECTO, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setColumnWidth(self.COL_SCORE, 65)
+        self.results_table.setColumnWidth(self.COL_NID, 115)
+        self.results_table.setColumnWidth(self.COL_ACTIONS, 80)
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
@@ -6264,33 +7022,38 @@ class LinkedCardsDialog(QDialog):
         else:
             self.do_search("")
         
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._update_preview_position()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_preview_position()
+
+    def hideEvent(self, event):
+        self.hide_preview_popup()
+        super().hideEvent(event)
+
     def closeEvent(self, event):
+        self.hide_preview_popup()
         self._cleanup_on_close()
         super().closeEvent(event)
 
     def reject(self):
+        self.hide_preview_popup()
         self._cleanup_on_close()
         super().reject()
 
     def _should_keep_preview_alive(self):
-        """Vérifie si la preview popup doit rester ouverte malgré un événement de focus/activation."""
+        """Verifie si la preview popup doit rester ouverte malgre un evenement de focus/activation."""
         if getattr(self, '_context_menu_active', False):
             return True
-        if getattr(self, '_is_showing_preview', False):
-            return True
         try:
-            from aqt.qt import Qt, QApplication, QCursor
-            no_btn = getattr(Qt.MouseButton, "NoButton", None) or getattr(Qt, "NoButton", None)
-            if QApplication.mouseButtons() != no_btn:
-                return True
-            cursor_pos = QCursor.pos()
-            if self.geometry().contains(cursor_pos):
-                return True
             preview_dlg = getattr(self, '_preview_dlg', None)
             if preview_dlg is not None:
                 try:
                     preview_dlg.objectName()
-                    if preview_dlg.isVisible() or preview_dlg.geometry().contains(cursor_pos):
+                    if preview_dlg.isVisible() and preview_dlg.geometry().contains(QCursor.pos()):
                         return True
                 except (RuntimeError, Exception):
                     pass
@@ -6300,27 +7063,16 @@ class LinkedCardsDialog(QDialog):
 
     def changeEvent(self, event):
         try:
-            if event.type() in [QEvent.Type.ActivationChange, QEvent.ActivationChange]:
+            etype = event.type()
+            act_change = getattr(QEvent.Type, "ActivationChange", None) or getattr(QEvent, "ActivationChange", None)
+            state_change = getattr(QEvent.Type, "WindowStateChange", None) or getattr(QEvent, "WindowStateChange", None)
+            if etype == act_change:
                 if not self.isActiveWindow():
                     if not self._should_keep_preview_alive():
                         self.hide_preview_popup()
-                else:
-                    # Ne pas re-déclencher show_preview_popup si la preview est déjà visible
-                    preview_dlg = getattr(self, '_preview_dlg', None)
-                    if not (preview_dlg is not None and preview_dlg.isVisible()):
-                        try:
-                            pos = QCursor.pos()
-                            for row in range(self.results_table.rowCount()):
-                                btn = self.results_table.cellWidget(row, 2)
-                                if btn and hasattr(btn, 'nid'):
-                                    btn_global = btn.mapToGlobal(QPoint(0, 0))
-                                    btn_rect = QRect(btn_global, btn.size())
-                                    if btn_rect.contains(pos):
-                                        self._preview_current_widget = btn
-                                        self.show_preview_popup(btn.nid, position_widget=btn)
-                                        break
-                        except Exception:
-                            pass
+            elif etype == state_change:
+                if self.isMinimized():
+                    self.hide_preview_popup()
         except Exception:
             pass
         super().changeEvent(event)
@@ -6350,6 +7102,22 @@ class LinkedCardsDialog(QDialog):
             self.hide_preview_popup()
         except:
             pass
+        if hasattr(self, '_app_click_filter') and self._app_click_filter:
+            app = QApplication.instance()
+            if app:
+                try:
+                    app.removeEventFilter(self._app_click_filter)
+                except Exception:
+                    pass
+            self._app_click_filter = None
+        if hasattr(self, '_prefetch_timer') and self._prefetch_timer:
+            try:
+                self._prefetch_timer.stop()
+            except Exception:
+                pass
+            self._prefetch_timer = None
+        if hasattr(self, '_preview_cache'):
+            self._preview_cache.clear()
         if hasattr(self, '_preview_web') and self._preview_web:
             try:
                 self._preview_web.cleanup()
@@ -6358,6 +7126,7 @@ class LinkedCardsDialog(QDialog):
             self._preview_web = None
         if hasattr(self, '_preview_dlg') and self._preview_dlg:
             try:
+                self._preview_dlg.hide()
                 self._preview_dlg.deleteLater()
             except:
                 pass
@@ -6371,49 +7140,51 @@ class LinkedCardsDialog(QDialog):
         try:
             self.editor.web.eval("""
                 (function() {
-                    // Nettoyage agressif : chercher dans TOUS les shadow roots récursivement
-                    function findAllMarkers(root, found, visited) {
-                        if (!root || visited.has(root)) return;
-                        visited.add(root);
-                        if (root.querySelectorAll) {
-                            let ms = root.querySelectorAll('[id="edn-cursor-marker"]');
-                            for (let i = 0; i < ms.length; i++) {
-                                if (!found.includes(ms[i])) found.push(ms[i]);
+                    function _getAllShadowRoots(root) {
+                        root = root || document.body;
+                        var roots = [];
+                        if (!root) return roots;
+                        if (root.shadowRoot) roots.push(root.shadowRoot);
+                        var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                        for (var i = 0; i < all.length; i++) {
+                            if (all[i].shadowRoot) {
+                                roots.push(all[i].shadowRoot);
+                                roots.push(..._getAllShadowRoots(all[i].shadowRoot));
                             }
                         }
-                        if (root.shadowRoot) findAllMarkers(root.shadowRoot, found, visited);
-                        if (root.children) {
-                            for (let i = 0; i < root.children.length; i++) findAllMarkers(root.children[i], found, visited);
-                        }
-                        // Chercher aussi dans les nested anki-editable
-                        if (root.querySelectorAll) {
-                            root.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                                findAllMarkers(el, found, visited);
-                                if (el.shadowRoot) findAllMarkers(el.shadowRoot, found, visited);
-                            });
-                        }
+                        return roots;
                     }
-                    let markers = [];
-                    let visited = new Set();
-                    findAllMarkers(document.body, markers, visited);
-                    document.querySelectorAll('anki-editable, anki-editor').forEach(el => findAllMarkers(el, markers, visited));
-                    
-                    let changedEditables = new Set();
+                    function _queryAll(sel) {
+                        var fn = window._ednQueryAllRoots;
+                        if (typeof fn === 'function') return fn(sel);
+                        var res = Array.from(document.querySelectorAll(sel));
+                        var sRoots = _getAllShadowRoots(document.body);
+                        for (var i = 0; i < sRoots.length; i++) {
+                            var list = sRoots[i].querySelectorAll(sel);
+                            for (var j = 0; j < list.length; j++) {
+                                if (!res.includes(list[j])) res.push(list[j]);
+                            }
+                        }
+                        return res;
+                    }
+
+                    var markers = _queryAll('[id="edn-cursor-marker"]');
+                    var changedEditables = new Set();
                     markers.forEach(function(m) { 
                         try { 
-                            let rootNode = m.getRootNode ? m.getRootNode() : null;
-                            let host = rootNode && rootNode.host ? rootNode.host : null;
-                            let editable = m.closest ? m.closest('anki-editable') : null;
-                            if (!editable && host && host.tagName === 'ANKI-EDITABLE') editable = host;
-                            if (editable) changedEditables.add(editable);
-                            
+                            var curr = m.parentNode;
+                            while (curr) {
+                                if (curr.tagName === 'ANKI-EDITABLE' || curr.isContentEditable) {
+                                    changedEditables.add(curr);
+                                    break;
+                                }
+                                curr = curr.parentNode || (curr.getRootNode && curr.getRootNode().host) || curr.host;
+                            }
                             if (m.parentNode) m.parentNode.removeChild(m); 
                         } catch(e) {} 
                     });
                     changedEditables.forEach(function(editable) {
                         try {
-                            // Notifier Anki immédiatement (sans RAF) pour que saveNow Python récupère
-                            // le contenu nettoyé avant la fermeture du dialog.
                             editable.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
                         } catch(e) {}
                     });
@@ -6446,13 +7217,27 @@ class LinkedCardsDialog(QDialog):
             if self.editor and self.editor.web:
                 self.editor.web.eval("""
                     (function() {
-                        if (typeof window._ednSavedFieldIndex === 'number' && window._ednSavedFieldIndex >= 0) {
-                            var editables = document.querySelectorAll('anki-editable');
-                            var ed = editables[window._ednSavedFieldIndex];
-                            if (ed) {
-                                var inner = (ed.shadowRoot && ed.shadowRoot.querySelector('[contenteditable]')) || ed;
-                                if (inner && typeof inner.focus === 'function') {
-                                    inner.focus();
+                        var targetIdx = (typeof window._ednSavedFieldIndex === 'number' && window._ednSavedFieldIndex >= 0)
+                            ? window._ednSavedFieldIndex
+                            : (typeof window._ednLastActiveField === 'number' ? window._ednLastActiveField : -1);
+                        if (targetIdx >= 0) {
+                            if (typeof globalThis.focusField === 'function') {
+                                globalThis.focusField(targetIdx);
+                            } else {
+                                var editables = (typeof window._ednQueryAllRoots === 'function')
+                                    ? window._ednQueryAllRoots('anki-editable')
+                                    : Array.from(document.querySelectorAll('anki-editable'));
+                                if (!editables.length) {
+                                    editables = (typeof window._ednQueryAllRoots === 'function')
+                                        ? window._ednQueryAllRoots('[contenteditable="true"]')
+                                        : Array.from(document.querySelectorAll('[contenteditable="true"]'));
+                                }
+                                var ed = editables[targetIdx];
+                                if (ed) {
+                                    var inner = (ed.shadowRoot && ed.shadowRoot.querySelector('[contenteditable]')) || ed;
+                                    if (inner && typeof inner.focus === 'function') {
+                                        inner.focus();
+                                    }
                                 }
                             }
                         }
@@ -6462,18 +7247,52 @@ class LinkedCardsDialog(QDialog):
             pass
 
     def append_results_to_table(self, results):
-        for nid_str, recto_clean in results:
+        is_night = _is_night_mode()
+        for res_item in results:
+            if isinstance(res_item, dict):
+                nid_str = str(res_item.get("nid", ""))
+                recto_clean = str(res_item.get("recto", ""))
+                score = res_item.get("score")
+            elif isinstance(res_item, (list, tuple)):
+                nid_str = str(res_item[0])
+                recto_clean = str(res_item[1])
+                score = res_item[2] if len(res_item) >= 3 else None
+            else:
+                continue
+
+            if score is None and hasattr(self, '_scores_map') and self._scores_map:
+                score = self._scores_map.get(nid_str)
+
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
             
             i_recto = QTableWidgetItem(recto_clean)
-            i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': nid_str, 'recto': recto_clean})
-            self.results_table.setItem(row, 0, i_recto)
+            i_recto.setData(Qt.ItemDataRole.UserRole, {'nid': nid_str, 'recto': recto_clean, 'score': score})
+            self.results_table.setItem(row, self.COL_RECTO, i_recto)
             
-            self.results_table.setItem(row, 1, QTableWidgetItem(nid_str))
+            score_text = str(score) if (score is not None and score > 0) else ("-" if score is None else "0")
+            i_score = QTableWidgetItem(score_text)
+            try:
+                i_score.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            except AttributeError:
+                i_score.setTextAlignment(Qt.AlignCenter)
+            if score is not None and score > 0:
+                font = i_score.font()
+                font.setBold(True)
+                i_score.setFont(font)
+                color = QColor("#a78bfa") if is_night else QColor("#7c3aed")
+                i_score.setForeground(color)
+            self.results_table.setItem(row, self.COL_SCORE, i_score)
+
+            i_nid = QTableWidgetItem(nid_str)
+            try:
+                i_nid.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            except AttributeError:
+                i_nid.setTextAlignment(Qt.AlignCenter)
+            self.results_table.setItem(row, self.COL_NID, i_nid)
             
             btn = self._make_voir_button(nid_str)
-            self.results_table.setCellWidget(row, 2, btn)
+            self.results_table.setCellWidget(row, self.COL_ACTIONS, btn)
 
     def load_next_page(self):
         if self._current_results_type == "suggestions":
@@ -6484,7 +7303,7 @@ class LinkedCardsDialog(QDialog):
             if not chunk:
                 self.load_more_btn.setVisible(False)
                 if start == 0:
-                    self.results_label.setText("Pas de résultats")
+                    self.results_label.setText("Aucun lien proposé")
                 return
             
             self.append_results_to_table(chunk)
@@ -6493,12 +7312,12 @@ class LinkedCardsDialog(QDialog):
             # Show remaining count
             remaining = len(self._all_target_nids) - self._search_offset
             if remaining > 0:
-                self.load_more_btn.setText(f"Charger plus ({remaining} restantes)")
+                self.load_more_btn.setText(f"Charger plus de liens proposés ({remaining} restantes)")
                 self.load_more_btn.setVisible(True)
             else:
                 self.load_more_btn.setVisible(False)
                 
-            self.results_label.setText(f"{self.results_table.rowCount()} suggestions de liens")
+            self.results_label.setText(f"{self.results_table.rowCount()} liens proposés (classés par score)")
             
         elif self._current_results_type == "search":
             if self._search_offset >= len(self._all_target_nids):
@@ -6602,7 +7421,7 @@ class LinkedCardsDialog(QDialog):
                     # Aucun résultat trouvé — essayer une recherche approximative (fuzzy)
                     self._try_fuzzy_search(query, current_seq)
                 else:
-                    self.results_label.setText(f"{row_count} {self._search_type_label}")
+                    self.results_label.setText(f"{row_count} {self._search_type_label} (classés par score)")
                 
             from aqt.operations import QueryOp
             op = QueryOp(
@@ -6624,12 +7443,14 @@ class LinkedCardsDialog(QDialog):
         # Vider la table immédiatement et masquer le bouton charger plus
         self.results_table.setRowCount(0)
         self.load_more_btn.setVisible(False)
+        if hasattr(self, '_prefetch_timer') and self._prefetch_timer:
+            self._prefetch_timer.stop()
         
         if not query:
             config = mw.addonManager.getConfig(__name__) or {}
             if config.get("suggestions_de_liens", True):
                 self._current_results_type = "suggestions"
-                self.results_label.setText("Chargement des suggestions...")
+                self.results_label.setText("Chargement des liens proposés...")
                 
                 # Check if suggestions are cached
                 if self._suggestions_cache is not None:
@@ -6638,17 +7459,21 @@ class LinkedCardsDialog(QDialog):
                     self.load_next_page()
                     return
                 
+                # Extraction sécurisée des données de la note sur le thread principal
+                ed_note = _get_editor_note(self.editor)
+                current_nid = str(ed_note.id) if ed_note and getattr(ed_note, 'id', None) else None
+                note_fields = list(ed_note.fields) if ed_note else []
+                from .editor_assistant import extract_nids_from_fields
+                outgoing_nids = extract_nids_from_fields(ed_note) if ed_note else set()
+
+                if not current_nid:
+                    self.results_label.setText("Aucun lien proposé (note non enregistrée)")
+                    return
+
                 # If not cached, compute in background
                 def bg_suggestions(col):
-                    from .editor_assistant import _compute_suggestions, extract_nids_from_fields, extract_nids_from_fields_list
+                    from .editor_assistant import _compute_suggestions, extract_nids_from_fields_list
                     try:
-                        ed_note = _get_editor_note(self.editor)
-                        current_nid = str(ed_note.id) if ed_note and getattr(ed_note, 'id', None) else None
-                        if not current_nid:
-                            return ("suggestions", [])
-                        note_fields = list(ed_note.fields) if ed_note else []
-                        # Liens sortants (même logique que la sidebar)
-                        outgoing_nids = extract_nids_from_fields(ed_note) if ed_note else set()
                         # Backlinks : cartes qui pointent vers la note courante (même logique que la sidebar)
                         backlink_nids = set()
                         try:
@@ -6668,9 +7493,8 @@ class LinkedCardsDialog(QDialog):
                             print("bg_suggestions: erreur récupération backlinks:", be)
                         # existing_nids = sortants ∪ entrants (identique à la sidebar)
                         existing_nids = outgoing_nids | backlink_nids
-                        # On veut les 50 premières suggestions à afficher, mais on peut en précalculer plus (ex: 150)
-                        suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=50)
-                        formatted = [(s["nid"], s["recto"]) for s in suggestions]
+                        suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=100)
+                        formatted = [(s["nid"], s["recto"], s.get("score", 0)) for s in suggestions]
                         return ("suggestions", formatted)
                     except Exception as e:
                         return ("error", str(e))
@@ -6690,6 +7514,7 @@ class LinkedCardsDialog(QDialog):
                     
                     self._suggestions_cache = results_or_err
                     self._all_target_nids = self._suggestions_cache
+                    self._scores_map = {item[0]: item[2] for item in results_or_err if len(item) >= 3}
                     self._search_offset = 0
                     self.load_next_page()
                 
@@ -6780,7 +7605,7 @@ class LinkedCardsDialog(QDialog):
                         if nid not in seen_nids:
                             seen_nids.add(nid)
                             target_ids.append(nid)
-                return ("nid", target_ids)
+                return ("nid", target_ids, {str(n): 100 for n in target_ids})
 
             # Recherche textuelle normale (ou tag)
             if query.startswith('tag::'):
@@ -6809,13 +7634,13 @@ class LinkedCardsDialog(QDialog):
                             pass
 
                 if not candidate_nids:
-                    return ("text", [])
+                    return ("text", [], {})
 
                 if source_nid:
                     candidate_nids = [n for n in candidate_nids if str(n) != source_nid]
 
                 if not candidate_nids:
-                    return ("text", [])
+                    return ("text", [], {})
 
                 # Scoring contextuel
                 q_norm = _norm_s(query)
@@ -6874,9 +7699,10 @@ class LinkedCardsDialog(QDialog):
 
                 scored_candidates.sort(key=lambda x: x[0], reverse=True)
                 sorted_ids = [cid for _, cid in scored_candidates]
-                return ("text", sorted_ids)
+                scores_map = {str(cid): score for score, cid in scored_candidates}
+                return ("text", sorted_ids, scores_map)
             except Exception as e:
-                return ("error", str(e))
+                return ("error", str(e), {})
 
         def on_success(res):
             try:
@@ -6887,11 +7713,13 @@ class LinkedCardsDialog(QDialog):
             if current_seq != self._search_seq:
                 return
 
-            search_type, results_or_err = res
+            search_type = res[0]
+            results_or_err = res[1]
             if search_type == "error":
                 self.results_label.setText(results_or_err)
                 return
 
+            self._scores_map = res[2] if len(res) >= 3 and isinstance(res[2], dict) else {}
             self._all_target_nids = results_or_err
             self._search_offset = 0
             self._search_type_label = "résultats (recherche NID)" if search_type == "nid" else "résultats"
@@ -7046,18 +7874,27 @@ class LinkedCardsDialog(QDialog):
                             scored_candidates.append((score, cid))
                     scored_candidates.sort(key=lambda x: x[0], reverse=True)
                     target_ids = [cid for _, cid in scored_candidates]
+                    scores_map = {str(cid): score for score, cid in scored_candidates}
+                    return (target_ids, scores_map)
                 except Exception as fe:
                     print("Erreur fuzzy score:", fe)
 
-            return target_ids
+            return (target_ids, {})
 
-        def on_fuzzy_success(results):
+        def on_fuzzy_success(res):
             try:
                 self.objectName()
             except RuntimeError:
                 return
             if seq != self._search_seq:
                 return
+
+            if isinstance(res, tuple):
+                results = res[0]
+                self._scores_map = res[1] if len(res) >= 2 else {}
+            else:
+                results = res
+                self._scores_map = {}
 
             if not results:
                 self.results_label.setText("Pas de résultats")
@@ -7091,14 +7928,19 @@ class LinkedCardsDialog(QDialog):
                 self.clicked.connect(self.on_click)
                 self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 self.customContextMenuRequested.connect(self.on_context_menu)
+                self._hover_timer = QTimer(self)
+                self._hover_timer.setSingleShot(True)
+                self._hover_timer.timeout.connect(self._on_hover_timeout)
                 
             def on_click(self):
+                self._hover_timer.stop()
                 from aqt import dialogs, mw
                 browser = dialogs.open("Browser", mw)
                 browser.search_for(f"nid:{self.nid}")
                 self.dialog_parent.hide_preview_popup()
 
             def on_context_menu(self, pos):
+                self._hover_timer.stop()
                 global_pos = self.mapToGlobal(pos)
                 self.dialog_parent.show_learn_grade_menu(self.nid, global_pos)
 
@@ -7112,15 +7954,25 @@ class LinkedCardsDialog(QDialog):
                     self.dialog_parent._preview_current_widget = self
                     super().enterEvent(event)
                     return
+                self._hover_timer.start(70)
+                super().enterEvent(event)
+
+            def _on_hover_timeout(self):
+                try:
+                    self.objectName()
+                except RuntimeError:
+                    return
+                if not self.dialog_parent.isVisible():
+                    return
                 self.dialog_parent._preview_current_widget = self
                 self.dialog_parent.show_preview_popup(self.nid, position_widget=self)
-                super().enterEvent(event)
                 
             def leaveEvent(self, event):
+                self._hover_timer.stop()
                 from aqt.qt import QTimer
                 try:
                     dlg = self.dialog_parent
-                    QTimer.singleShot(400, lambda: self._safe_check_hide())
+                    QTimer.singleShot(350, lambda: self._safe_check_hide())
                 except RuntimeError:
                     pass
                 try:
@@ -7129,6 +7981,7 @@ class LinkedCardsDialog(QDialog):
                     pass
 
             def focusOutEvent(self, event):
+                self._hover_timer.stop()
                 try:
                     self._safe_check_hide()
                 except (RuntimeError, Exception):
@@ -7153,7 +8006,7 @@ class LinkedCardsDialog(QDialog):
         if not item:
             return
         row = item.row()
-        nid_item = self.results_table.item(row, 1)
+        nid_item = self.results_table.item(row, self.COL_NID)
         if nid_item:
             nid = nid_item.text()
             global_pos = self.results_table.mapToGlobal(pos)
@@ -7185,37 +8038,16 @@ class LinkedCardsDialog(QDialog):
                     self.hide_preview_popup()
                     return
                 try:
-                    # Check if still visible
-                    rect = self.results_table.visualItemRect(self.results_table.itemAt(btn.pos()))
+                    # Verifier si le bouton est toujours visible dans le viewport de la table
                     if btn.isVisible() and btn.rect().intersects(self.results_table.viewport().rect()):
-                        # Repositionnement lors du scroll : même logique gauche/droite
-                        screen = QApplication.primaryScreen().availableGeometry()
-                        dlg = self._preview_dlg
-                        preview_w = dlg.width() if dlg.width() > 100 else 680
-                        gui_center_x = self.x() + self.width() // 2
-                        gui_on_right = gui_center_x > screen.x() + screen.width() // 2
-                        if gui_on_right:
-                            preview_x = self.x() - preview_w - 8
-                            if preview_x < screen.x():
-                                preview_x = screen.x()
-                        else:
-                            preview_x = self.x() + self.width() + 8
-                            if preview_x + preview_w > screen.right():
-                                preview_x = screen.right() - preview_w
-                        btn_global_y = btn.mapToGlobal(QPoint(0, 0)).y()
-                        preview_y = btn_global_y - 30
-                        if preview_y + dlg.height() > screen.bottom():
-                            preview_y = screen.bottom() - dlg.height() - 10
-                        if preview_y < screen.top():
-                            preview_y = screen.top()
-                        dlg.move(preview_x, preview_y)
+                        self._update_preview_position()
                     else:
                         self.hide_preview_popup()
                 except (RuntimeError, Exception):
                     self._preview_current_widget = None
                     self.hide_preview_popup()
 
-        # Détection du défilement vers le bas pour charger plus automatiquement
+        # Detection du defilement vers le bas pour charger plus automatiquement
         try:
             scrollbar = self.results_table.verticalScrollBar()
             if scrollbar.value() >= scrollbar.maximum() - 5:
@@ -7223,6 +8055,911 @@ class LinkedCardsDialog(QDialog):
                     self.load_next_page()
         except Exception as e:
             print("Error in scroll auto-load:", e)
+
+    def _update_preview_position(self, position_widget=None, force=False):
+        if not hasattr(self, '_preview_dlg') or not self._preview_dlg:
+            return
+        if not force and not self._preview_dlg.isVisible():
+            return
+        dlg = self._preview_dlg
+        if position_widget is not None:
+            self._preview_current_widget = position_widget
+        btn = getattr(self, '_preview_current_widget', None)
+        if btn is not None:
+            try:
+                from aqt.qt import sip
+                if sip.isdeleted(btn):
+                    btn = None
+                    self._preview_current_widget = None
+            except Exception:
+                btn = None
+
+        screen_obj = self.screen()
+        if not screen_obj:
+            screen_obj = QApplication.screenAt(self.geometry().center())
+        if not screen_obj:
+            screen_obj = QApplication.primaryScreen()
+        screen = screen_obj.availableGeometry() if screen_obj else QRect(0, 0, 1920, 1080)
+
+        preview_w = dlg.width() if dlg.width() > 100 else 680
+        preview_h = dlg.height() if dlg.height() > 50 else 250
+
+        gui_rect = self.geometry()
+        space_right = screen.right() - gui_rect.right()
+        space_left = gui_rect.left() - screen.left()
+
+        # Préférer le côté ayant assez de place pour loger la largeur du popup
+        if space_right >= preview_w + 10:
+            preview_x = gui_rect.right() + 8
+        elif space_left >= preview_w + 10:
+            preview_x = gui_rect.left() - preview_w - 8
+        else:
+            if space_right >= space_left:
+                preview_x = max(screen.left() + 8, screen.right() - preview_w - 8)
+            else:
+                preview_x = min(screen.right() - preview_w - 8, screen.left() + 8)
+
+        if btn and btn.isVisible():
+            try:
+                btn_global_y = btn.mapToGlobal(QPoint(0, 0)).y()
+                preview_y = btn_global_y - 20
+            except Exception:
+                preview_y = gui_rect.top() + 40
+        else:
+            preview_y = gui_rect.top() + 40
+
+        if preview_y + preview_h > screen.bottom() - 10:
+            preview_y = max(screen.top() + 10, screen.bottom() - preview_h - 10)
+        if preview_y < screen.top() + 10:
+            preview_y = screen.top() + 10
+
+        dlg.move(preview_x, preview_y)
+
+    def _get_cached_card_prefs(self):
+        if not hasattr(self, '_card_prefs_cache') or self._card_prefs_cache is None:
+            try:
+                from .edn_menu.card_styles import load_prefs
+                self._card_prefs_cache = load_prefs()
+            except Exception:
+                self._card_prefs_cache = {}
+        return self._card_prefs_cache
+
+    def _get_cached_preview_css(self):
+        if not hasattr(self, '_preview_edn_css_cache') or self._preview_edn_css_cache is None:
+            self._preview_edn_css_cache = _load_preview_edn_css()
+        return self._preview_edn_css_cache
+
+    def _prepare_card_preview_data(self, nid):
+        nid_str = str(nid)
+        if not hasattr(self, '_preview_cache'):
+            from collections import OrderedDict
+            self._preview_cache = OrderedDict()
+        if nid_str in self._preview_cache:
+            return self._preview_cache[nid_str]
+
+        try:
+            import re as re2
+            note = mw.col.get_note(int(nid_str))
+            cards = note.cards()
+            if not cards:
+                return None
+            card = cards[0]
+            rendered = card.answer()
+            rendered = _clean_kbd_html(rendered)
+
+            isolated = re2.sub(r'(?<!\w)id=(["\'])(.*?)\1', r'id="dlg_preview_\2"', rendered)
+            isolated = re2.sub(r'src=(["\'])(?![a-z]+:)(?!/)([^"\']+)\1', r'src="/\2"', isolated, flags=re2.IGNORECASE)
+            isolated = re2.sub(r'toggle\([\"\'](.*?)[\"\']\)', r"toggle('dlg_preview_\1')", isolated)
+            isolated = re2.sub(r'\bonclick=(["\'])(.*?)\1', r'data-onclick=\1\2\1', isolated, flags=re2.IGNORECASE)
+            isolated = re2.sub(r'<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>', '', isolated, flags=re2.IGNORECASE)
+            isolated = re2.sub(
+                r"(?:<br>\s*)?<(span|div|p)\b[^>]*id=[^>]*fsrs[^>]*>.*?</\1>",
+                "", isolated, flags=re2.IGNORECASE|re2.DOTALL)
+
+            sec_to_field = {
+                "sourcesMegaContainer": "Sources",
+                "commentsMegaContainer": "Comments",
+                "tagsMegaContainer": "Tags",
+                "erreursFaitesMegaContainer": "Erreurs faites",
+                "mnemonicsMegaContainer": "Mnemonics",
+                "infoSupplementairesMegaContainer": "Infos supplémentaires",
+                "cartesLieesMegaContainer": "Cartes liées"
+            }
+            for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer",
+                        "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]:
+                field_name = sec_to_field.get(sec)
+                has_links = False
+                if field_name and field_name in note:
+                    val = note[field_name]
+                    if "clickable_cards" in val or "data-nid" in val or re2.search(r'\b1\d{12}\b', val):
+                        has_links = True
+                if not has_links:
+                    isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'][^\'>]*style=["\'])([^\'\"]*)', r'\1display: none !important;\2', isolated, flags=re2.IGNORECASE)
+                    isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'])(?![^>]*style=)', r'\1 style="display: none !important;"', isolated, flags=re2.IGNORECASE)
+
+            isolated = re2.sub(
+                r'(<div[^>]*class=["\'][^"\']*(section)[^"\'][^"\']*["\'][^>]*style=["\'])display:\s*none;?',
+                r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
+
+            model_css = note.note_type().get('css', '')
+            sanitized_model_css = _sanitize_model_css_for_preview(model_css) if model_css else ""
+
+            prefs = self._get_cached_card_prefs()
+            show_rank = prefs.get("showRankBadge", True)
+            show_flags = prefs.get("showFlagBorders", True)
+            show_dual_flags = prefs.get("previewDualFlags", False)
+            try:
+                virtual_flag_color = _get_virtual_flag_color(note, cards, prefs=prefs)
+            except Exception:
+                virtual_flag_color = ""
+
+            data = {
+                "nid": nid_str,
+                "isolated": isolated,
+                "model_css": sanitized_model_css,
+                "show_rank": show_rank,
+                "show_flags": show_flags,
+                "show_dual_flags": show_dual_flags,
+                "virtual_flag_color": virtual_flag_color,
+            }
+            if len(self._preview_cache) >= 40:
+                self._preview_cache.popitem(last=False)
+            self._preview_cache[nid_str] = data
+            return data
+        except Exception as e:
+            print(f"Error preparing preview data for nid {nid}: {e}")
+            return None
+
+    def _schedule_economic_prefetch(self, current_nid):
+        if not hasattr(self, 'results_table') or self.results_table.rowCount() == 0:
+            return
+
+        curr_row = -1
+        for r in range(self.results_table.rowCount()):
+            item = self.results_table.item(r, self.COL_NID)
+            if item and item.text() == current_nid:
+                curr_row = r
+                break
+
+        if curr_row < 0:
+            return
+
+        # Precharger les 2 cartes en dessous de facon econome
+        nids_below = []
+        for r in range(curr_row + 1, min(curr_row + 3, self.results_table.rowCount())):
+            item = self.results_table.item(r, self.COL_NID)
+            if item and item.text():
+                nid_val = item.text()
+                if not (hasattr(self, '_preview_cache') and nid_val in self._preview_cache):
+                    nids_below.append(nid_val)
+
+        if not nids_below:
+            return
+
+        self._pending_prefetch_nids = nids_below
+        if not hasattr(self, '_prefetch_timer') or self._prefetch_timer is None:
+            self._prefetch_timer = QTimer(self)
+            self._prefetch_timer.setSingleShot(True)
+            self._prefetch_timer.timeout.connect(self._run_economic_prefetch)
+        self._prefetch_timer.start(250)
+
+    def _run_economic_prefetch(self):
+        if not self.isVisible():
+            return
+        if not hasattr(self, '_pending_prefetch_nids') or not self._pending_prefetch_nids:
+            return
+        import time
+        t0 = time.perf_counter()
+        count = 0
+        for nid in list(self._pending_prefetch_nids):
+            if hasattr(self, '_preview_cache') and nid in self._preview_cache:
+                continue
+            self._prepare_card_preview_data(nid)
+            count += 1
+        self._pending_prefetch_nids = []
+        if count > 0:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            _profiler_log("PREVIEW:PREFETCH", f"Prechargement economique termine: {count} carte(s) en dessous", elapsed_ms=elapsed_ms)
+
+    def _build_full_preview_html(self, data=None, is_night=False):
+        import json
+        addon_package = mw.addonManager.addonFromModule(__name__)
+        css_link = f'<link rel="stylesheet" href="/_addons/{addon_package}/user_files/clickable_cards.css">'
+
+        model_css_content = data.get('model_css', '') if data else ''
+        model_css_tag = f'<style id="edn_model_style">\n{model_css_content}\n</style>'
+
+        preview_css = self._get_cached_preview_css()
+        blacklist_selectors = [
+            f"#dlg_preview_{sec}" for sec in [
+                "sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer",
+                "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"
+            ]
+        ]
+        blacklist_selectors.append("#dlg_preview_FSRS_status")
+        blacklist_css = ", ".join(blacklist_selectors) + " { display: none !important; }\n"
+        blacklist_css += ".edn-specialty-icons { display: none !important; }\n"
+        scoped_css = f'<style id="edn_scoped_style">\n{blacklist_css}{preview_css}\n</style>'
+
+        night_script = ""
+        if is_night:
+            night_script = """
+            <script>
+            document.documentElement.classList.add('night-mode', 'nightMode', 'night_mode');
+            if (document.body) document.body.classList.add('night-mode', 'nightMode', 'night_mode');
+            </script>
+            """
+
+        stubs_script = """
+        <script>
+        window.$ = window.jQuery = window.jQuery || function() { return { on: function(){}, off: function(){}, hide: function(){}, show: function(){}, css: function(){}, ready: function(fn){ if(fn) fn(); }, find: function(){ return { length: 0 }; }, each: function(){} }; };
+        window._blockDefaultDragDropBehavior = window._blockDefaultDragDropBehavior || function(){};
+        window._showQuestion = window._showQuestion || function(){};
+        window._drawFlag = window._drawFlag || function(){};
+        window._drawMark = window._drawMark || function(){};
+        window._showAnswer = window._showAnswer || function(){};
+        window.showQuestion = window.showQuestion || function(){};
+        window.showAnswer = window.showAnswer || function(){};
+        </script>
+        """
+
+        main_script = r"""
+        <script>
+        window.MathJax = window.MathJax || {};
+        window.MathJax.loader = window.MathJax.loader || {};
+        window.MathJax.loader.versions = window.MathJax.loader.versions || {};
+        window.MathJax.loader.versions['[tex]/mathtools'] = '3.0.0';
+
+        function _hideFsrsInfo() {
+            document.querySelectorAll('span, div, p, pre, font').forEach(function(el) {
+                if (el.children.length === 0 && el.textContent && (el.textContent.includes('FSRS:') || el.textContent.includes('FSRS :'))) {
+                    el.style.setProperty('display', 'none', 'important');
+                    var p = el.parentNode;
+                    if (p && (p.id.toLowerCase().includes('fsrs') || p.className.toLowerCase().includes('fsrs'))) {
+                        p.style.setProperty('display', 'none', 'important');
+                    }
+                }
+            });
+        }
+
+        function _hideEmptySections() {
+            document.querySelectorAll('.section').forEach(function(section) {
+                var items = section.querySelector('.items');
+                if (items) {
+                    var cleanedHtml = items.innerHTML
+                        .replace(/<!--[\s\S]*?-->/g, '')
+                        .replace(/<br\s*\/?>/gi, '')
+                        .replace(/&nbsp;/gi, '')
+                        .trim();
+                    var hasImage = items.querySelector('img') !== null;
+                    var hasCanvas = items.querySelector('canvas') !== null;
+                    var hasSvg = items.querySelector('svg') !== null;
+                    var hasKbd = items.querySelector('kbd') !== null;
+                    if (cleanedHtml === '' && !hasImage && !hasCanvas && !hasSvg && !hasKbd) {
+                        section.style.setProperty('display', 'none', 'important');
+                        var mega = section.closest('[id*="MegaContainer"]');
+                        if (mega) {
+                            mega.style.setProperty('display', 'none', 'important');
+                        }
+                        if (section.previousElementSibling && section.previousElementSibling.classList.contains('barHider')) {
+                            section.previousElementSibling.style.setProperty('display', 'none', 'important');
+                        }
+                    }
+                }
+            });
+        }
+
+        function _capitalizePreview(root) {
+            try {
+                var elementsToCapitalize = root.querySelectorAll('.items, .items li');
+                elementsToCapitalize.forEach(function (item) {
+                    var foundLetter = false;
+                    var afterCloze = false;
+
+                    function capitalizeFirstTextNode(node) {
+                        if (foundLetter) return true;
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            var text = node.nodeValue;
+                            var match = text.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
+                            if (match) {
+                                var index = match.index;
+                                if (afterCloze) {
+                                    var char = text.charAt(index);
+                                    if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                        if (index + 1 < text.length) {
+                                            var next = text.charAt(index + 1);
+                                            if (next === next.toLowerCase() && next !== next.toUpperCase()) {
+                                                node.nodeValue = text.substring(0, index) + char.toLowerCase() + text.substring(index + 1);
+                                            }
+                                        }
+                                    }
+                                    foundLetter = true;
+                                    return true;
+                                }
+                                var hasUpperElsewhere = false;
+                                var wordMatch = text.substring(index).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
+                                if (wordMatch) {
+                                    var word = wordMatch[0];
+                                    var restOfWord = word.substring(1);
+                                    for (var i = 0; i < restOfWord.length; i++) {
+                                        var char = restOfWord.charAt(i);
+                                        if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                            hasUpperElsewhere = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                var precedingText = '';
+                                var current = node;
+                                while (current && current !== item) {
+                                    var sib = current.previousSibling;
+                                    while (sib) {
+                                        precedingText = (sib.textContent || '') + precedingText;
+                                        sib = sib.previousSibling;
+                                    }
+                                    current = current.parentNode;
+                                }
+                                precedingText += text.substring(0, index);
+                                var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
+                                if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
+                                    node.nodeValue = text.substring(0, index) + text.charAt(index).toUpperCase() + text.substring(index + 1);
+                                }
+                                foundLetter = true;
+                                return true;
+                            }
+                        } else if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'A' || node.tagName === 'SUP' || node.tagName === 'ANKI-MATHJAX' || node.tagName === 'MJX-CONTAINER' || node.tagName === 'MATH') return false;
+                            if (node.classList && node.classList.contains('cloze')) {
+                                if (!foundLetter) {
+                                    for (var ci = 0; ci < node.childNodes.length; ci++) {
+                                        if (capitalizeFirstTextNode(node.childNodes[ci])) break;
+                                    }
+                                }
+                                afterCloze = true;
+                                return false;
+                            }
+                            for (var i = 0; i < node.childNodes.length; i++) {
+                                if (capitalizeFirstTextNode(node.childNodes[i])) return true;
+                            }
+                        }
+                        return false;
+                    }
+                    capitalizeFirstTextNode(item);
+                });
+            } catch(e) {}
+
+            try {
+                var clItems = root.querySelectorAll('.cartesLiees');
+                clItems.forEach(function(container) {
+                    function capitalizeFirstInNode(node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            var txt = node.nodeValue;
+                            var m = txt.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
+                            if (m) {
+                                var idx = m.index;
+                                var hasUpperElsewhere = false;
+                                var wordMatch = txt.substring(idx).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
+                                if (wordMatch) {
+                                    var word = wordMatch[0];
+                                    var restOfWord = word.substring(1);
+                                    for (var i = 0; i < restOfWord.length; i++) {
+                                        var char = restOfWord.charAt(i);
+                                        if (char === char.toUpperCase() && char !== char.toLowerCase()) {
+                                            hasUpperElsewhere = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                var precedingText = '';
+                                var current = node;
+                                while (current && current !== container) {
+                                    var sib = current.previousSibling;
+                                    while (sib) {
+                                        if (sib.tagName === 'BR' || sib.tagName === 'KBD') break;
+                                        precedingText = (sib.textContent || '') + precedingText;
+                                        sib = sib.previousSibling;
+                                    }
+                                    if (sib && (sib.tagName === 'BR' || sib.tagName === 'KBD')) break;
+                                    current = current.parentNode;
+                                }
+                                precedingText += txt.substring(0, idx);
+                                var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
+                                if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
+                                    node.nodeValue = txt.substring(0, idx) + txt.charAt(idx).toUpperCase() + txt.substring(idx + 1);
+                                }
+                                return true;
+                            }
+                            return false;
+                        } else if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.tagName === 'KBD' || node.tagName === 'BR' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'SUP') return false;
+                            if (node.tagName === 'SPAN' && node.classList.contains('edn-nid')) return false;
+                            for (var j = 0; j < node.childNodes.length; j++) {
+                                if (capitalizeFirstInNode(node.childNodes[j])) return true;
+                            }
+                        }
+                        return false;
+                    }
+                    var childNodes = Array.from(container.childNodes);
+                    var segmentStart = true;
+                    for (var ci = 0; ci < childNodes.length; ci++) {
+                        var cnode = childNodes[ci];
+                        if (cnode.nodeName === 'BR') { segmentStart = true; continue; }
+                        if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'KBD') { segmentStart = true; continue; }
+                        if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'SPAN' && cnode.classList.contains('edn-nid')) continue;
+                        if (segmentStart) {
+                            if (capitalizeFirstInNode(cnode)) {
+                                segmentStart = false;
+                            }
+                        }
+                    }
+                });
+            } catch(e) {}
+        }
+
+        function _cleanAll() {
+            _hideFsrsInfo();
+            _hideEmptySections();
+            _capitalizePreview(document);
+        }
+
+        window.toggle = window.toggle || function(id) {
+            var el = document.getElementById(id);
+            if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+        };
+
+        document.addEventListener('click', function(e) {
+            var el = e.target;
+            while (el && el !== document.body) {
+                if (el.getAttribute && el.getAttribute('data-onclick')) {
+                    var clickAttr = el.getAttribute('data-onclick');
+                    if (clickAttr.includes('toggle(')) {
+                        var match = clickAttr.match(/toggle\(['"](.*?)['"]\)/);
+                        if (match && window.toggle) {
+                            window.toggle(match[1]);
+                        }
+                    } else {
+                        try {
+                            new Function(clickAttr).call(el);
+                        } catch(err) {
+                            console.error("Error executing data-onclick:", err);
+                        }
+                    }
+                    break;
+                }
+                el = el.parentNode;
+            }
+        }, true);
+
+        function _gn(el) {
+            if (el.dataset && el.dataset.nid) return el.dataset.nid;
+            var s = el.querySelector && el.querySelector('.edn-nid');
+            if (s) return s.textContent.trim();
+            var oc = el.getAttribute('onclick');
+            if (oc) { var m = oc.match(/\d{10,}/); if (m) return m[0]; }
+            return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
+        }
+
+        var _guiHoverTimer = null;
+        var _guiLastHoverNid = null;
+        window._guiPopupTime = Date.now();
+
+        document.addEventListener("mouseover", function(e) {
+            if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                if (window._guiPopupTime && (Date.now() - window._guiPopupTime < 100)) {
+                    return;
+                }
+                var nid = _gn(e.target);
+                e.target.style.outline = '2px solid #007acc';
+                if (nid === _guiLastHoverNid) return;
+                if (_guiHoverTimer) { clearTimeout(_guiHoverTimer); _guiHoverTimer = null; }
+                _guiHoverTimer = setTimeout(function() {
+                    _guiHoverTimer = null;
+                    _guiLastHoverNid = nid;
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
+                }, 100);
+            }
+        });
+
+        document.addEventListener("mouseout", function(e) {
+            if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                if (e.relatedTarget && e.target.contains(e.relatedTarget)) return;
+                if (_guiHoverTimer) { clearTimeout(_guiHoverTimer); _guiHoverTimer = null; }
+                e.target.style.outline = '';
+                _guiLastHoverNid = null;
+            }
+        });
+
+        var _guiLongPressTimer = null;
+        var _guiTouchStartX = 0;
+        var _guiTouchStartY = 0;
+        var _guiLongPressTriggered = false;
+        var _guiTouchRecently = false;
+        var _guiLastTapNid = null;
+        var _guiLastTapTime = 0;
+        var _guiSingleTapTimer = null;
+
+        document.addEventListener('touchstart', function(e) {
+            _guiTouchRecently = true;
+            if (!e.touches || e.touches.length !== 1) {
+                if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
+                return;
+            }
+            var touch = e.touches[0];
+            _guiTouchStartX = touch.clientX;
+            _guiTouchStartY = touch.clientY;
+            _guiLongPressTriggered = false;
+            var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+            var nid = badge ? _gn(badge) : null;
+            if (!nid) {
+                var cardEl = document.querySelector('.card') || document.body;
+                if (cardEl && cardEl.dataset && cardEl.dataset.nid) {
+                    nid = cardEl.dataset.nid;
+                }
+            }
+            if (nid) {
+                if (_guiLongPressTimer) clearTimeout(_guiLongPressTimer);
+                _guiLongPressTimer = setTimeout(function() {
+                    _guiLongPressTriggered = true;
+                    if (_guiSingleTapTimer) { clearTimeout(_guiSingleTapTimer); _guiSingleTapTimer = null; }
+                    if (typeof pycmd !== 'undefined') pycmd('edn_show_context_menu:' + nid + '|||' + Math.round(_guiTouchStartX) + '|||' + Math.round(_guiTouchStartY) + '||||||gui_preview');
+                }, 450);
+            }
+        }, { passive: true, capture: true });
+
+        document.addEventListener('touchmove', function(e) {
+            if (!e.touches || e.touches.length !== 1) {
+                if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
+                return;
+            }
+            var touch = e.touches[0];
+            var dist = Math.hypot(touch.clientX - _guiTouchStartX, touch.clientY - _guiTouchStartY);
+            if (dist > 10) {
+                if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
+            }
+        }, { passive: true, capture: true });
+
+        document.addEventListener('touchend', function(e) {
+            if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
+            _guiTouchRecently = true;
+            setTimeout(function() { _guiTouchRecently = false; }, 450);
+            if (_guiLongPressTriggered) {
+                if (e.cancelable) e.preventDefault();
+                e.stopPropagation();
+                setTimeout(function() { _guiLongPressTriggered = false; }, 300);
+                return;
+            }
+            var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+            var nid = badge ? _gn(badge) : null;
+            if (nid) {
+                var now = Date.now();
+                if (_guiLastTapNid === nid && (now - _guiLastTapTime < 350)) {
+                    if (_guiSingleTapTimer) { clearTimeout(_guiSingleTapTimer); _guiSingleTapTimer = null; }
+                    _guiLastTapNid = null;
+                    _guiLastTapTime = 0;
+                    if (typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
+                    if (e.cancelable) e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                } else {
+                    _guiLastTapNid = nid;
+                    _guiLastTapTime = now;
+                    if (_guiSingleTapTimer) clearTimeout(_guiSingleTapTimer);
+                    _guiSingleTapTimer = setTimeout(function() {
+                        _guiSingleTapTimer = null;
+                        if (typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
+                    }, 220);
+                    if (e.cancelable) e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+            }
+        }, true);
+
+        document.addEventListener('touchcancel', function(e) {
+            if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
+            _guiLongPressTriggered = false;
+            setTimeout(function() { _guiTouchRecently = false; }, 300);
+        }, true);
+
+        document.addEventListener('pointerdown', function(e) {
+            if (e.button === 2) {
+                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+                var nid = badge ? _gn(badge) : null;
+                if (nid) {
+                    if (typeof pycmd !== 'undefined') pycmd('edn_right_click_nid:' + nid);
+                }
+            }
+        });
+
+        document.addEventListener('contextmenu', function(e) {
+            var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+            var nid = badge ? _gn(badge) : null;
+            if (nid) {
+                if (typeof pycmd !== 'undefined') pycmd('edn_right_click_nid:' + nid);
+            }
+        });
+
+        document.addEventListener("click", function(e) {
+            if (_guiLongPressTriggered || _guiTouchRecently) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+            if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
+                var nid = _gn(e.target);
+                if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
+            }
+        });
+
+        document.addEventListener("keydown", function(e) {
+            if (e.key === 'Tab' && e.ctrlKey) {
+                if (typeof pycmd !== 'undefined') pycmd('hide_preview_popup');
+            }
+            var badges = Array.from(document.querySelectorAll('.clickable_cards'));
+            var k = e.key.toLowerCase();
+
+            if (e.key === 'ArrowDown' || k === 'n') {
+                e.preventDefault();
+                var activeBadge = document.querySelector('.edn-selected-badge');
+                var activeIdx = badges.indexOf(activeBadge);
+                badges.forEach(function(b) {
+                    b.style.outline = 'none';
+                    b.style.boxShadow = 'none';
+                    b.style.transform = 'none';
+                    b.classList.remove('edn-selected-badge');
+                });
+                var nextIdx = activeIdx + 1;
+                if (nextIdx >= badges.length) nextIdx = 0;
+                var newSel = badges[nextIdx];
+                if (newSel) {
+                    newSel.style.outline = '2px solid #3b82f6';
+                    newSel.style.outlineOffset = '1px';
+                    newSel.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
+                    newSel.style.transform = 'scale(1.05)';
+                    newSel.classList.add('edn-selected-badge');
+                    newSel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                var activeBadge = document.querySelector('.edn-selected-badge');
+                var activeIdx = badges.indexOf(activeBadge);
+                badges.forEach(function(b) {
+                    b.style.outline = 'none';
+                    b.style.boxShadow = 'none';
+                    b.style.transform = 'none';
+                    b.classList.remove('edn-selected-badge');
+                });
+                var nextIdx = activeIdx - 1;
+                if (nextIdx < 0) nextIdx = badges.length - 1;
+                var newSel = badges[nextIdx];
+                if (newSel) {
+                    newSel.style.outline = '2px solid #3b82f6';
+                    newSel.style.outlineOffset = '1px';
+                    newSel.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
+                    newSel.style.transform = 'scale(1.05)';
+                    newSel.classList.add('edn-selected-badge');
+                    newSel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+            } else if (k === 'p') {
+                e.preventDefault();
+                if (typeof pycmd !== 'undefined') pycmd('gui_preview_key_p');
+            } else if (k === 'r') {
+                e.preventDefault();
+                var sel = document.querySelector('.edn-selected-badge');
+                if (!sel && badges.length > 0) sel = badges[0];
+                if (sel) {
+                    var nid = _gn(sel);
+                    _guiLastHoverNid = null;
+                    if (typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
+                }
+            } else if (k === 'z' || e.key === 'Escape') {
+                e.preventDefault();
+                if (typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:esc');
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                var sel = document.querySelector('.edn-selected-badge');
+                if (sel) {
+                    var nid = _gn(sel);
+                    if (typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
+                }
+            }
+        });
+
+        function _triggerResize() {
+            var card = document.getElementById('edn_card_container') || document.querySelector('.card');
+            var h = card ? Math.ceil(card.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);
+            if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);
+        }
+
+        try {
+            var cardEl = document.getElementById('edn_card_container') || document.querySelector('.card') || document.body;
+            var lastHeight = 0;
+            var resizeObserver = new ResizeObserver(function(entries) {
+                var card = document.getElementById('edn_card_container') || document.querySelector('.card');
+                var h = card ? Math.ceil(card.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);
+                if (h && h !== lastHeight) {
+                    lastHeight = h;
+                    if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);
+                }
+            });
+            resizeObserver.observe(cardEl);
+        } catch(e) {
+            document.addEventListener('load', function(ev) {
+                if (ev.target && ev.target.tagName === 'IMG') {
+                    _triggerResize();
+                }
+            }, true);
+        }
+
+        window._applyEdnPreviewStylesParams = function(virtualFlagColor, showRank, showFlags, dualFlags) {
+            try {
+                var tagsEl = document.getElementById("dlg_preview_tagsData") || document.getElementById("tagsData");
+                var tags = tagsEl ? tagsEl.innerHTML : "";
+                var rang = tags.includes("Rang::A") ? "A" : tags.includes("Rang::B") ? "B" : tags.includes("Rang::C") ? "C" : "?";
+
+                if (showRank) {
+                    var colorA = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_a) ? edn_prefs.rank_color_a : '#111827';
+                    var colorB = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_b) ? edn_prefs.rank_color_b : '#3182CE';
+                    var colorC = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_c) ? edn_prefs.rank_color_c : '#38A169';
+                    var rankColor = rang === 'A' ? colorA : rang === 'B' ? colorB : rang === 'C' ? colorC : null;
+
+                    var bars = document.querySelectorAll('.bar, .barHider');
+                    bars.forEach(function(b) {
+                        if (!b.classList.contains('edn-rang-' + rang)) {
+                            b.classList.add('edn-rang-' + rang);
+                        }
+                        if (rankColor) {
+                            b.style.backgroundColor = rankColor;
+                            b.style.borderColor = rankColor;
+                        }
+                    });
+                }
+
+                var realColor = null;
+                if (showFlags) {
+                    var flagsEl = document.getElementById('dlg_preview_flagsData') || document.getElementById('flagsData') || document.getElementById('dlg_preview_flags') || document.getElementById('flags');
+                    var flags = flagsEl ? flagsEl.innerHTML.trim() : "";
+                    var flagColorMap = {
+                        'flag1': '#E53E3E', 'flag2': '#DD6B20', 'flag3': '#38A169',
+                        'flag4': '#3182CE', 'flag5': '#D53F8C', 'flag6': '#00A3C4', 'flag7': '#805AD5'
+                    };
+                    for (var key in flagColorMap) {
+                        if (flags.includes(key)) {
+                            realColor = flagColorMap[key];
+                            break;
+                        }
+                    }
+                    if (!realColor && tags.includes("Difficile")) realColor = '#E53E3E';
+                    if (!realColor && tags.includes("Bleu")) realColor = '#3182CE';
+                }
+
+                function applyDualBorder(el, leftColor, rightColor) {
+                    if (!el) return;
+                    el.style.borderImage = "none";
+                    el.style.borderColor = "transparent";
+                    var bg = window.getComputedStyle(el).backgroundColor;
+                    if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
+                        var isNight = document.body && (document.body.classList.contains("nightMode") || document.body.classList.contains("night_mode"));
+                        bg = isNight ? "#373a41" : "#f5f6f7";
+                    }
+                    var existingBg = el.style.backgroundImage;
+                    if (existingBg && !existingBg.includes("linear-gradient")) {
+                        el.style.backgroundImage = existingBg + ", linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                    } else {
+                        el.style.backgroundImage = "linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                    }
+                    el.style.backgroundOrigin = "border-box";
+                    el.style.backgroundClip = "padding-box, border-box";
+                }
+
+                function clearDualBorder(el) {
+                    if (!el) return;
+                    el.style.borderImage = "none";
+                    el.style.backgroundOrigin = "";
+                    el.style.backgroundClip = "";
+                    var existingBg = el.style.backgroundImage;
+                    if (existingBg && existingBg.includes("linear-gradient")) {
+                        el.style.backgroundImage = "";
+                    }
+                }
+
+                var sections = document.getElementsByClassName("section");
+                var hiders = document.getElementsByClassName("barHider");
+                var bars = document.getElementsByClassName("bar");
+
+                if (showFlags && dualFlags && virtualFlagColor && realColor) {
+                    for (var s of sections) applyDualBorder(s, virtualFlagColor, realColor);
+                    for (var h of hiders) applyDualBorder(h, virtualFlagColor, realColor);
+                    for (var b of bars) { clearDualBorder(b); b.style.borderColor = virtualFlagColor; }
+                } else {
+                    var activeColor = showFlags ? (realColor || virtualFlagColor) : null;
+                    if (activeColor) {
+                        for (var s of sections) { clearDualBorder(s); s.style.borderColor = activeColor; }
+                        for (var h of hiders) { clearDualBorder(h); h.style.borderColor = activeColor; }
+                        for (var b of bars) { clearDualBorder(b); b.style.borderColor = activeColor; }
+                    } else {
+                        for (var s of sections) { clearDualBorder(s); s.style.borderColor = ""; }
+                        for (var h of hiders) { clearDualBorder(h); h.style.borderColor = ""; }
+                        for (var b of bars) { clearDualBorder(b); b.style.borderColor = ""; }
+                    }
+                }
+                var cardEl = document.getElementById('edn_card_container') || document.querySelector('.card');
+                if (cardEl) {
+                    cardEl.style.border = 'none';
+                }
+            } catch(e) {
+                console.error("Error applying preview styles:", e);
+            }
+        };
+
+        window._ednUpdateCard = function(html, modelCss, virtualFlagColor, showRank, showFlags, dualFlags) {
+            try {
+                var styleEl = document.getElementById('edn_model_style');
+                if (styleEl) styleEl.textContent = modelCss || '';
+
+                var cardEl = document.getElementById('edn_card_container') || document.querySelector('.card');
+                if (cardEl) {
+                    cardEl.innerHTML = html;
+                }
+                window.scrollTo(0, 0);
+
+                if (typeof _applyEdnPreviewStylesParams === 'function') {
+                    _applyEdnPreviewStylesParams(virtualFlagColor, showRank, showFlags, dualFlags);
+                }
+                if (typeof _cleanAll === 'function') {
+                    _cleanAll();
+                }
+                if (window.MathJax && MathJax.typesetPromise) {
+                    if (MathJax.typesetClear) {
+                        try { MathJax.typesetClear(); } catch(e) {}
+                    }
+                    var target = cardEl || document.body;
+                    MathJax.typesetPromise([target]).then(function() {
+                        if (typeof _triggerResize === 'function') _triggerResize();
+                    }).catch(function(){});
+                }
+                if (typeof _triggerResize === 'function') {
+                    _triggerResize();
+                }
+                return true;
+            } catch(err) {
+                console.error("Error in _ednUpdateCard:", err);
+                return false;
+            }
+        };
+        </script>
+        """
+
+        card_content = data.get('isolated', '') if data else ''
+        init_style_call = ""
+        if data:
+            init_style_call = f"""
+            <script>
+            (function() {{
+                if (typeof _applyEdnPreviewStylesParams === 'function') {{
+                    _applyEdnPreviewStylesParams(
+                        {json.dumps(data.get('virtual_flag_color', ''))},
+                        {'true' if data.get('show_rank', True) else 'false'},
+                        {'true' if data.get('show_flags', True) else 'false'},
+                        {'true' if data.get('show_dual_flags', False) else 'false'}
+                    );
+                }}
+                if (typeof _cleanAll === 'function') _cleanAll();
+            }})();
+            </script>
+            """
+
+        full_html = (
+            stubs_script
+            + css_link
+            + model_css_tag
+            + scoped_css
+            + night_script
+            + main_script
+            + f'<div class="card" id="edn_card_container">{card_content}</div>'
+            + init_style_call
+        )
+        return full_html
 
     def toggle_preview_popup(self, nid, position_widget=None):
         """Affiche ou masque la preview sans fermer le dialog principal."""
@@ -7256,37 +8993,49 @@ class LinkedCardsDialog(QDialog):
 
         self._preview_dlg = dlg
         self._preview_web = web
+        self._preview_shell_ready = False
 
-        # Initialiser immédiatement le moteur WebEngine en arrière-plan pendant la construction du GUI
-        # Cela évite l'initialisation tardive de WebEngine lors du premier survol qui provoquait
-        # une perte d'activation et la disparition temporaire du GUI sous Windows.
+        # Charger la coquille HTML et scripts en arrière-plan pendant la construction du GUI
         try:
-            stubs_init = """
-            <script>
-            window.$ = window.jQuery = window.jQuery || function() { return { on: function(){}, off: function(){}, hide: function(){}, show: function(){}, css: function(){}, ready: function(fn){ if(fn) fn(); }, find: function(){ return { length: 0 }; }, each: function(){} }; };
-            window._blockDefaultDragDropBehavior = window._blockDefaultDragDropBehavior || function(){};
-            window._showQuestion = window._showQuestion || function(){};
-            window._drawFlag = window._drawFlag || function(){};
-            window._drawMark = window._drawMark || function(){};
-            window._showAnswer = window._showAnswer || function(){};
-            window.showQuestion = window.showQuestion || function(){};
-            window.showAnswer = window.showAnswer || function(){};
-            </script>
-            """
-            web.stdHtml(
-                stubs_init + "<style>body{margin:0;background:transparent;}</style><div></div>",
-                js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
-            )
-        except Exception:
-            pass
+            is_night = _is_night_mode()
+            shell_html = self._build_full_preview_html(None, is_night)
+            try:
+                from aqt.qt import QColor
+                web.page().setBackgroundColor(QColor(0, 0, 0, 0))
+            except Exception:
+                pass
 
-        # Install event filter to track mouse leave from popup
+            def _on_shell_loaded(ok):
+                self._preview_shell_ready = bool(ok)
+                if ok and getattr(self, '_pending_show_nid', None) is not None:
+                    pending_nid = self._pending_show_nid
+                    pending_widget = getattr(self, '_pending_show_widget', None)
+                    self._pending_show_nid = None
+                    self._pending_show_widget = None
+                    if self.isVisible():
+                        self.show_preview_popup(pending_nid, position_widget=pending_widget)
+
+            try:
+                web.page().loadFinished.connect(_on_shell_loaded)
+            except Exception:
+                pass
+
+            try:
+                web.stdHtml(
+                    shell_html,
+                    js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
+                )
+            except TypeError:
+                web.stdHtml(
+                    shell_html,
+                    js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"],
+                    mathjax=True
+                )
+        except Exception as e:
+            print("Error initializing preview shell in webview:", e)
+
         dlg.installEventFilter(self)
 
-        # --- Fix Alt+Tab : cacher la preview quand Anki perd le focus ---
-        # WA_ShowWithoutActivating empêche la popup de recevoir le focus,
-        # donc WindowDeactivate sur dlg ne se déclenche jamais.
-        # On écoute à la place le signal de l'application entière.
         def _on_app_state_changed(state):
             try:
                 from aqt.qt import Qt
@@ -7298,972 +9047,158 @@ class LinkedCardsDialog(QDialog):
                 pass
         app = QApplication.instance()
         self._app_state_conn = app.applicationStateChanged.connect(_on_app_state_changed)
-        # Déconnecter proprement à la destruction de la popup
         dlg.destroyed.connect(lambda: _disconnect_app_state(app, self))
-        # Rester caché jusqu'au premier hover
         dlg.hide()
 
     def show_preview_popup(self, nid, position_widget=None):
         """Affiche un popup Qt avec la preview HTML (CSS identique a la revision)."""
-        self._is_showing_preview = True
-        try:
-            from aqt.qt import QTimer
-            # Délai allongé : la première init de la WebView Qt (Chromium/WebEngine) peut
-            # prendre plusieurs centaines de ms et déclenche un ActivationChange sur le GUI.
-            # _is_showing_preview bloque hide_preview_popup() pendant toute cette période.
-            QTimer.singleShot(1200, lambda: setattr(self, '_is_showing_preview', False))
-        except Exception:
-            pass
-        try:
-            import re as re2
-            note = mw.col.get_note(int(nid))
-            cards = note.cards()
-            if not cards:
-                return
-            card = cards[0]
-            rendered = card.answer()
-            rendered = _clean_kbd_html(rendered)
+        if not self.isVisible():
+            return
 
-            # Meme nettoyage que le hover
-            # IMPORTANT: ne matcher que les attributs id= stricts (pas data-nid=, etc.)
-            # Le lookbehind (?<!\w) s'assure qu'on ne touche pas à "data-nid=" etc.
-            isolated = re2.sub(r'(?<!\w)id=(["\'])(.*?)\1', r'id="dlg_preview_\2"', rendered)
-            isolated = re2.sub(r'src=(["\'])(?![a-z]+:)(?!/)([^"\']+)\1', r'src="/\2"', isolated, flags=re2.IGNORECASE)
-            isolated = re2.sub(r'toggle\([\"\'](.*?)[\"\']\)', r"toggle('dlg_preview_\1')", isolated)
-            # Remplacer onclick par data-onclick pour éviter les violations de Content Security Policy (CSP)
-            isolated = re2.sub(r'\bonclick=(["\'])(.*?)\1', r'data-onclick=\1\2\1', isolated, flags=re2.IGNORECASE)
-            isolated = re2.sub(r'<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>', '', isolated, flags=re2.IGNORECASE)
-            isolated = re2.sub(
-                r"(?:<br>\s*)?<(span|div|p)\b[^>]*id=[^>]*fsrs[^>]*>.*?</\1>",
-                "", isolated, flags=re2.IGNORECASE|re2.DOTALL)
-            sec_to_field = {
-                "sourcesMegaContainer": "Sources",
-                "commentsMegaContainer": "Comments",
-                "tagsMegaContainer": "Tags",
-                "erreursFaitesMegaContainer": "Erreurs faites",
-                "mnemonicsMegaContainer": "Mnemonics",
-                "infoSupplementairesMegaContainer": "Infos supplémentaires",
-                "cartesLieesMegaContainer": "Cartes liées"
-            }
-            for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer",
-                        "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]:
-                field_name = sec_to_field.get(sec)
-                has_links = False
-                if field_name and field_name in note:
-                    val = note[field_name]
-                    if "clickable_cards" in val or "data-nid" in val or re2.search(r'\b1\d{12}\b', val):
-                        has_links = True
-                if not has_links:
-                    # Cacher le container via style inline display none pour contourner les divs imbriqués
-                    isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'][^\'>]*style=["\'])([^\'\"]*)', r'\1display: none !important;\2', isolated, flags=re2.IGNORECASE)
-                    isolated = re2.sub(rf'(<div[^>]*id=["\'](?:dlg_preview_)?{sec}["\'])(?![^>]*style=)', r'\1 style="display: none !important;"', isolated, flags=re2.IGNORECASE)
+        import time
+        t0 = time.perf_counter()
 
-            # Forcer l'affichage des sections (comme dans le reviewer)
+        if hasattr(self, '_prefetch_timer') and self._prefetch_timer:
+            self._prefetch_timer.stop()
 
-            isolated = re2.sub(
+        nid_str = str(nid)
+        was_cached = hasattr(self, '_preview_cache') and (nid_str in self._preview_cache)
+        data = self._prepare_card_preview_data(nid_str)
+        if not data:
+            return
 
-                r'(<div[^>]*class=["\'][^"\']*(section)[^"\'][^"\']*["\'][^>]*style=["\'])display:\s*none;?',
+        is_night = _is_night_mode()
 
-                r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
+        if not hasattr(self, '_preview_dlg') or self._preview_dlg is None:
+            self._init_preview_dlg()
+        dlg = self._preview_dlg
+        web = self._preview_web
 
-            is_night = False
+        if is_night:
+            dlg.setStyleSheet("#PreviewPopup { border: 2px solid #555; background: #373a41; border-radius: 5px; }")
+        else:
+            dlg.setStyleSheet("#PreviewPopup { border: 2px solid #c0c1c5; background: #f5f6f7; border-radius: 5px; }")
+
+        self._preview_current_nid = nid_str
+        if position_widget:
+            self._preview_stack = []
+
+        # Positionner la popup
+        self._update_preview_position(position_widget, force=True)
+
+        shell_ready = getattr(self, '_preview_shell_ready', False)
+        if not shell_ready:
+            self._pending_show_nid = nid_str
+            self._pending_show_widget = position_widget
+            return
+
+        # Mettre à jour le contenu Web
+        updated_in_dom = False
+
+        if shell_ready and web:
             try:
-                from aqt.theme import theme_manager
-                is_night = theme_manager.night_mode
-            except:
-                try:
-                    is_night = mw.theme_manager.night_mode
-                except AttributeError:
-                    try:
-                        from aqt import theme_manager
-                        is_night = theme_manager.night_mode
-                    except:
-                        try:
-                            is_night = mw.pm.night_mode()
-                        except:
-                            is_night = False
-
-            # Le popup est pré-créé dans _init_preview_dlg() (appelé depuis setup_ui)
-            # pour éviter le flash visuel lors du premier hover. Si pour une raison
-            # quelconque il n'existe pas encore, on le crée maintenant.
-            if not hasattr(self, '_preview_dlg') or self._preview_dlg is None:
-                self._init_preview_dlg()
-            dlg = self._preview_dlg
-            web = self._preview_web
-
-            if is_night:
-                dlg.setStyleSheet("#PreviewPopup { border: 2px solid #555; background: #373a41; border-radius: 5px; }")
-            else:
-                dlg.setStyleSheet("#PreviewPopup { border: 2px solid #c0c1c5; background: #f5f6f7; border-radius: 5px; }")
-                
-            self._preview_current_nid = nid
-            if position_widget:
-                self._preview_stack = []
-
-            if position_widget:
-                screen = QApplication.primaryScreen().availableGeometry()
-                preview_w = dlg.width() if dlg.width() > 100 else 680
-                # Déterminer si le GUI est plutôt à droite de l'écran
-                # (centre du GUI > moitié de l'écran => GUI à droite)
-                gui_center_x = self.x() + self.width() // 2
-                gui_on_right = gui_center_x > screen.x() + screen.width() // 2
-
-                if gui_on_right:
-                    # Placer la preview à GAUCHE du GUI
-                    preview_x = self.x() - preview_w - 8
-                    # Si déborde à gauche de l'écran, la coller au bord gauche
-                    if preview_x < screen.x():
-                        preview_x = screen.x()
-                else:
-                    # Placer la preview à DROITE du GUI
-                    preview_x = self.x() + self.width() + 8
-                    # Si déborde à droite de l'écran, la coller au bord droit
-                    if preview_x + preview_w > screen.right():
-                        preview_x = screen.right() - preview_w
-
-                # Alignement vertical : centré sur le bouton "Voir", ajusté si nécessaire
-                btn_global_y = position_widget.mapToGlobal(QPoint(0, 0)).y()
-                preview_y = btn_global_y - 30
-                # Empêcher de sortir en bas
-                if preview_y + 350 > screen.bottom():
-                    preview_y = screen.bottom() - 360
-                # Empêcher de sortir en haut
-                if preview_y < screen.top():
-                    preview_y = screen.top()
-
-                dlg.move(preview_x, preview_y)
-
-            # Charger les préférences cartes EDN
-            show_rank = True
-            show_flags = True
-            show_dual_flags = False
-            virtual_flag_color = ""
-            try:
-                from .edn_menu.card_styles import load_prefs
-                prefs = load_prefs()
-                show_rank = prefs.get("showRankBadge", True)
-                show_flags = prefs.get("showFlagBorders", True)
-                show_dual_flags = prefs.get("previewDualFlags", False)
-                virtual_flag_color = _get_virtual_flag_color(note, cards)
+                import json
+                script = (
+                    f"window._ednUpdateCard("
+                    f"{json.dumps(data['isolated'])}, "
+                    f"{json.dumps(data['model_css'])}, "
+                    f"{json.dumps(data['virtual_flag_color'])}, "
+                    f"{'true' if data['show_rank'] else 'false'}, "
+                    f"{'true' if data['show_flags'] else 'false'}, "
+                    f"{'true' if data['show_dual_flags'] else 'false'}"
+                    f");"
+                )
+                web.eval(script)
+                updated_in_dom = True
             except Exception as e:
-                print("Error loading EDN card styles prefs in linked cards:", e)
-                show_rank = True
-                show_flags = True
-                show_dual_flags = False
-                virtual_flag_color = ""
+                updated_in_dom = False
 
-            show_rank_js = "true" if show_rank else "false"
-            show_flags_js = "true" if show_flags else "false"
-            show_dual_flags_js = "true" if show_dual_flags else "false"
-            virtual_flag_color_js = virtual_flag_color  # "" ou "#3182CE" ou "#E53E3E"
-
-            pref_script = f"""
-            <script>
-            (function() {{
-                function _applyEdnPreviewStyles() {{
-                    try {{
-                        var showRank = {show_rank_js};
-                        var showFlags = {show_flags_js};
-                        var dualFlags = {show_dual_flags_js};
-                        var virtualFlagColor = "{virtual_flag_color_js}";
-                        
-                        var tagsEl = document.getElementById("dlg_preview_tagsData") || document.getElementById("tagsData");
-                        var tags = tagsEl ? tagsEl.innerHTML : "";
-                        var rang = tags.includes("Rang::A") ? "A" : tags.includes("Rang::B") ? "B" : tags.includes("Rang::C") ? "C" : "?";
-                        
-                        if (showRank) {{
-                            var colorA = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_a) ? edn_prefs.rank_color_a : (typeof prefs !== "undefined" && prefs.rank_color_a) ? prefs.rank_color_a : '#111827';
-                            var colorB = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_b) ? edn_prefs.rank_color_b : (typeof prefs !== "undefined" && prefs.rank_color_b) ? prefs.rank_color_b : '#3182CE';
-                            var colorC = (typeof edn_prefs !== "undefined" && edn_prefs.rank_color_c) ? edn_prefs.rank_color_c : (typeof prefs !== "undefined" && prefs.rank_color_c) ? prefs.rank_color_c : '#38A169';
-                            var rankColor = rang === 'A' ? colorA : rang === 'B' ? colorB : rang === 'C' ? colorC : null;
-
-                            var bars = document.querySelectorAll('.bar, .barHider');
-                            bars.forEach(function(b) {{
-                                if (!b.classList.contains('edn-rang-' + rang)) {{
-                                    b.classList.add('edn-rang-' + rang);
-                                }}
-                                if (rankColor) {{
-                                    b.style.backgroundColor = rankColor;
-                                    b.style.borderColor = rankColor;
-                                }}
-                            }});
-                        }}
-                        
-                        var realColor = null;
-                        if (showFlags) {{
-                            var flagsEl = document.getElementById('dlg_preview_flagsData') || document.getElementById('flagsData') || document.getElementById('dlg_preview_flags') || document.getElementById('flags');
-                            var flags = flagsEl ? flagsEl.innerHTML.trim() : "";
-                            var flagColorMap = {{
-                                'flag1': '#E53E3E', // Rouge
-                                'flag2': '#DD6B20', // Orange
-                                'flag3': '#38A169', // Vert
-                                'flag4': '#3182CE', // Bleu
-                                'flag5': '#D53F8C', // Rose
-                                'flag6': '#00A3C4', // Turquoise
-                                'flag7': '#805AD5'  // Violet
-                            }};
-                            for (var key in flagColorMap) {{
-                                if (flags.includes(key)) {{
-                                    realColor = flagColorMap[key];
-                                    break;
-                                }}
-                            }}
-                            if (!realColor && tags.includes("Difficile")) {{
-                                realColor = '#E53E3E';
-                            }}
-                            if (!realColor && tags.includes("Bleu")) {{
-                                realColor = '#3182CE';
-                            }}
-                        }}
-                        
-                        var sections = document.getElementsByClassName("section");
-                        var hiders = document.getElementsByClassName("barHider");
-                        var bars = document.getElementsByClassName("bar");
-                        
-                        if (showFlags && dualFlags && virtualFlagColor && realColor) {{
-                            var dualGradient = "linear-gradient(to right, " + virtualFlagColor + " 50%, " + realColor + " 50%) 1";
-                            for (var s of sections) {{
-                                s.style.borderColor = "transparent";
-                                s.style.borderImage = dualGradient;
-                            }}
-                            for (var h of hiders) {{
-                                h.style.borderColor = "transparent";
-                                h.style.borderImage = dualGradient;
-                            }}
-                            for (var b of bars) {{
-                                b.style.borderImage = "none";
-                                b.style.borderColor = virtualFlagColor;
-                            }}
-                        }} else {{
-                            var activeColor = showFlags ? (realColor || virtualFlagColor) : null;
-                            if (activeColor) {{
-                                for (var s of sections) {{
-                                    s.style.borderImage = "none";
-                                    s.style.borderColor = activeColor;
-                                }}
-                                for (var h of hiders) {{
-                                    h.style.borderImage = "none";
-                                    h.style.borderColor = activeColor;
-                                }}
-                                for (var b of bars) {{
-                                    b.style.borderImage = "none";
-                                    b.style.borderColor = activeColor;
-                                }}
-                            }} else {{
-                                for (var s of sections) {{
-                                    s.style.borderImage = "none";
-                                    s.style.borderColor = "";
-                                }}
-                                for (var h of hiders) {{
-                                    h.style.borderImage = "none";
-                                    h.style.borderColor = "";
-                                }}
-                                for (var b of bars) {{
-                                    b.style.borderImage = "none";
-                                    b.style.borderColor = "";
-                                }}
-                            }}
-                        }}
-                        var cardEl = document.querySelector('.card');
-                        if (cardEl) {{
-                            cardEl.style.border = 'none';
-                        }}
-                    }} catch(e) {{
-                        console.error("Error applying preview styles:", e);
-                    }}
-                }}
-                _applyEdnPreviewStyles();
-                setTimeout(_applyEdnPreviewStyles, 100);
-                setTimeout(_applyEdnPreviewStyles, 400);
-            }})();
-            </script>
-            """
-
-            addon_package = mw.addonManager.addonFromModule(__name__)
-            css_link = '<link rel="stylesheet" href="/_addons/' + addon_package + '/user_files/clickable_cards.css">'
-
-            model_css = note.note_type().get('css', '')
-            if model_css:
-                css_link += f'<style>\n{_sanitize_model_css_for_preview(model_css)}\n</style>'
-
-            # Charger les styles de preview depuis user_files/preview_edn.css
-            preview_css = _load_preview_edn_css()
-            blacklist_selectors = [f"#dlg_preview_{sec}" for sec in ["sourcesMegaContainer", "commentsMegaContainer", "tagsMegaContainer", "erreursFaitesMegaContainer", "mnemonicsMegaContainer", "infoSupplementairesMegaContainer"]]
-            blacklist_selectors.append("#dlg_preview_FSRS_status")
-            blacklist_css = ", ".join(blacklist_selectors) + " { display: none !important; }\n"
-            blacklist_css += ".edn-specialty-icons { display: none !important; }\n"
-            scoped_css = f"<style>\n{blacklist_css}{preview_css}\n</style>"
-            
-            gui_hover_script = r"""
-            <script>
-            // Suppress MathJax mathtools version warning
-            window.MathJax = window.MathJax || {};
-            window.MathJax.loader = window.MathJax.loader || {};
-            window.MathJax.loader.versions = window.MathJax.loader.versions || {};
-            window.MathJax.loader.versions['[tex]/mathtools'] = '3.0.0';
-
-            // Cacher de manière robuste toutes les informations FSRS
-            function _hideFsrsInfo() {
-                document.querySelectorAll('span, div, p, pre, font').forEach(function(el) {
-                    if (el.children.length === 0 && el.textContent && (el.textContent.includes('FSRS:') || el.textContent.includes('FSRS :'))) {
-                        el.style.setProperty('display', 'none', 'important');
-                        var p = el.parentNode;
-                        if (p && (p.id.toLowerCase().includes('fsrs') || p.className.toLowerCase().includes('fsrs'))) {
-                            p.style.setProperty('display', 'none', 'important');
-                        }
-                    }
-                });
-            }
-            // Masquer les sections vides (par exemple tags / items vides) pour gagner de la place
-            function _hideEmptySections() {
-                document.querySelectorAll('.section').forEach(function(section) {
-                    var items = section.querySelector('.items');
-                    if (items) {
-                        var cleanedHtml = items.innerHTML
-                            .replace(/<!--[\s\S]*?-->/g, '')
-                            .replace(/<br\s*\/?>/gi, '')
-                            .replace(/&nbsp;/gi, '')
-                            .trim();
-                        var hasImage = items.querySelector('img') !== null;
-                        var hasCanvas = items.querySelector('canvas') !== null;
-                        var hasSvg = items.querySelector('svg') !== null;
-                        var hasKbd = items.querySelector('kbd') !== null;
-                        if (cleanedHtml === '' && !hasImage && !hasCanvas && !hasSvg && !hasKbd) {
-                            section.style.setProperty('display', 'none', 'important');
-                            var mega = section.closest('[id*="MegaContainer"]');
-                            if (mega) {
-                                mega.style.setProperty('display', 'none', 'important');
-                            }
-                            if (section.previousElementSibling && section.previousElementSibling.classList.contains('barHider')) {
-                                section.previousElementSibling.style.setProperty('display', 'none', 'important');
-                            }
-                        }
-                    }
-                });
-            }
-            function _capitalizePreview(root) {
-                try {
-                    var elementsToCapitalize = root.querySelectorAll('.items, .items li');
-                    elementsToCapitalize.forEach(function (item) {
-                        var foundLetter = false;
-                        var afterCloze = false;
-
-                        function capitalizeFirstTextNode(node) {
-                            if (foundLetter) return true;
-
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                var text = node.nodeValue;
-                                var match = text.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
-                                if (match) {
-                                    var index = match.index;
-
-                                    if (afterCloze) {
-                                        var char = text.charAt(index);
-                                        if (char === char.toUpperCase() && char !== char.toLowerCase()) {
-                                            if (index + 1 < text.length) {
-                                                var next = text.charAt(index + 1);
-                                                if (next === next.toLowerCase() && next !== next.toUpperCase()) {
-                                                    node.nodeValue = text.substring(0, index) + char.toLowerCase() + text.substring(index + 1);
-                                                }
-                                            }
-                                        }
-                                        foundLetter = true;
-                                        return true;
-                                    }
-
-                                    var hasUpperElsewhere = false;
-                                    var wordMatch = text.substring(index).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
-                                    if (wordMatch) {
-                                        var word = wordMatch[0];
-                                        var restOfWord = word.substring(1);
-                                        for (var i = 0; i < restOfWord.length; i++) {
-                                            var char = restOfWord.charAt(i);
-                                            if (char === char.toUpperCase() && char !== char.toLowerCase()) {
-                                                hasUpperElsewhere = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    var precedingText = '';
-                                    var current = node;
-                                    while (current && current !== item) {
-                                        var sib = current.previousSibling;
-                                        while (sib) {
-                                            precedingText = (sib.textContent || '') + precedingText;
-                                            sib = sib.previousSibling;
-                                        }
-                                        current = current.parentNode;
-                                    }
-                                    precedingText += text.substring(0, index);
-
-                                    var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
-
-                                    if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
-                                        node.nodeValue = text.substring(0, index) + text.charAt(index).toUpperCase() + text.substring(index + 1);
-                                    }
-                                    foundLetter = true;
-                                    return true;
-                                }
-                            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                                if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'A' || node.tagName === 'SUP' || node.tagName === 'ANKI-MATHJAX' || node.tagName === 'MJX-CONTAINER' || node.tagName === 'MATH') return false;
-                                if (node.classList && node.classList.contains('cloze')) {
-                                    if (!foundLetter) {
-                                        for (var ci = 0; ci < node.childNodes.length; ci++) {
-                                            if (capitalizeFirstTextNode(node.childNodes[ci])) break;
-                                        }
-                                    }
-                                    afterCloze = true;
-                                    return false;
-                                }
-                                for (var i = 0; i < node.childNodes.length; i++) {
-                                    if (capitalizeFirstTextNode(node.childNodes[i])) return true;
-                                }
-                            }
-                            return false;
-                        }
-                        capitalizeFirstTextNode(item);
-                    });
-                } catch(e) {}
-
-                try {
-                    var clItems = root.querySelectorAll('.cartesLiees');
-                    clItems.forEach(function(container) {
-                        function capitalizeFirstInNode(node) {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                var txt = node.nodeValue;
-                                var m = txt.match(/[a-zA-ZÀ-ÿœŒæÆ]/);
-                                if (m) {
-                                    var idx = m.index;
-                                    var hasUpperElsewhere = false;
-                                    var wordMatch = txt.substring(idx).match(/^[a-zA-ZÀ-ÿœŒæÆ]+/);
-                                    if (wordMatch) {
-                                        var word = wordMatch[0];
-                                        var restOfWord = word.substring(1);
-                                        for (var i = 0; i < restOfWord.length; i++) {
-                                            var char = restOfWord.charAt(i);
-                                            if (char === char.toUpperCase() && char !== char.toLowerCase()) {
-                                                hasUpperElsewhere = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    var precedingText = '';
-                                    var current = node;
-                                    while (current && current !== container) {
-                                        var sib = current.previousSibling;
-                                        while (sib) {
-                                            if (sib.tagName === 'BR' || sib.tagName === 'KBD') break;
-                                            precedingText = (sib.textContent || '') + precedingText;
-                                            sib = sib.previousSibling;
-                                        }
-                                        if (sib && (sib.tagName === 'BR' || sib.tagName === 'KBD')) break;
-                                        current = current.parentNode;
-                                    }
-                                    precedingText += txt.substring(0, idx);
-
-                                    var hasNumberBefore = precedingText.match(/[0-9](?:%|‰|°|er|re|e|ème|nd|rd|th)?\s*$/i) ? true : false;
-
-                                    if (!hasUpperElsewhere && !hasNumberBefore && !precedingText.trim().endsWith('\\')) {
-                                        node.nodeValue = txt.substring(0, idx) + txt.charAt(idx).toUpperCase() + txt.substring(idx + 1);
-                                    }
-                                    return true;
-                                }
-                                return false;
-                            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                                if (node.tagName === 'KBD' || node.tagName === 'BR' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'SUP') return false;
-                                if (node.tagName === 'SPAN' && node.classList.contains('edn-nid')) return false;
-                                for (var j = 0; j < node.childNodes.length; j++) {
-                                    if (capitalizeFirstInNode(node.childNodes[j])) return true;
-                                }
-                            }
-                            return false;
-                        }
-                        var childNodes = Array.from(container.childNodes);
-                        var segmentStart = true;
-                        for (var ci = 0; ci < childNodes.length; ci++) {
-                            var cnode = childNodes[ci];
-                            if (cnode.nodeName === 'BR') { segmentStart = true; continue; }
-                            if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'KBD') { segmentStart = true; continue; }
-                            if (cnode.nodeType === Node.ELEMENT_NODE && cnode.tagName === 'SPAN' && cnode.classList.contains('edn-nid')) continue;
-                            if (segmentStart) {
-                                if (capitalizeFirstInNode(cnode)) {
-                                    segmentStart = false;
-                                }
-                            }
-                        }
-                    });
-                } catch(e) {}
-            }
-            function _cleanAll() {
-                _hideFsrsInfo();
-                _hideEmptySections();
-                _capitalizePreview(document);
-            }
-            _cleanAll();
-            setTimeout(_cleanAll, 100);
-            setTimeout(_cleanAll, 400);
-
-            // Fonction toggle pour les sections de la carte
-            window.toggle = window.toggle || function(id) {
-                var el = document.getElementById(id);
-                if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
-            };
-
-            // Event listener délégué pour remplacer les attributs onclick bloqués par CSP
-            document.addEventListener('click', function(e) {
-                var el = e.target;
-                while (el && el !== document.body) {
-                    if (el.getAttribute && el.getAttribute('data-onclick')) {
-                        var clickAttr = el.getAttribute('data-onclick');
-                        if (clickAttr.includes('toggle(')) {
-                            var match = clickAttr.match(/toggle\(['"](.*?)['"]\)/);
-                            if (match && window.toggle) {
-                                window.toggle(match[1]);
-                            }
-                        } else {
-                            try {
-                                new Function(clickAttr).call(el);
-                            } catch(err) {
-                                console.error("Error executing data-onclick:", err);
-                            }
-                        }
-                        break;
-                    }
-                    el = el.parentNode;
-                }
-            }, true);
-
-            function _gn(el) {
-                if (el.dataset && el.dataset.nid) return el.dataset.nid;
-                var s = el.querySelector && el.querySelector('.edn-nid');
-                if (s) return s.textContent.trim();
-                var oc = el.getAttribute('onclick');
-                if (oc) { var m = oc.match(/\d{10,}/); if (m) return m[0]; }
-                return el.innerText ? el.innerText.replace(/[^0-9]/g, '') : '';
-            }
-
-            // Debounce hover pour éviter le scintillement (preview-in-preview)
-            var _guiHoverTimer = null;
-            var _guiLastHoverNid = null;
-            window._guiPopupTime = Date.now();
-
-            document.addEventListener("mouseover", function(e) {
-                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    if (window._guiPopupTime && (Date.now() - window._guiPopupTime < 100)) {
-                        return;
-                    }
-                    var nid = _gn(e.target);
-                    e.target.style.outline = '2px solid #007acc';
-                    if (nid === _guiLastHoverNid) return; // même badge, pas besoin de recharger
-                    if (_guiHoverTimer) { clearTimeout(_guiHoverTimer); _guiHoverTimer = null; }
-                    _guiHoverTimer = setTimeout(function() {
-                        _guiHoverTimer = null;
-                        _guiLastHoverNid = nid;
-                        if(typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
-                    }, 100); // 100ms : délai de survol réactif
-                }
-            });
-            document.addEventListener("mouseout", function(e) {
-                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    if (e.relatedTarget && e.target.contains(e.relatedTarget)) return;
-                    if (_guiHoverTimer) { clearTimeout(_guiHoverTimer); _guiHoverTimer = null; }
-                    e.target.style.outline = '';
-                    _guiLastHoverNid = null;
-                }
-            });
-            var _guiLongPressTimer = null;
-            var _guiTouchStartX = 0;
-            var _guiTouchStartY = 0;
-            var _guiLongPressTriggered = false;
-            var _guiTouchRecently = false;
-            var _guiLastTapNid = null;
-            var _guiLastTapTime = 0;
-            var _guiSingleTapTimer = null;
-
-            document.addEventListener('touchstart', function(e) {
-                _guiTouchRecently = true;
-                if (!e.touches || e.touches.length !== 1) {
-                    if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
-                    return;
-                }
-                var touch = e.touches[0];
-                _guiTouchStartX = touch.clientX;
-                _guiTouchStartY = touch.clientY;
-                _guiLongPressTriggered = false;
-                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
-                var nid = badge ? _gn(badge) : null;
-                if (!nid) {
-                    var cardEl = document.querySelector('.card') || document.body;
-                    if (cardEl && cardEl.dataset && cardEl.dataset.nid) {
-                        nid = cardEl.dataset.nid;
-                    }
-                }
-                if (nid) {
-                    if (_guiLongPressTimer) clearTimeout(_guiLongPressTimer);
-                    _guiLongPressTimer = setTimeout(function() {
-                        _guiLongPressTriggered = true;
-                        if (_guiSingleTapTimer) { clearTimeout(_guiSingleTapTimer); _guiSingleTapTimer = null; }
-                        if (typeof pycmd !== 'undefined') pycmd('edn_show_context_menu:' + nid + '|||' + Math.round(_guiTouchStartX) + '|||' + Math.round(_guiTouchStartY) + '||||||gui_preview');
-                    }, 450);
-                }
-            }, { passive: true, capture: true });
-
-            document.addEventListener('touchmove', function(e) {
-                if (!e.touches || e.touches.length !== 1) {
-                    if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
-                    return;
-                }
-                var touch = e.touches[0];
-                var dist = Math.hypot(touch.clientX - _guiTouchStartX, touch.clientY - _guiTouchStartY);
-                if (dist > 10) {
-                    if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
-                }
-            }, { passive: true, capture: true });
-
-            document.addEventListener('touchend', function(e) {
-                if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
-                _guiTouchRecently = true;
-                setTimeout(function() { _guiTouchRecently = false; }, 450);
-                if (_guiLongPressTriggered) {
-                    if (e.cancelable) e.preventDefault();
-                    e.stopPropagation();
-                    setTimeout(function() { _guiLongPressTriggered = false; }, 300);
-                    return;
-                }
-                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
-                var nid = badge ? _gn(badge) : null;
-                if (nid) {
-                    var now = Date.now();
-                    if (_guiLastTapNid === nid && (now - _guiLastTapTime < 350)) {
-                        // Double tap : ouvrir dans l'explorateur
-                        if (_guiSingleTapTimer) { clearTimeout(_guiSingleTapTimer); _guiSingleTapTimer = null; }
-                        _guiLastTapNid = null;
-                        _guiLastTapTime = 0;
-                        if (typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
-                        if (e.cancelable) e.preventDefault();
-                        e.stopPropagation();
-                        return;
-                    } else {
-                        // Simple tap : afficher la preview
-                        _guiLastTapNid = nid;
-                        _guiLastTapTime = now;
-                        if (_guiSingleTapTimer) clearTimeout(_guiSingleTapTimer);
-                        _guiSingleTapTimer = setTimeout(function() {
-                            _guiSingleTapTimer = null;
-                            if (typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
-                        }, 220);
-                        if (e.cancelable) e.preventDefault();
-                        e.stopPropagation();
-                        return;
-                    }
-                }
-            }, true);
-
-            document.addEventListener('touchcancel', function(e) {
-                if (_guiLongPressTimer) { clearTimeout(_guiLongPressTimer); _guiLongPressTimer = null; }
-                _guiLongPressTriggered = false;
-                setTimeout(function() { _guiTouchRecently = false; }, 300);
-            }, true);
-
-            document.addEventListener('pointerdown', function(e) {
-                if (e.button === 2) {
-                    var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
-                    var nid = badge ? _gn(badge) : null;
-                    if (nid) {
-                        if (typeof pycmd !== 'undefined') pycmd('edn_right_click_nid:' + nid);
-                    }
-                }
-            });
-
-            document.addEventListener('contextmenu', function(e) {
-                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
-                var nid = badge ? _gn(badge) : null;
-                if (nid) {
-                    if (typeof pycmd !== 'undefined') pycmd('edn_right_click_nid:' + nid);
-                }
-            });
-
-            document.addEventListener("click", function(e) {
-                if (_guiLongPressTriggered || _guiTouchRecently) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return false;
-                }
-                if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
-                    var nid = _gn(e.target);
-                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
-                }
-            });
-            document.addEventListener("keydown", function(e) {
-                if (e.key === 'Tab' && e.ctrlKey) {
-                    if (typeof pycmd !== 'undefined') pycmd('hide_preview_popup');
-                }
-                var badges = Array.from(document.querySelectorAll('.clickable_cards'));
-                var k = e.key.toLowerCase();
-
-                if (e.key === 'ArrowDown' || k === 'n') {
-                    e.preventDefault();
-                    var activeBadge = document.querySelector('.edn-selected-badge');
-                    var activeIdx = badges.indexOf(activeBadge);
-                    
-                    badges.forEach(function(b) {
-                        b.style.outline = 'none';
-                        b.style.boxShadow = 'none';
-                        b.style.transform = 'none';
-                        b.classList.remove('edn-selected-badge');
-                    });
-                    
-                    var nextIdx = activeIdx + 1;
-                    if (nextIdx >= badges.length) nextIdx = 0;
-                    
-                    var newSel = badges[nextIdx];
-                    if (newSel) {
-                        newSel.style.outline = '2px solid #3b82f6';
-                        newSel.style.outlineOffset = '1px';
-                        newSel.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
-                        newSel.style.transform = 'scale(1.05)';
-                        newSel.classList.add('edn-selected-badge');
-                        newSel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                    }
-                } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    var activeBadge = document.querySelector('.edn-selected-badge');
-                    var activeIdx = badges.indexOf(activeBadge);
-                    
-                    badges.forEach(function(b) {
-                        b.style.outline = 'none';
-                        b.style.boxShadow = 'none';
-                        b.style.transform = 'none';
-                        b.classList.remove('edn-selected-badge');
-                    });
-                    
-                    var nextIdx = activeIdx - 1;
-                    if (nextIdx < 0) nextIdx = badges.length - 1;
-                    
-                    var newSel = badges[nextIdx];
-                    if (newSel) {
-                        newSel.style.outline = '2px solid #3b82f6';
-                        newSel.style.outlineOffset = '1px';
-                        newSel.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.5)';
-                        newSel.style.transform = 'scale(1.05)';
-                        newSel.classList.add('edn-selected-badge');
-                        newSel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                    }
-                } else if (k === 'p') {
-                    e.preventDefault();
-                    if (typeof pycmd !== 'undefined') pycmd('gui_preview_key_p');
-                } else if (k === 'r') {
-                    e.preventDefault();
-                    var sel = document.querySelector('.edn-selected-badge');
-                    if (!sel && badges.length > 0) sel = badges[0];
-                    if (sel) {
-                        var nid = _gn(sel);
-                        _guiLastHoverNid = null;
-                        if (typeof pycmd !== 'undefined') pycmd('gui_preview_hover:' + nid);
-                    }
-                } else if (k === 'z' || e.key === 'Escape') {
-                    e.preventDefault();
-                    if (typeof pycmd !== 'undefined') pycmd('gui_preview_mouseout:esc');
-                } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    var sel = document.querySelector('.edn-selected-badge');
-                    if (sel) {
-                        var nid = _gn(sel);
-                        if (typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
-                    }
-                }
-            });
-
-            // Image load listener to dynamically resize
-            function _triggerResize() {
-                var card = document.querySelector('.card');
-                var h = card ? Math.ceil(card.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);
-                if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);
-            }
-            // Use ResizeObserver to dynamically resize whenever the content height changes
-            try {
-                var cardEl = document.querySelector('.card') || document.body;
-                var lastHeight = 0;
-                var resizeObserver = new ResizeObserver(function(entries) {
-                    var card = document.querySelector('.card');
-                    var h = card ? Math.ceil(card.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);
-                    if (h && h !== lastHeight) {
-                        lastHeight = h;
-                        if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);
-                    }
-                });
-                resizeObserver.observe(cardEl);
-            } catch(e) {
-                document.addEventListener('load', function(ev) {
-                    if (ev.target && ev.target.tagName === 'IMG') {
-                        _triggerResize();
-                    }
-                }, true);
-            }
-            </script>
-            """
-            
-            night_script = ""
-            if is_night:
-                night_script = """
-                <script>
-                document.documentElement.classList.add('night-mode', 'nightMode', 'night_mode');
-                if (document.body) document.body.classList.add('night-mode', 'nightMode', 'night_mode');
-                </script>
-                """
-
-            stubs_script = """
-            <script>
-            window.$ = window.jQuery = window.jQuery || function() { return { on: function(){}, off: function(){}, hide: function(){}, show: function(){}, css: function(){}, ready: function(fn){ if(fn) fn(); }, find: function(){ return { length: 0 }; }, each: function(){} }; };
-            window._blockDefaultDragDropBehavior = window._blockDefaultDragDropBehavior || function(){};
-            window._showQuestion = window._showQuestion || function(){};
-            window._drawFlag = window._drawFlag || function(){};
-            window._drawMark = window._drawMark || function(){};
-            window._showAnswer = window._showAnswer || function(){};
-            window.showQuestion = window.showQuestion || function(){};
-            window.showAnswer = window.showAnswer || function(){};
-            </script>
-            """
-
-            # stdHtml ne charge pas MathJax automatiquement — on le passe via js=
-            # afin que le LaTeX \(...\) et \[...\] soit rendu correctement.
-            full_preview_html = (
-                stubs_script
-                + css_link
-                + scoped_css
-                + night_script
-                + gui_hover_script
-                + '<div class="card">'
-                + isolated
-                + '</div>'
-                + pref_script
-            )
+        if not updated_in_dom and web:
+            full_preview_html = self._build_full_preview_html(data, is_night)
             try:
                 web.stdHtml(
                     full_preview_html,
-                    js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"],
-                    mathjax=True
+                    js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
                 )
             except TypeError:
                 try:
                     web.stdHtml(
                         full_preview_html,
-                        js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"]
-                    )
-                except Exception:
-                    web.stdHtml(
-                        full_preview_html,
+                        js=["js/vendor/jquery.min.js", "js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"],
                         mathjax=True
                     )
+                except Exception:
+                    web.stdHtml(full_preview_html)
+            self._preview_shell_ready = True
 
-            dlg.show()
-            dlg.raise_()
-            # Relancer le flag de protection après dlg.show() : le premier show() de la
-            # WebView peut provoquer un ActivationChange différé sur la fenêtre parente.
-            self._is_showing_preview = True
+        dlg.show()
+        dlg.raise_()
+
+        # Ajustement rapide de la hauteur
+        def _quick_resize():
             try:
-                QTimer.singleShot(1200, lambda: setattr(self, '_is_showing_preview', False))
+                if not self.isVisible() or not dlg or not dlg.isVisible():
+                    return
+                js = """
+                (function() {
+                    var cardEl = document.getElementById('edn_card_container') || document.querySelector('.card');
+                    return cardEl ? Math.ceil(cardEl.getBoundingClientRect().height) : 0;
+                })()
+                """
+                web.evalWithCallback(js, lambda h: self._adjust_preview_height(dlg, h))
             except Exception:
                 pass
-            
-            # Dimensionnement initial : commencer petit pour éviter les saccades
-            # puis auto-resize rapidement via _quick_resize
-            dlg.resize(dlg.width(), 200)
-            from aqt.qt import QTimer
 
-            def _quick_resize():
-                try:
-                    js = """
-                    (function() {
-                        var cardEl = document.querySelector('.card');
-                        return cardEl ? Math.ceil(cardEl.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);
-                    })()
-                    """
-                    web.evalWithCallback(js, lambda h: self._adjust_preview_height(dlg, h))
-                except Exception:
-                    pass
+        QTimer.singleShot(40, _quick_resize)
+        QTimer.singleShot(180, _quick_resize)
 
-            def _try_typeset(attempts=0):
-                """Retry MathJax typeset every 100ms until available (max 1.5s)."""
-                def _check(ready):
-                    if ready:
-                        web.eval(
-                            "if (MathJax.typesetClear) { try { MathJax.typesetClear(); } catch(e) {} } "
-                            "MathJax.typesetPromise().then(function() {"
-                            "  setTimeout(function() {"
-                            "    var cardEl = document.querySelector('.card');"
-                            "    var h = cardEl ? Math.ceil(cardEl.getBoundingClientRect().height) : (document.body ? document.body.scrollHeight : 0);"
-                            "    if (typeof pycmd !== 'undefined') pycmd('edn_preview_resize:' + h);"
-                            "  }, 50);"
-                            "}).catch(function(){});"
-                        )
-                        # Réajuster la hauteur 150ms après le typeset
-                        QTimer.singleShot(150, _quick_resize)
-                        # Réajustement tardif pour les formules complexes
-                        QTimer.singleShot(500, _quick_resize)
-                    elif attempts < 15:
-                        QTimer.singleShot(100, lambda: _try_typeset(attempts + 1))
-                    else:
-                        # MathJax non disponible : redimensionner quand même
-                        _quick_resize()
-                try:
-                    web.evalWithCallback(
-                        "typeof MathJax !== 'undefined' && !!MathJax.typesetPromise",
-                        _check
-                    )
-                except Exception:
-                    _quick_resize()
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        mode_str = "DOM in-place" if updated_in_dom else "stdHtml full"
+        _profiler_log("PREVIEW", f"Carte nid={nid_str} affichee via {mode_str} (cache={was_cached})", elapsed_ms=elapsed_ms)
 
-            # Ajustements initiaux : rapide (30ms), moyen (100ms), tardif (300ms)
-            QTimer.singleShot(30, _quick_resize)
-            QTimer.singleShot(100, _quick_resize)
-            # Lancement du typeset MathJax
-            QTimer.singleShot(100, lambda: _try_typeset())
-            # Ajustement final tardif pour les contenus lents
-            QTimer.singleShot(500, _quick_resize)
-        except Exception as ex:
-            from aqt.utils import tooltip
-            tooltip("Erreur preview : " + str(ex))
+        # Planification du préchargement économique des 2 cartes en dessous (après 250ms de lecture)
+        self._schedule_economic_prefetch(nid_str)
 
     def _adjust_preview_height(self, dlg, h):
+        if not self.isVisible() or not dlg or not dlg.isVisible():
+            return
+        if not h:
+            return
         try:
-            screen = QApplication.primaryScreen().availableGeometry()
+            h_val = float(h)
+            if h_val <= 10:
+                return
+        except (ValueError, TypeError):
+            return
+
+        try:
+            screen_obj = self.screen()
+            if not screen_obj:
+                screen_obj = QApplication.screenAt(self.geometry().center())
+            if not screen_obj:
+                screen_obj = QApplication.primaryScreen()
+            screen = screen_obj.availableGeometry() if screen_obj else QRect(0, 0, 1920, 1080)
+
             y_min = screen.top() + 10
             y_max = screen.bottom() - 10
             absolute_max = screen.height() - 40
-            
-            # Constrain to this dialog (self)
+
             try:
-                self.objectName() # Check if alive
+                self.objectName()
                 if self.height() > 100:
-                    y_min = self.y() + 10
-                    y_max = self.y() + self.height() - 10
-                    absolute_max = self.height() - 20
+                    y_min = max(y_min, self.y() - 100)
+                    y_max = min(y_max, self.y() + self.height() + 100)
             except Exception:
                 pass
         except Exception:
             y_min = 10
             y_max = 800
             absolute_max = 600
-            try:
-                absolute_max = mw.height() - 40
-                y_min = mw.y() + 10
-                y_max = mw.y() + mw.height() - 10
-            except Exception:
-                pass
 
-        if h and h > 0:
-            try:
-                new_height = min(absolute_max, max(50, int(float(h)) + 4))
-            except (ValueError, TypeError):
-                new_height = 200
-        else:
-            new_height = 200
+        new_height = min(absolute_max, max(50, int(h_val) + 4))
 
-        dlg.resize(dlg.width(), new_height)
-
+        if abs(dlg.height() - new_height) > 4:
+            dlg.resize(dlg.width(), new_height)
 
         if hasattr(self, '_preview_web') and self._preview_web:
             try:
@@ -8271,7 +9206,6 @@ class LinkedCardsDialog(QDialog):
             except Exception:
                 pass
 
-        # Slide up if it overflows the bottom of the screen/parent window
         try:
             pos = dlg.pos()
             if pos.y() + new_height > y_max:
@@ -8324,6 +9258,9 @@ class LinkedCardsDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def check_hide_preview(self):
+        if not self.isVisible():
+            self.hide_preview_popup()
+            return
         try:
             if getattr(self, '_context_menu_active', False):
                 from aqt.qt import QTimer
@@ -8340,20 +9277,17 @@ class LinkedCardsDialog(QDialog):
                 pass
             if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
                 pos = QCursor.pos()
-                # Build an extended safe zone: union of popup rect + button rect + 30px margin
-                safe_rect = QRect(self._preview_dlg.geometry())
+                is_in_dlg = self._preview_dlg.geometry().adjusted(-6, -6, 6, 6).contains(pos)
+                is_in_btn = False
                 if hasattr(self, '_preview_current_widget') and self._preview_current_widget:
                     try:
                         self._preview_current_widget.objectName()
                         btn_global = self._preview_current_widget.mapToGlobal(QPoint(0, 0))
                         btn_rect = QRect(btn_global, self._preview_current_widget.size())
-                        safe_rect = safe_rect.united(btn_rect)
+                        is_in_btn = btn_rect.adjusted(-6, -6, 6, 6).contains(pos)
                     except (RuntimeError, Exception):
                         self._preview_current_widget = None
-                # Inflate safe zone by 30px on all sides (plus large pour laisser le temps
-                # de passer d'un badge à l'autre dans la preview-in-preview)
-                safe_rect.adjust(-30, -30, 30, 30)
-                if safe_rect.contains(pos):
+                if is_in_dlg or is_in_btn:
                     return
                 self.hide_preview_popup()
         except RuntimeError:
@@ -8402,62 +9336,119 @@ class LinkedCardsDialog(QDialog):
         self.insert_selected()
 
     def insert_selected(self):
+        self.hide_preview_popup()
         rows = self.results_table.selectionModel().selectedRows()
         if not rows: return
         
         items_raw = []
         for row in rows:
-            data = self.results_table.item(row.row(), 0).data(Qt.ItemDataRole.UserRole)
+            data = self.results_table.item(row.row(), self.COL_RECTO).data(Qt.ItemDataRole.UserRole)
             items_raw.append((data['nid'], data['recto']))
             
         if not items_raw:
             return
         
         self._is_inserting = True
-        self.close()
+        self.hide()
         
         mirror_req = getattr(self, 'mirror_cb', None) and self.mirror_cb.isChecked()
+        _profiler_log("GUI:INSERT_SELECTED", f"User validated insertion: items_raw={items_raw}, selected_text={self.selected_text!r}, mirror_req={mirror_req}, dialog.target_fidx={self.target_fidx}", caller="LinkedCardsDialog:insert_selected")
+        
         # Mode hyperlien : autorisé UNIQUEMENT si une seule carte est sélectionnée
         if self.selected_text and len(items_raw) == 1:
             nid = items_raw[0][0]
+            _profiler_log("GUI:INSERT_SELECTED", f"Hyperlink mode triggered: nid={nid}, text={self.selected_text!r}", caller="LinkedCardsDialog:insert_selected")
             from aqt.qt import QTimer
-            QTimer.singleShot(0, lambda: self.inserter.insert_link_with_text(nid, self.selected_text, mirror_requested=mirror_req))
+            def _insert_hl():
+                try:
+                    self.inserter.insert_link_with_text(nid, self.selected_text, mirror_requested=mirror_req, target_fidx=self.target_fidx)
+                finally:
+                    self.close()
+            QTimer.singleShot(0, _insert_hl)
         else:
             # Détection ultra-précise : le tiret doit être juste avant le curseur sur la ligne active
-            _dash_detection_js = """
+            _dash_detection_js = r"""
             (function() {
                 try {
-                    var marker = null;
-                    function findMarker(root) {
-                        if (!root) return null;
-                        if (root.querySelector) {
-                            var m = root.querySelector('[id="edn-cursor-marker"]');
-                            if (m) return m;
-                        }
-                        if (root.shadowRoot) { var m = findMarker(root.shadowRoot); if (m) return m; }
-                        if (root.children) {
-                            for (var i = 0; i < root.children.length; i++) {
-                                var m = findMarker(root.children[i]); if (m) return m;
+                    function _getAllRoots(root) {
+                        root = root || document.body;
+                        var roots = [];
+                        if (!root) return roots;
+                        if (root.shadowRoot) roots.push(root.shadowRoot);
+                        var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                        for (var i = 0; i < all.length; i++) {
+                            if (all[i].shadowRoot) {
+                                roots.push(all[i].shadowRoot);
+                                roots.push(..._getAllRoots(all[i].shadowRoot));
                             }
                         }
-                        return null;
+                        return roots;
                     }
-                    marker = findMarker(document.body);
-                    if (!marker) {
-                        document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                            if (!marker) marker = findMarker(el);
-                        });
+                    function _queryAll(sel) {
+                        if (typeof window._ednQueryAllRoots === 'function') return window._ednQueryAllRoots(sel);
+                        var res = Array.from(document.querySelectorAll(sel));
+                        var sRoots = _getAllRoots(document.body);
+                        for (var i = 0; i < sRoots.length; i++) {
+                            var list = sRoots[i].querySelectorAll(sel);
+                            for (var j = 0; j < list.length; j++) {
+                                if (!res.includes(list[j])) res.push(list[j]);
+                            }
+                        }
+                        return res;
                     }
-                    if (!marker) return false;
+
+                    // 1. Chercher la position de curseur la plus récente
+                    var targetRange = null;
+                    if (typeof window._ednGetEditorSelection === 'function') {
+                        var s = window._ednGetEditorSelection();
+                        if (s && s.rangeCount > 0 && s.getRangeAt(0).startContainer.isConnected) {
+                            if (typeof window._ednFindEditableAncestor === 'function' ? window._ednFindEditableAncestor(s.getRangeAt(0).startContainer) : true) {
+                                targetRange = s.getRangeAt(0);
+                            }
+                        }
+                    }
+                    if (!targetRange) {
+                        var candRanges = [window._ednLastValidRange, window._ednPersistentRange, window._ednSavedRange];
+                        for (var i = 0; i < candRanges.length; i++) {
+                            var cr = candRanges[i];
+                            if (cr && cr.startContainer && cr.startContainer.isConnected) {
+                                if (typeof window._ednFindEditableAncestor === 'function' ? window._ednFindEditableAncestor(cr.startContainer) : true) {
+                                    targetRange = cr;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    var marker = null;
+                    var oldMarkers = _queryAll('[id="edn-cursor-marker"]');
+
+                    // Si nous avons une position de curseur plus récente (notamment si l'utilisateur a tapé dans l'éditeur pendant que le dialogue était ouvert)
+                    if (targetRange) {
+                        oldMarkers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+                        try {
+                            var r = targetRange.cloneRange();
+                            r.collapse(false);
+                            marker = document.createElement("span");
+                            marker.id = "edn-cursor-marker";
+                            r.insertNode(marker);
+                        } catch(e) {
+                            marker = null;
+                        }
+                    } else if (oldMarkers.length > 0) {
+                        marker = oldMarkers[oldMarkers.length - 1];
+                    }
+
+                    if (!marker) return JSON.stringify({ hasDash: false, textBefore: "" });
                     
                     var node = marker.parentNode;
-                    if (!node) return false;
+                    if (!node) return JSON.stringify({ hasDash: false, textBefore: "" });
                     var blockParent = node;
                     while (blockParent && blockParent.tagName !== 'ANKI-EDITABLE' && !blockParent.isContentEditable) {
                         if (['LI', 'P', 'DIV'].indexOf(blockParent.tagName) >= 0) break;
                         blockParent = blockParent.parentNode;
                     }
-                    if (!blockParent) return false;
+                    if (!blockParent) blockParent = node;
                     
                     // Collecte le texte avant le marker sur la même ligne (reset aux BR),
                     // en gérant le cas où le marker est imbriqué dans un sous-élément du blockParent
@@ -8483,52 +9474,137 @@ class LinkedCardsDialog(QDialog):
                             if (chn[i].contains && chn[i].contains(mkr)) {
                                 text += _textBeforeMarkerInNode(chn[i], mkr); break;
                             }
+                            if (chn[i].tagName === 'BR') { text = ''; continue; }
                             text += chn[i].textContent || '';
                         }
                         return text;
                     }
                     var trimmedBefore = _textBeforeMarkerInLine(blockParent, marker).trim();
-                    // Renvoie vrai si la ligne se termine par un tiret (ignorant les espaces)
-                    return trimmedBefore.endsWith('—') || trimmedBefore.endsWith('-') || trimmedBefore.endsWith('\\u2014');
-                } catch(e) { return false; }
+                    var hasDash = /[-—–\u2014\u2013]\s*$/.test(trimmedBefore);
+                    var curFieldIdx = (typeof window._ednResolveActiveFieldIndex === 'function')
+                        ? window._ednResolveActiveFieldIndex()
+                        : -1;
+                    if (curFieldIdx < 0 && typeof window._ednSavedFieldIndex === 'number') {
+                        curFieldIdx = window._ednSavedFieldIndex;
+                    }
+                    if (curFieldIdx < 0 && typeof window._ednLastActiveField === 'number') {
+                        curFieldIdx = window._ednLastActiveField;
+                    }
+                    return JSON.stringify({ hasDash: hasDash, textBefore: trimmedBefore, fieldIndex: curFieldIdx });
+                } catch(e) { return JSON.stringify({ hasDash: false, textBefore: "", fieldIndex: -1 }); }
             })();
             """
             
-            def _do_insert(has_dash):
-                if has_dash:
-                    # Tiret détecté : masquer le recto UNIQUE pour le premier élément (déjà saisi),
-                    # mais conserver les rectos des éléments suivants sur des lignes distinctes !
-                    items = []
-                    for idx, (nid, recto) in enumerate(items_raw):
+            def _do_insert(res_json):
+                import json
+                _profiler_log("GUI:DO_INSERT", f"_do_insert received res_json: {res_json!r}", caller="LinkedCardsDialog:_do_insert")
+                data = {}
+                try:
+                    if isinstance(res_json, str):
+                        data = json.loads(res_json)
+                    elif isinstance(res_json, dict):
+                        data = res_json
+                    elif isinstance(res_json, bool):
+                        data = {"hasDash": res_json, "textBefore": ""}
+                except Exception as e:
+                    _profiler_log("GUI:DO_INSERT", f"JSON parsing error: {e}", caller="LinkedCardsDialog:_do_insert")
+                    data = {"hasDash": False, "textBefore": ""}
+
+                has_dash = bool(data.get("hasDash", False))
+                text_before = str(data.get("textBefore", ""))
+
+                # Candidats pour la détection du mode (basé sur le premier élément ou le contexte)
+                cands = []
+                first_nid, first_recto = items_raw[0]
+                first_smart = first_recto
+                try:
+                    t_note0 = mw.col.get_note(int(first_nid))
+                    s_note = _get_editor_note(self.editor)
+                    computed = generate_smart_link_label(s_note, t_note0)
+                    if computed:
+                        first_smart = computed
+                    cands = [first_recto, first_smart]
+                    if t_note0:
+                        raw_r = get_note_recto(t_note0, 100)
+                        if raw_r and raw_r not in cands:
+                            cands.append(raw_r)
+                        if t_note0.fields:
+                            f0 = re.sub(r'<[^>]+>', '', t_note0.fields[0]).strip()
+                            if f0 and f0 not in cands:
+                                cands.append(f0)
+                except Exception:
+                    cands = [first_recto]
+
+                mode = _detect_link_insertion_mode(text_before, has_dash, cands)
+
+                items = []
+                for idx, (nid, recto) in enumerate(items_raw):
+                    smart_desc = recto
+                    t_note = None
+                    try:
+                        t_note = mw.col.get_note(int(nid))
+                        s_note = _get_editor_note(self.editor)
+                        computed = generate_smart_link_label(s_note, t_note)
+                        if computed:
+                            smart_desc = computed
+                    except Exception:
+                        pass
+
+                    if mode == "bare":
+                        # Le tiret est déjà sur la ligne (ex: "Atonie ----" ou "Atonie —")
+                        # TOUTES les cartes insérées doivent être de simples badges NID
+                        items.append((nid, None))
+                    elif mode == "dash_only":
+                        # Le nom est saisi sans tiret (ex: "Atonie")
+                        # Le premier insère le tiret, les suivants sont des badges NID
                         if idx == 0:
-                            items.append((nid, None))
+                            items.append((nid, ""))
                         else:
-                            items.append((nid, recto))
-                else:
-                    items = []
-                    for nid, recto in items_raw:
-                        smart_desc = recto
-                        try:
-                            t_note = mw.col.get_note(int(nid))
-                            s_note = _get_editor_note(self.editor)
-                            computed = generate_smart_link_label(s_note, t_note)
-                            if computed:
-                                smart_desc = computed
-                        except Exception:
-                            pass
+                            items.append((nid, None))
+                    else:
+                        # Mode standard / full : chaque carte a son titre sur sa propre ligne
                         items.append((nid, smart_desc))
+
+                detected_fidx = data.get("fieldIndex", -1)
+                final_fidx = detected_fidx if (detected_fidx is not None and detected_fidx >= 0) else self.target_fidx
+                _profiler_log("GUI:DO_INSERT", f"DECISION: detected_fidx={detected_fidx}, dialog.target_fidx={self.target_fidx} -> final_fidx={final_fidx}, mode={mode}, items={items}", caller="LinkedCardsDialog:_do_insert")
+                
                 from aqt.qt import QTimer
-                QTimer.singleShot(0, lambda: self.inserter.insert_link(items, mirror_requested=mirror_req))
+                def _exec_insert():
+                    try:
+                        if hasattr(self.editor, "web") and self.editor.web:
+                            try:
+                                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
+                            except Exception:
+                                pass
+                        _profiler_log("GUI:EXEC_INSERT", f"calling inserter.insert_link: items={items}, target_fidx={final_fidx}", caller="LinkedCardsDialog:_exec_insert")
+                        self.inserter.insert_link(items, mirror_requested=mirror_req, target_fidx=final_fidx)
+                    finally:
+                        self.close()
+                QTimer.singleShot(0, _exec_insert)
             
             try:
+                _profiler_log("GUI:INSERT_SELECTED", "evaluating _dash_detection_js in editor webview", caller="LinkedCardsDialog:insert_selected")
                 self.editor.web.evalWithCallback(
                     _dash_detection_js,
                     _do_insert
                 )
-            except Exception:
-                # Fallback si l'éditeur n'est plus disponible
+            except Exception as e:
+                _profiler_log("GUI:INSERT_SELECTED", f"evalWithCallback failed: {e} -> fallback", caller="LinkedCardsDialog:insert_selected")
+                # Fallback si l'editeur n'est plus disponible
                 from aqt.qt import QTimer
-                QTimer.singleShot(0, lambda: self.inserter.insert_link(items_raw, mirror_requested=mirror_req))
+                def _exec_fallback():
+                    try:
+                        if hasattr(self.editor, "web") and self.editor.web:
+                            try:
+                                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
+                            except Exception:
+                                pass
+                        _profiler_log("GUI:EXEC_FALLBACK", f"calling inserter.insert_link with fallback target_fidx={self.target_fidx}", caller="LinkedCardsDialog:_exec_fallback")
+                        self.inserter.insert_link(items_raw, mirror_requested=mirror_req, target_fidx=self.target_fidx)
+                    finally:
+                        self.close()
+                QTimer.singleShot(0, _exec_fallback)
 
 def open_search_dialog(editor, selected_text=""):
     global _active_dialog
@@ -8537,52 +9613,75 @@ def open_search_dialog(editor, selected_text=""):
     # Sauvegarder : range courant + index du champ actif
     editor.web.eval("""
         (function() {
-            // Nettoyer les anciens markers en premier — nettoyage récursif complet (tous les shadow roots)
-            function _cleanMarkers() {
-                function _findAll(root, found, visited) {
-                    if (!root || visited.has(root)) return;
-                    visited.add(root);
-                    if (root.querySelectorAll) {
-                        var ms = root.querySelectorAll('[id="edn-cursor-marker"]');
-                        for (var i = 0; i < ms.length; i++) { if (!found.includes(ms[i])) found.push(ms[i]); }
-                    }
-                    if (root.shadowRoot) _findAll(root.shadowRoot, found, visited);
-                    if (root.children) {
-                        for (var i = 0; i < root.children.length; i++) _findAll(root.children[i], found, visited);
-                    }
-                    if (root.querySelectorAll) {
-                        root.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                            _findAll(el, found, visited);
-                            if (el.shadowRoot) _findAll(el.shadowRoot, found, visited);
-                        });
+            function _getAllRoots(root) {
+                root = root || document.body;
+                var roots = [];
+                if (!root) return roots;
+                if (root.shadowRoot) roots.push(root.shadowRoot);
+                var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i].shadowRoot) {
+                        roots.push(all[i].shadowRoot);
+                        roots.push(..._getAllRoots(all[i].shadowRoot));
                     }
                 }
-                var found = [], visited = new Set();
-                _findAll(document.body, found, visited);
-                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) { _findAll(el, found, visited); });
-                found.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+                return roots;
+            }
+            function _queryAll(sel) {
+                if (typeof window._ednQueryAllRoots === 'function') return window._ednQueryAllRoots(sel);
+                var res = Array.from(document.querySelectorAll(sel));
+                var sRoots = _getAllRoots(document.body);
+                for (var i = 0; i < sRoots.length; i++) {
+                    var list = sRoots[i].querySelectorAll(sel);
+                    for (var j = 0; j < list.length; j++) {
+                        if (!res.includes(list[j])) res.push(list[j]);
+                    }
+                }
+                return res;
             }
 
+            // Nettoyer les anciens markers
+            var oldMarkers = _queryAll('[id="edn-cursor-marker"]');
+            oldMarkers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+
             // Si _ednSavedRange est déjà défini (par handle_editor_button), le conserver
-            // et juste replacer le marker à cet endroit. Ne pas écraser le range sauvegardé.
             let hadSavedRange = !!(window._ednSavedRange);
 
             if (!hadSavedRange) {
-                // Pas de range sauvegardé : en capturer un maintenant
-                let active = document.activeElement;
-                let sel = null;
-                if (active && active.shadowRoot) sel = active.shadowRoot.getSelection();
-                else sel = window.getSelection();
+                // Priorité 1 : Sélection active dans l'éditeur (curseur en direct)
+                let sel = (typeof window._ednGetEditorSelection === 'function')
+                    ? window._ednGetEditorSelection()
+                    : null;
+                if (!sel) {
+                    let active = document.activeElement;
+                    if (active && active.shadowRoot && active.shadowRoot.getSelection) {
+                        sel = active.shadowRoot.getSelection();
+                    }
+                    if (!sel) sel = window.getSelection();
+                }
+                if (sel && sel.rangeCount > 0) {
+                    var r0 = sel.getRangeAt(0);
+                    if (r0 && r0.startContainer && r0.startContainer.isConnected) {
+                        if (typeof window._ednFindEditableAncestor === 'function' ? window._ednFindEditableAncestor(r0.startContainer) : true) {
+                            window._ednSavedRange = r0.cloneRange();
+                        }
+                    }
+                }
 
-                if (window._ednPersistentRange) {
-                    window._ednSavedRange = window._ednPersistentRange;
-                } else if (sel && sel.rangeCount > 0) {
-                    window._ednSavedRange = sel.getRangeAt(0).cloneRange();
+                // Priorité 2 : Fallback sur les ranges mémorisés
+                if (!window._ednSavedRange) {
+                    var candRanges = [window._ednLastValidRange, window._ednPersistentRange];
+                    for (var i = 0; i < candRanges.length; i++) {
+                        var cr = candRanges[i];
+                        if (cr && cr.startContainer && cr.startContainer.isConnected) {
+                            if (typeof window._ednFindEditableAncestor === 'function' ? window._ednFindEditableAncestor(cr.startContainer) : true) {
+                                window._ednSavedRange = cr.cloneRange();
+                                break;
+                            }
+                        }
+                    }
                 }
             }
-
-            // Nettoyer les anciens markers avant d'en placer un nouveau
-            _cleanMarkers();
 
             if (window._ednSavedRange) {
                 try {
@@ -8596,24 +9695,14 @@ def open_search_dialog(editor, selected_text=""):
 
             // Sauvegarder l'index du champ actif pour restauration apres fermeture dialog
             window._ednSavedFieldIndex = -1;
-            let editables = Array.from(document.querySelectorAll('anki-editable'));
-            for (let i = 0; i < editables.length; i++) {
-                let el = editables[i];
-                if (window._ednSavedRange) {
-                    let node = window._ednSavedRange.commonAncestorContainer;
-                    while (node) {
-                        if (node === el) {
-                            window._ednSavedFieldIndex = i;
-                            break;
-                        }
-                        node = node.parentNode || (node.getRootNode && node.getRootNode().host);
-                    }
-                    if (window._ednSavedFieldIndex >= 0) break;
-                }
-                if (document.activeElement === el || (el.shadowRoot && el.shadowRoot.activeElement)) {
-                    window._ednSavedFieldIndex = i;
-                    break;
-                }
+            var curFieldIdx = (typeof window._ednResolveActiveFieldIndex === 'function')
+                ? window._ednResolveActiveFieldIndex()
+                : -1;
+            if (curFieldIdx >= 0) {
+                window._ednSavedFieldIndex = curFieldIdx;
+                window._ednLastActiveField = curFieldIdx;
+            } else if (typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) {
+                window._ednSavedFieldIndex = window._ednLastActiveField;
             }
 
             // Détecter si la LIGNE courante (entre deux <br>) contient déjà un titre (em dash —)
@@ -8860,37 +9949,112 @@ def _patch_editor_save_now():
             continue
 
         def _make_patched(orig_method):
-            def patched_call_after_note_saved(self, callback, keepFocus=False):
-                if not getattr(self, "web", None):
-                    orig_method(self, callback, keepFocus)
+            def patched_call_after_note_saved(self, callback, *args, **kwargs):
+                web = getattr(self, "web", None)
+                if not web:
+                    if callback:
+                        try:
+                            from aqt import mw
+                            mw.progress.single_shot(10, callback)
+                        except Exception:
+                            try:
+                                callback()
+                            except Exception:
+                                pass
                     return
 
                 try:
                     from aqt.qt import sip
-                    if sip.isdeleted(self.web):
-                        from aqt import mw
-                        mw.progress.single_shot(10, callback)
+                    if sip.isdeleted(web):
+                        if callback:
+                            try:
+                                from aqt import mw
+                                mw.progress.single_shot(10, callback)
+                            except Exception:
+                                callback()
                         return
                 except Exception:
                     pass
 
                 def on_check(defined):
                     if defined:
-                        orig_method(self, callback, keepFocus)
+                        try:
+                            orig_method(self, callback, *args, **kwargs)
+                        except Exception:
+                            if callback:
+                                try:
+                                    callback()
+                                except Exception:
+                                    pass
                     else:
-                        from aqt import mw
-                        mw.progress.single_shot(10, callback)
+                        if callback:
+                            try:
+                                from aqt import mw
+                                mw.progress.single_shot(10, callback)
+                            except Exception:
+                                callback()
 
                 try:
-                    self.web.evalWithCallback("typeof saveNow !== 'undefined'", on_check)
+                    web.evalWithCallback("typeof saveNow !== 'undefined'", on_check)
                 except Exception:
-                    orig_method(self, callback, keepFocus)
+                    if callback:
+                        try:
+                            from aqt import mw
+                            mw.progress.single_shot(10, callback)
+                        except Exception:
+                            try:
+                                callback()
+                            except Exception:
+                                pass
 
             return patched_call_after_note_saved
 
         patched = _make_patched(orig_fn)
         cls.call_after_note_saved = patched
         cls.saveNow = patched
+
+        orig_keep = getattr(cls, "loadNoteKeepingFocus", None)
+        if orig_keep and not hasattr(cls, "_edn_orig_loadNoteKeepingFocus"):
+            cls._edn_orig_loadNoteKeepingFocus = orig_keep
+            def _make_patched_keep(orig_k):
+                def patched_loadNoteKeepingFocus(self, *args, **kwargs):
+                    cur_fld = getattr(self, "currentField", None)
+                    if cur_fld is None:
+                        last_fld = getattr(self, "last_field_index", None)
+                        if last_fld is not None:
+                            if hasattr(self, "load_note"):
+                                return self.load_note(focus_to=last_fld)
+                            elif hasattr(self, "loadNote"):
+                                return self.loadNote(focusTo=last_fld)
+                    return orig_k(self, *args, **kwargs)
+                return patched_loadNoteKeepingFocus
+            cls.loadNoteKeepingFocus = _make_patched_keep(orig_keep)
+
+        orig_load = getattr(cls, "loadNote", None)
+        if orig_load and not hasattr(cls, "_edn_orig_loadNote"):
+            cls._edn_orig_loadNote = orig_load
+            def _make_patched_load(orig_l):
+                def patched_loadNote(self, focusTo=None, *args, **kwargs):
+                    if getattr(self, "note", None):
+                        self._edn_last_loaded_note_key = getattr(self.note, "id", 0) or id(self.note)
+                    return orig_l(self, focusTo=focusTo, *args, **kwargs)
+                return patched_loadNote
+            cls.loadNote = _make_patched_load(orig_load)
+
+        orig_bridge = getattr(cls, "onBridgeCmd", None)
+        if orig_bridge and not hasattr(cls, "_edn_orig_onBridgeCmd"):
+            cls._edn_orig_onBridgeCmd = orig_bridge
+            def _make_patched_bridge(orig_b):
+                def patched_onBridgeCmd(self, cmd, *args, **kwargs):
+                    if isinstance(cmd, str):
+                        if cmd.startswith("focus:"):
+                            try:
+                                self.last_field_index = int(cmd.split(":", 1)[1])
+                            except Exception:
+                                pass
+                    return orig_b(self, cmd, *args, **kwargs)
+                return patched_onBridgeCmd
+            cls.onBridgeCmd = _make_patched_bridge(orig_bridge)
 
 
 # --- Learn Now & Grade Now Context Menu Integration ---
@@ -8999,12 +10163,12 @@ def _get_recto_for_nid(nid_str: str) -> str:
     except Exception:
         return "[Erreur]"
 
-def link_card_to_active_editor(target_nid: str) -> None:
+def link_card_to_active_editor(target_nid: str, webview=None) -> None:
     if not target_nid:
         return
     
     from .editor_assistant import get_active_editor
-    editor = get_active_editor()
+    editor = get_active_editor(webview)
     if not editor:
         from aqt.utils import tooltip
         tooltip("Aucun éditeur actif pour lier la carte.")
@@ -9026,129 +10190,228 @@ def link_card_to_active_editor(target_nid: str) -> None:
     
     recto = _get_recto_for_nid(target_nid)
     
+    # Variantes du titre pour la détection
+    candidate_names = [recto]
+    try:
+        t_note = mw.col.get_note(int(target_nid))
+        raw_recto = get_note_recto(t_note, 100)
+        if raw_recto and raw_recto not in candidate_names:
+            candidate_names.append(raw_recto)
+        if t_note.fields:
+            f0 = re.sub(r'<[^>]+>', '', t_note.fields[0]).strip()
+            if f0 and f0 not in candidate_names:
+                candidate_names.append(f0)
+    except Exception:
+        pass
+    
     inserter = LinkInserter(editor)
     
-    # Détecter le tiret et poser le marker à la sélection courante de l'éditeur
-    _dash_detection_js = """
+    # Détecter le tiret, insérer le marker et analyser la ligne avant le curseur
+    _dash_detection_js = r"""
     (function() {
         try {
-            // 1. Nettoyer les anciens markers
-            function _cleanMarkers() {
-                function _findAll(root, found, visited) {
-                    if (!root || visited.has(root)) return;
-                    visited.add(root);
-                    if (root.querySelectorAll) {
-                        var ms = root.querySelectorAll('[id="edn-cursor-marker"]');
-                        for (var i = 0; i < ms.length; i++) { if (!found.includes(ms[i])) found.push(ms[i]); }
-                    }
-                    if (root.shadowRoot) _findAll(root.shadowRoot, found, visited);
-                    if (root.children) {
-                        for (var i = 0; i < root.children.length; i++) _findAll(root.children[i], found, visited);
-                    }
-                    if (root.querySelectorAll) {
-                        root.querySelectorAll('anki-editable, anki-editor').forEach(function(el) {
-                            _findAll(el, found, visited);
-                            if (el.shadowRoot) _findAll(el.shadowRoot, found, visited);
-                        });
+            function _getAllRoots(root) {
+                root = root || document.body;
+                var roots = [];
+                if (!root) return roots;
+                if (root.shadowRoot) roots.push(root.shadowRoot);
+                var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i].shadowRoot) {
+                        roots.push(all[i].shadowRoot);
+                        roots.push(..._getAllRoots(all[i].shadowRoot));
                     }
                 }
-                var found = [], visited = new Set();
-                _findAll(document.body, found, visited);
-                document.querySelectorAll('anki-editable, anki-editor').forEach(function(el) { _findAll(el, found, visited); });
-                found.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+                return roots;
             }
-            _cleanMarkers();
 
-            // 2. Trouver la sélection active dans l'éditeur
-            var active = document.activeElement;
-            var sel = null;
-            function _findActiveSel() {
-                if (active && active.shadowRoot) {
-                    var s = active.shadowRoot.getSelection();
-                    if (s && s.rangeCount > 0) return s;
-                }
-                var allHosts = Array.from(document.querySelectorAll('anki-editor, anki-editable'));
-                for (var hi = 0; hi < allHosts.length; hi++) {
-                    var h = allHosts[hi];
-                    if (h.shadowRoot) {
-                        var s2 = h.shadowRoot.getSelection ? h.shadowRoot.getSelection() : null;
-                        if (s2 && s2.rangeCount > 0) return s2;
-                        var inner = Array.from(h.shadowRoot.querySelectorAll('anki-editable'));
-                        for (var ii = 0; ii < inner.length; ii++) {
-                            if (inner[ii].shadowRoot) {
-                                var s3 = inner[ii].shadowRoot.getSelection ? inner[ii].shadowRoot.getSelection() : null;
-                                if (s3 && s3.rangeCount > 0) return s3;
-                            }
+            function _findEditableAncestor(node) {
+                var cur = node;
+                while (cur) {
+                    if (cur.nodeType === 1) {
+                        if (cur.tagName === 'ANKI-EDITABLE' || cur.isContentEditable || cur.contentEditable === 'true' ||
+                            (cur.classList && (cur.classList.contains('editing-area') || cur.classList.contains('rich-text-input')))) {
+                            return cur;
                         }
                     }
+                    cur = cur.parentNode || (cur.getRootNode && cur.getRootNode().host) || cur.host;
                 }
-                return window.getSelection();
+                return null;
             }
-            sel = _findActiveSel();
 
-            // 3. Insérer le marker à la sélection
+            // 1. Nettoyer les anciens markers
+            var oldMarkers = (typeof window._ednQueryAllRoots === 'function')
+                ? window._ednQueryAllRoots('[id="edn-cursor-marker"]')
+                : Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+            oldMarkers.forEach(function(m) { try { m.parentNode.removeChild(m); } catch(e) {} });
+
+            // 2. Trouver un range valide à l'intérieur d'un champ éditable
+            var targetRange = null;
+            var candRanges = [window._ednLastValidRange, window._ednPersistentRange, window._ednSavedRange];
+            for (var i = 0; i < candRanges.length; i++) {
+                var cr = candRanges[i];
+                if (cr && cr.startContainer && cr.startContainer.isConnected) {
+                    if (_findEditableAncestor(cr.startContainer)) {
+                        targetRange = cr;
+                        break;
+                    }
+                }
+            }
+
+            if (!targetRange) {
+                if (typeof window._ednGetEditorSelection === 'function') {
+                    var s = window._ednGetEditorSelection();
+                    if (s && s.rangeCount > 0 && s.getRangeAt(0).startContainer.isConnected && _findEditableAncestor(s.getRangeAt(0).startContainer)) {
+                        targetRange = s.getRangeAt(0);
+                    }
+                }
+            }
+            if (!targetRange) {
+                var s2 = window.getSelection();
+                if (s2 && s2.rangeCount > 0 && s2.getRangeAt(0).startContainer.isConnected && _findEditableAncestor(s2.getRangeAt(0).startContainer)) {
+                    targetRange = s2.getRangeAt(0);
+                }
+            }
+
+            var editableParent = null;
             var marker = null;
-            if (sel && sel.rangeCount > 0) {
-                window._ednSavedRange = sel.getRangeAt(0).cloneRange();
+
+            if (targetRange) {
+                editableParent = _findEditableAncestor(targetRange.startContainer);
                 try {
-                    let r = window._ednSavedRange.cloneRange();
+                    var r = targetRange.cloneRange();
                     r.collapse(false);
                     marker = document.createElement("span");
                     marker.id = "edn-cursor-marker";
                     r.insertNode(marker);
-                } catch(e) {}
+                } catch(e) {
+                    marker = null;
+                }
             }
 
-            if (!marker) return false;
+            // Fallback : Si aucun marker n'a pu être inséré dans un range, utiliser le champ éditable actif
+            if (!marker) {
+                var fIdx = (typeof window._ednSavedFieldIndex === 'number' && window._ednSavedFieldIndex >= 0)
+                    ? window._ednSavedFieldIndex
+                    : ((typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) ? window._ednLastActiveField : 0);
+                
+                var editables = [];
+                if (typeof window._ednQueryAllRoots === 'function') {
+                    editables = window._ednQueryAllRoots('anki-editable, [contenteditable="true"]');
+                } else {
+                    editables = Array.from(document.querySelectorAll('anki-editable, [contenteditable="true"]'));
+                }
+                if (editables.length > 0) {
+                    editableParent = editables[Math.min(fIdx, editables.length - 1)];
+                    try {
+                        marker = document.createElement("span");
+                        marker.id = "edn-cursor-marker";
+                        editableParent.appendChild(marker);
+                    } catch(e) {
+                        marker = null;
+                    }
+                }
+            }
 
-            // 4. Détecter si la ligne se termine par un tiret
-            var node = marker.parentNode;
-            if (!node) return false;
-            var blockParent = node;
+            if (!marker) {
+                return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "" });
+            }
+
+            // Mettre à jour l'index du champ actif
+            var fieldIndex = -1;
+            if (editableParent && typeof window._ednResolveActiveFieldIndex === 'function') {
+                fieldIndex = window._ednResolveActiveFieldIndex({ target: editableParent });
+                if (fieldIndex >= 0) {
+                    window._ednSavedFieldIndex = fieldIndex;
+                    window._ednLastActiveField = fieldIndex;
+                }
+            }
+
+            // 3. Trouver le conteneur de bloc du marker
+            var blockParent = marker.parentNode;
             while (blockParent && blockParent.tagName !== 'ANKI-EDITABLE' && !blockParent.isContentEditable) {
                 if (['LI', 'P', 'DIV'].indexOf(blockParent.tagName) >= 0) break;
                 blockParent = blockParent.parentNode;
             }
-            if (!blockParent) return false;
+            if (!blockParent) blockParent = marker.parentNode;
 
-            // Collecte le texte avant le marker sur la même ligne (reset aux BR),
-            // en gérant le cas où le marker est imbriqué dans un sous-élément du blockParent
-            function _textBeforeMarkerInLine2(container, mkr) {
+            // 4. Collecter le texte de la ligne avant le marker
+            function _textBeforeMarkerInLine(cont, mkr) {
                 var parts = [];
-                var nodes = Array.from(container.childNodes);
+                var nodes = Array.from(cont.childNodes);
                 for (var i = 0; i < nodes.length; i++) {
                     var n = nodes[i];
                     if (n === mkr) break;
                     if (n.contains && n.contains(mkr)) {
-                        parts.push(_textBeforeMarkerInNode2(n, mkr)); break;
+                        parts.push(_textBeforeMarkerInNode(n, mkr));
+                        break;
                     }
                     if (n.tagName === 'BR') { parts = []; continue; }
                     parts.push(n.textContent || '');
                 }
                 return parts.join('');
             }
-            function _textBeforeMarkerInNode2(nd, mkr) {
+            function _textBeforeMarkerInNode(nd, mkr) {
                 var text = '';
                 var chn = Array.from(nd.childNodes);
                 for (var i = 0; i < chn.length; i++) {
                     if (chn[i] === mkr) break;
                     if (chn[i].contains && chn[i].contains(mkr)) {
-                        text += _textBeforeMarkerInNode2(chn[i], mkr); break;
+                        text += _textBeforeMarkerInNode(chn[i], mkr);
+                        break;
                     }
                     text += chn[i].textContent || '';
                 }
                 return text;
             }
-            var trimmedBefore = _textBeforeMarkerInLine2(blockParent, marker).trim();
-            return trimmedBefore.endsWith('—') || trimmedBefore.endsWith('-') || trimmedBefore.endsWith('\\u2014');
-        } catch(e) { return false; }
+
+            var textBefore = _textBeforeMarkerInLine(blockParent, marker).trim();
+            var hasDash = /[-—–\u2014\u2013]\s*$/.test(textBefore);
+
+            return JSON.stringify({
+                markerInserted: true,
+                hasDash: hasDash,
+                textBefore: textBefore,
+                fieldIndex: fieldIndex
+            });
+        } catch(err) {
+            return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "", error: String(err) });
+        }
     })();
     """
     
-    def _do_insert(has_dash):
-        recto_to_insert = None if has_dash else recto
+    def _do_insert(res_json):
+        import json
+        data = {}
         try:
-            inserter.insert_link([(target_nid, recto_to_insert)], mirror_requested=mirror_req)
+            if isinstance(res_json, str):
+                data = json.loads(res_json)
+            elif isinstance(res_json, dict):
+                data = res_json
+            elif isinstance(res_json, bool):
+                data = {"hasDash": res_json, "textBefore": "", "markerInserted": True}
+        except Exception:
+            data = {"hasDash": False, "textBefore": "", "markerInserted": False}
+
+        has_dash = bool(data.get("hasDash", False))
+        text_before = str(data.get("textBefore", ""))
+
+        mode = _detect_link_insertion_mode(text_before, has_dash, candidate_names)
+        if mode == "bare":
+            recto_to_insert = None
+        elif mode == "dash_only":
+            recto_to_insert = ""
+        else:
+            recto_to_insert = recto
+
+        fidx = data.get("fieldIndex", -1)
+        try:
+            inserter.insert_link([(target_nid, recto_to_insert)], mirror_requested=mirror_req, target_fidx=fidx)
+            try:
+                from .editor_assistant import _hide_card_preview_popup
+                _hide_card_preview_popup()
+            except Exception:
+                pass
         except Exception as e:
             from aqt.utils import tooltip
             tooltip(f"Erreur lors de l'insertion : {e}")
@@ -9157,7 +10420,14 @@ def link_card_to_active_editor(target_nid: str) -> None:
         editor.web.evalWithCallback(_dash_detection_js, _do_insert)
     except Exception:
         from aqt.qt import QTimer
-        QTimer.singleShot(0, lambda: inserter.insert_link([(target_nid, recto)], mirror_requested=mirror_req))
+        def _fallback_insert():
+            inserter.insert_link([(target_nid, recto)], mirror_requested=mirror_req)
+            try:
+                from .editor_assistant import _hide_card_preview_popup
+                _hide_card_preview_popup()
+            except Exception:
+                pass
+        QTimer.singleShot(0, _fallback_insert)
 
 def prompt_modify_hyperlink(nid: str, default_text: str, webview) -> None:
     from aqt.qt import QInputDialog
@@ -9174,7 +10444,7 @@ def prompt_modify_hyperlink(nid: str, default_text: str, webview) -> None:
             from .editor_assistant import get_active_editor
             editor = get_active_editor()
             if editor:
-                editor.saveNow(lambda: None)
+                editor_save_now(editor, lambda: None, keep_focus=True)
         except Exception:
             pass
 
@@ -9228,10 +10498,10 @@ def show_card_context_menu(nid: str, pos=None, webview=None, default_text: str =
     if is_preview_popup:
         try:
             from .editor_assistant import get_active_editor
-            if get_active_editor():
+            if get_active_editor(webview):
                 menu.addSeparator()
                 action_link = menu.addAction("Lier cette carte")
-                action_link.triggered.connect(lambda checked=False, n=nid: link_card_to_active_editor(n))
+                action_link.triggered.connect(lambda checked=False, n=nid, w=webview: link_card_to_active_editor(n, webview=w))
         except Exception:
             pass
 
@@ -9363,10 +10633,14 @@ def on_webview_will_show_context_menu(webview, menu) -> None:
     # 3. Check if inside sidebar/mirror assistant preview popup
     elif is_preview_popup:
         try:
-            from .editor_assistant import _current_preview_nid
-            nid = _current_preview_nid
+            from .editor_assistant import get_current_preview_nid
+            nid = get_current_preview_nid()
         except Exception:
-            pass
+            try:
+                from . import editor_assistant
+                nid = getattr(editor_assistant, '_current_preview_nid', None)
+            except Exception:
+                pass
     # 4. Check if inside standard Browser Previewer window
     if not nid and (page_clicked or "Previewer" in webview.window().__class__.__name__):
         win = webview.window()
@@ -9392,9 +10666,9 @@ def on_webview_will_show_context_menu(webview, menu) -> None:
     if is_preview_popup:
         try:
             from .editor_assistant import get_active_editor
-            if get_active_editor():
+            if get_active_editor(webview):
                 action_link = menu.addAction("Lier cette carte")
-                action_link.triggered.connect(lambda checked=False, n=nid: link_card_to_active_editor(n))
+                action_link.triggered.connect(lambda checked=False, n=nid, w=webview: link_card_to_active_editor(n, webview=w))
                 menu.addSeparator()
         except Exception:
             pass

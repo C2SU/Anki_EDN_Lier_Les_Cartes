@@ -135,40 +135,62 @@ div[class*='section'] {
     font-size: 18px !important;
 }
 
-.items ul, .items ol {
-    padding-top: 2px !important;
+.items ul, .items ol,
+.items > ul, .items > ol,
+.items > span > ul, .items > span > ol,
+.items > div > ul, .items > div > ol {
+    padding-top: 0 !important;
     padding-bottom: 2px !important;
     margin-top: 0 !important;
     margin-bottom: 0 !important;
     padding-left: 18px !important;
 }
 
-.items li {
+.items li,
+.items > ul > li, .items > ol > li,
+.items > span > ul > li, .items > span > ol > li,
+.items > div > ul > li, .items > div > ol > li,
+.items ul ul > li, .items ol ol > li, .items ul ol > li, .items ol ul > li {
     padding-top: 0px !important;
     padding-bottom: 0px !important;
     margin-top: 0 !important;
     margin-bottom: 0 !important;
 }
 
-.items ul ul, .items ol ol, .items ul ol, .items ol ul {
+.items ul ul, .items ol ol, .items ul ol, .items ol ul,
+.items li > ul, .items li > ol,
+.items li + ul, .items li + ol,
+.items ul > ul, .items ol > ol,
+li:has(+ li) > ul, li:has(+ li) > ol,
+ul:has(+ li), ol:has(+ li) {
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     margin-top: 0 !important;
     margin-bottom: 0 !important;
+    padding-left: 14px !important;
 }
 
-.items > span ul, .items > span ol {
+.items > span ul, .items > span ol,
+.items > div ul, .items > div ol {
     padding-left: 18px !important;
     margin: 0 !important;
     padding-top: 0 !important;
     padding-bottom: 0 !important;
 }
 
-.items li > ul, .items li > ol {
-    padding-left: 14px !important;
-    margin: 0 !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
+.items p,
+.items > p,
+.items > span > p,
+.items > div > p {
+    margin-top: 2px !important;
+    margin-bottom: 2px !important;
+    padding: 0 !important;
+}
+
+.items p + ul, .items p + ol,
+.items ul + p, .items ol + p {
+    margin-top: 2px !important;
+    margin-bottom: 0 !important;
 }
 
 .items > span {
@@ -221,27 +243,54 @@ div:empty:not(.bar), p:empty {
 
 /* --- Badges cliquables --- */
 .clickable_cards {
+    font-family: "Lucida console", Monaco, monospace !important;
+    font-weight: 600 !important;
+    color: #b45309 !important;
+    background: #fffbf5 !important;
+    background-color: #fffbf5 !important;
+    border: 1px solid #e5c98e !important;
+    border-radius: 4px !important;
     display: inline-block !important;
     vertical-align: middle !important;
     box-sizing: border-box !important;
-    font-size: 14px !important;
+    box-shadow: none !important;
+    font-size: 13px !important;
     height: auto !important;
-    line-height: 14px !important;
-    padding: 3px 5px !important;
-    margin: 3px !important;
+    line-height: 16px !important;
+    padding: 2px 6px !important;
+    margin: 1px 3px !important;
     cursor: pointer;
-    transition: all 0.2s ease;
+    white-space: nowrap !important;
+}
+
+.nightMode .clickable_cards,
+.night_mode .clickable_cards,
+.night-mode .clickable_cards {
+    background: #2e3238 !important;
+    background-color: #2e3238 !important;
+    border: 1px solid #4a4d52 !important;
+    color: #FFA630 !important;
 }
 
 .clickable_cards * {
-    font-size: 14px !important;
-    line-height: 14px !important;
+    font-size: 13px !important;
+    line-height: 16px !important;
+    color: inherit !important;
+    font-family: inherit !important;
 }
 
 .clickable_cards:hover {
-    background-color: #3b82f6 !important;
-    color: white !important;
+    color: #7c3aed !important;
+    border-color: #a78bfa !important;
+    background: #f5f3ff !important;
 }
+.nightMode .clickable_cards:hover,
+.night_mode .clickable_cards:hover,
+.night-mode .clickable_cards:hover {
+    color: #BD93BD !important;
+    border-color: #BD93BD !important;
+}
+
 
 .items.cartesLiees {
     flex-direction: row !important;
@@ -286,6 +335,20 @@ div:empty:not(.bar), p:empty {
     margin: 0 !important;
     box-sizing: border-box !important;
     width: 100% !important;
+}
+
+#edn-preview-box .section {
+    margin: 2px 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    min-height: 0 !important;
+}
+
+#edn-preview-box .items {
+    margin-left: 8px !important;
+    margin-right: 8px !important;
+    padding: 2px 0 !important;
+    min-height: 0 !important;
 }
 
 #edn-preview-box .edn-preview-isolated > *:last-child {

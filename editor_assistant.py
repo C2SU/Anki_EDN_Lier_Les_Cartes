@@ -304,6 +304,7 @@ def _get_editor_note(editor):
 
 def get_active_editor(context=None):
     from aqt import mw
+    from aqt.qt import QWidget
     from .logger import log
     log(f"get_active_editor context={context}")
     
@@ -316,84 +317,168 @@ def get_active_editor(context=None):
     except ImportError:
         pass
 
-    if isinstance(context, editor_classes):
+    def _is_editor_valid(ed):
+        if not ed:
+            return False
         try:
-            if context.web is not None:
-                context.web.objectName()
-                log("get_active_editor: context is active Editor, returning directly")
-                return context
-        except (RuntimeError, AttributeError) as e:
-            log(f"get_active_editor: context is Editor but check failed: {e}")
+            if hasattr(ed, 'web') and ed.web is not None:
+                ed.web.objectName()
+                return True
+        except (RuntimeError, AttributeError):
+            return False
+        return False
+
+    def _sync_current_editor(ed):
+        if ed and _is_editor_valid(ed):
+            try:
+                from . import linked_cards
+                linked_cards._current_editor = ed
+            except Exception:
+                pass
+        return ed
+
+    # 1. If context is directly an active Editor
+    if isinstance(context, editor_classes) and _is_editor_valid(context):
+        log("get_active_editor: context is active Editor, returning directly")
+        return _sync_current_editor(context)
+
+    # 2. If context is provided (WebView or Widget)
+    if context:
+        # Check if context is the preview popup or its webview
+        if _is_preview_popup_alive():
+            is_popup_match = False
+            if getattr(_preview_popup, '_edn_web', None) == context or _preview_popup == context:
+                is_popup_match = True
+            elif hasattr(context, 'window') and context.window() == _preview_popup:
+                is_popup_match = True
+
+            if is_popup_match:
+                # Check directly stored editor on preview popup
+                ed = getattr(_preview_popup, '_edn_editor', None)
+                if _is_editor_valid(ed):
+                    log("get_active_editor: matched preview popup context to stored _edn_editor")
+                    return _sync_current_editor(ed)
+
+                parent_assistant = getattr(_preview_popup, '_edn_parent_widget', None)
+                if parent_assistant:
+                    try:
+                        p_win = parent_assistant.window() if hasattr(parent_assistant, 'window') else None
+                        if p_win and hasattr(p_win, 'editor') and _is_editor_valid(p_win.editor):
+                            log("get_active_editor: matched preview popup context to editor via parent_assistant.window()")
+                            return _sync_current_editor(p_win.editor)
+                    except Exception:
+                        pass
+                    from .linked_cards import _current_editor
+                    if _current_editor and getattr(_current_editor, '_editor_assistant_web', None) == parent_assistant and _is_editor_valid(_current_editor):
+                        log("get_active_editor: matched preview popup context to editor via parent assistant match")
+                        return _sync_current_editor(_current_editor)
+
+                try:
+                    p_win = _preview_popup.parentWidget()
+                    if p_win and hasattr(p_win, 'editor') and _is_editor_valid(p_win.editor):
+                        log("get_active_editor: matched preview popup context to editor via parentWidget()")
+                        return _sync_current_editor(p_win.editor)
+                except Exception:
+                    pass
+
+        # Check if context has .editor or context.window() has .editor
+        try:
+            if hasattr(context, 'editor') and _is_editor_valid(context.editor):
+                return _sync_current_editor(context.editor)
+            if hasattr(context, 'window'):
+                c_win = context.window()
+                if c_win and hasattr(c_win, 'editor') and _is_editor_valid(c_win.editor):
+                    return _sync_current_editor(c_win.editor)
+        except Exception:
             pass
 
-    # If context is the assistant's AnkiWebView or editor's EditorWebView, find its editor
-    if context:
-        # Check if context is the preview popup's webview itself
-        if _is_preview_popup_alive() and getattr(_preview_popup, '_edn_web', None) == context:
-            parent_assistant = getattr(_preview_popup, '_edn_parent_widget', None)
-            if parent_assistant:
-                from .linked_cards import _current_editor
-                if _current_editor and getattr(_current_editor, '_editor_assistant_web', None) == parent_assistant:
-                    log("get_active_editor: matched preview popup context to editor via parent assistant")
-                    return _current_editor
-
-        # Check active window first
+        # Check active window matching context
         if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
             win = mw.app.activeWindow()
-            log(f"get_active_editor: checking activeWindow={win}")
-            if hasattr(win, 'editor') and win.editor:
+            if hasattr(win, 'editor') and win.editor and _is_editor_valid(win.editor):
                 try:
-                    editor = win.editor
-                    log(f"get_active_editor: activeWindow has editor. web={getattr(editor, 'web', None)}")
-                    # Safe check for editor.web attribute presence and equivalence
-                    if hasattr(editor, 'web') and editor.web is not None and (editor.web == context or getattr(editor, '_editor_assistant_web', None) == context):
-                        log("get_active_editor: activeWindow editor matched context")
-                        return editor
-                except (RuntimeError, AttributeError) as e:
-                    log(f"get_active_editor: activeWindow editor check exception: {e}")
+                    if win.editor.web == context or getattr(win.editor, '_editor_assistant_web', None) == context:
+                        return _sync_current_editor(win.editor)
+                except Exception:
                     pass
-        # Check _current_editor
-        from .linked_cards import _current_editor
-        log(f"get_active_editor: checking _current_editor={_current_editor}")
-        if _current_editor:
+
+    # 3. Check if preview popup is alive and active or visible
+    if _is_preview_popup_alive():
+        active_win = mw.app.activeWindow() if (hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow')) else None
+        is_popup_active = (
+            active_win == _preview_popup
+            or (active_win and active_win.findChild(QWidget, "EdnAssistantPreviewPopup") is not None)
+            or getattr(_preview_popup, '_context_menu_active', False)
+            or (_preview_popup.isVisible() and getattr(_preview_popup, '_edn_editor', None) is not None)
+        )
+        if is_popup_active:
+            ed = getattr(_preview_popup, '_edn_editor', None)
+            if _is_editor_valid(ed):
+                log("get_active_editor: returned _preview_popup._edn_editor for active popup")
+                return _sync_current_editor(ed)
+
+            parent_assistant = getattr(_preview_popup, '_edn_parent_widget', None)
+            if parent_assistant:
+                try:
+                    p_win = parent_assistant.window() if hasattr(parent_assistant, 'window') else None
+                    if p_win and hasattr(p_win, 'editor') and _is_editor_valid(p_win.editor):
+                        log("get_active_editor: returned parent_assistant.window().editor for active popup")
+                        return _sync_current_editor(p_win.editor)
+                except Exception:
+                    pass
+
             try:
-                log(f"get_active_editor: _current_editor web={getattr(_current_editor, 'web', None)}, assistant={getattr(_current_editor, '_editor_assistant_web', None)}")
-                if hasattr(_current_editor, 'web') and _current_editor.web is not None and (_current_editor.web == context or getattr(_current_editor, '_editor_assistant_web', None) == context):
-                    log("get_active_editor: _current_editor matched context")
-                    return _current_editor
-            except (RuntimeError, AttributeError) as e:
-                log(f"get_active_editor: _current_editor check exception: {e}")
+                p_win = _preview_popup.parentWidget()
+                if p_win and hasattr(p_win, 'editor') and _is_editor_valid(p_win.editor):
+                    log("get_active_editor: returned _preview_popup.parentWidget().editor for active popup")
+                    return _sync_current_editor(p_win.editor)
+            except Exception:
                 pass
 
-    # Fallback to active window's editor
+    # 4. Check active window's editor
     if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
         win = mw.app.activeWindow()
-        log(f"get_active_editor fallback: checking activeWindow={win}")
-        if hasattr(win, 'editor') and win.editor:
-            try:
-                if hasattr(win.editor, 'web') and win.editor.web is not None:
-                    win.editor.web.objectName()
-                    log("get_active_editor fallback: returned activeWindow editor")
-                    return win.editor
-            except (RuntimeError, AttributeError) as e:
-                log(f"get_active_editor fallback: activeWindow editor check exception: {e}")
-                pass
+        log(f"get_active_editor: checking activeWindow={win}")
+        if hasattr(win, 'editor') and win.editor and _is_editor_valid(win.editor):
+            log("get_active_editor: returned activeWindow editor")
+            return _sync_current_editor(win.editor)
 
-    # Fallback to _current_editor
+    # 5. Check all top-level widgets (e.g. Browser or EditCurrent or AddCards when a child popup or menu is active)
+    if hasattr(mw, 'app') and hasattr(mw.app, 'topLevelWidgets'):
+        try:
+            for w in mw.app.topLevelWidgets():
+                if w and hasattr(w, 'editor') and w.editor and _is_editor_valid(w.editor):
+                    try:
+                        if hasattr(w, 'isVisible') and w.isVisible():
+                            log("get_active_editor: returned visible topLevelWidget editor")
+                            return _sync_current_editor(w.editor)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log(f"get_active_editor topLevelWidgets check exception: {e}")
+
+    # 6. Fallback to LinkedCardsDialog editor if active dialog alive
+    try:
+        from .linked_cards import _active_dialog, _is_active_dialog_alive
+        if _is_active_dialog_alive() and hasattr(_active_dialog, 'editor') and _is_editor_valid(_active_dialog.editor):
+            log("get_active_editor: returned _active_dialog.editor")
+            return _sync_current_editor(_active_dialog.editor)
+    except Exception:
+        pass
+
+    # 7. Fallback to _current_editor
     from .linked_cards import _current_editor
     log(f"get_active_editor fallback: checking _current_editor={_current_editor}")
-    if _current_editor:
-        try:
-            if hasattr(_current_editor, 'web') and _current_editor.web is not None:
-                _current_editor.web.objectName()
-                log("get_active_editor fallback: returned _current_editor")
-                return _current_editor
-        except (RuntimeError, AttributeError) as e:
-            log(f"get_active_editor fallback: _current_editor exception: {e}")
-            pass
+    if _current_editor and _is_editor_valid(_current_editor):
+        log("get_active_editor fallback: returned _current_editor")
+        return _current_editor
 
     log("get_active_editor: returned None")
     return None
+
+def get_current_preview_nid():
+    global _current_preview_nid
+    return _current_preview_nid
 
 # --- Popup preview (imitant show_preview_popup du GUI) ---
 
@@ -525,6 +610,63 @@ def _is_preview_popup_alive():
         _preview_popup = None
         return False
 
+def refocus_editor_field(editor, field_idx=0):
+    """Restaure proprement le focus sur la fenetre parente, sur editor.web,
+    et active le champ cible (champ 0 par defaut) dans le Svelte Editor."""
+    if not editor:
+        return
+    try:
+        parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+        if parent_win and hasattr(parent_win, 'activateWindow'):
+            parent_win.activateWindow()
+            if hasattr(parent_win, 'raise_'):
+                parent_win.raise_()
+
+        if hasattr(editor, 'web') and editor.web:
+            editor.web.setFocus()
+            target = field_idx if field_idx is not None else 0
+            js = f"""
+            (function() {{
+                try {{
+                    if (typeof focusField === 'function') {{
+                        focusField({target});
+                    }} else if (typeof globalThis.focusField === 'function') {{
+                        globalThis.focusField({target});
+                    }}
+                }} catch(e) {{}}
+            }})();
+            """
+            editor.web.eval(js)
+    except Exception as e:
+        log(f"refocus_editor_field error: {e}")
+
+def install_editcurrent_escape_shortcut(win):
+    """Installe le raccourci Echap sur la fenetre EditCurrent au niveau Qt."""
+    if not win or getattr(win, "_edn_esc_installed", False):
+        return
+    win._edn_esc_installed = True
+
+    try:
+        from aqt.qt import QShortcut, QKeySequence, Qt, QDialogButtonBox
+        esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), win)
+        def _on_esc():
+            # 1. Masquer la popup de preview si ouverte
+            if _is_preview_popup_alive() and _preview_popup.isVisible():
+                _hide_card_preview_popup()
+                return
+
+            # 2. Fermer EditCurrent via son bouton Fermer ou close
+            if hasattr(win, "form") and hasattr(win.form, "buttonBox"):
+                close_btn = win.form.buttonBox.button(QDialogButtonBox.StandardButton.Close)
+                if close_btn:
+                    close_btn.click()
+                    return
+            win.close()
+
+        esc.activated.connect(_on_esc)
+    except Exception as e:
+        log(f"Error installing EditCurrent escape shortcut: {e}")
+
 def _close_editor(editor):
     if not editor:
         return
@@ -534,19 +676,34 @@ def _close_editor(editor):
             parent_win = editor.parentWindow
         elif hasattr(editor, 'widget') and editor.widget:
             parent_win = editor.widget.window()
-    except:
+    except Exception:
         pass
     if parent_win:
         from aqt.browser import Browser
         from aqt.main import AnkiQt
         if isinstance(parent_win, (Browser, AnkiQt)):
-            # Ne pas fermer la fenêtre principale ou le navigateur !
-            # Au lieu de ça, on redonne le focus à l'éditeur principal
+            # Ne pas fermer la fenetre principale ou le navigateur !
+            # Au lieu de ca, on redonne le focus a la table ou a l'editeur
             try:
-                editor.web.setFocus()
-            except:
+                if hasattr(parent_win, 'table') and hasattr(parent_win.table, 'setFocus'):
+                    parent_win.table.setFocus()
+                elif hasattr(editor, 'web') and editor.web:
+                    editor.web.setFocus()
+            except Exception:
                 pass
             return
+
+        # EditCurrent ou AddCards : fermer proprement
+        try:
+            from aqt.qt import QDialogButtonBox
+            if hasattr(parent_win, 'form') and hasattr(parent_win.form, 'buttonBox'):
+                close_btn = parent_win.form.buttonBox.button(QDialogButtonBox.StandardButton.Close)
+                if close_btn:
+                    close_btn.click()
+                    return
+        except Exception:
+            pass
+
         try:
             parent_win.close()
         except Exception as e:
@@ -556,6 +713,12 @@ def _handle_escape_from_shortcut(editor_window):
     _hide_card_preview_popup()
     if editor_window:
         try:
+            from aqt.qt import QDialogButtonBox
+            if hasattr(editor_window, 'form') and hasattr(editor_window.form, 'buttonBox'):
+                close_btn = editor_window.form.buttonBox.button(QDialogButtonBox.StandardButton.Close)
+                if close_btn:
+                    close_btn.click()
+                    return
             editor_window.close()
         except Exception as e:
             print("Failed to close editor window on Escape shortcut:", e)
@@ -654,9 +817,13 @@ def handle_preview_popup_message(message, context=None):
     if message.startswith("preview_nested:"):
         nid = message[len("preview_nested:"):]
         editor = get_active_editor(context)
+        if not editor and _is_preview_popup_alive():
+            editor = getattr(_preview_popup, '_edn_editor', None)
         anchor = None
         if editor:
             anchor = getattr(editor, '_editor_assistant_web', None)
+        if not anchor and _is_preview_popup_alive():
+            anchor = getattr(_preview_popup, '_edn_parent_widget', None)
         _show_card_preview_popup(nid, parent_widget=anchor, is_nested=True)
     elif message == "preview_back":
         global _preview_history, _current_preview_nid
@@ -664,9 +831,13 @@ def handle_preview_popup_message(message, context=None):
             prev_nid = _preview_history.pop()
             _current_preview_nid = prev_nid
             editor = get_active_editor(context)
+            if not editor and _is_preview_popup_alive():
+                editor = getattr(_preview_popup, '_edn_editor', None)
             anchor = None
             if editor:
                 anchor = getattr(editor, '_editor_assistant_web', None)
+            if not anchor and _is_preview_popup_alive():
+                anchor = getattr(_preview_popup, '_edn_parent_widget', None)
             _show_card_preview_popup(prev_nid, parent_widget=anchor, is_nested=True)
             # Activer et redonner le focus
             if _is_preview_popup_alive():
@@ -1475,12 +1646,14 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             }, true);
 
             document.addEventListener('pointerdown', function(e) {
-                var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
-                var nid = badge ? _gn(badge) : null;
-                if (nid) {
-                    sendPycmd('edn_right_click_nid:' + nid);
-                } else {
-                    sendPycmd('edn_right_click_nid:none');
+                if (e.button === 2) {
+                    var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
+                    var nid = badge ? _gn(badge) : null;
+                    if (nid) {
+                        sendPycmd('edn_right_click_nid:' + nid);
+                    } else {
+                        sendPycmd('edn_right_click_page:sidebar_preview');
+                    }
                 }
             });
 
@@ -1557,7 +1730,11 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                     print("Error reparenting preview popup:", e)
 
         dlg = _preview_popup
-        dlg._edn_parent_widget = parent_widget
+        if parent_widget is not None:
+            dlg._edn_parent_widget = parent_widget
+        _ed = get_active_editor(parent_widget)
+        if _ed:
+            dlg._edn_editor = _ed
         web = dlg._edn_web
 
         # Déterminer si night mode est actif pour la bordure dynamique
@@ -1625,8 +1802,29 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             except Exception as pe:
                 log(f"_show_card_preview_popup error positioning: {pe}")
                 print("Error positioning preview popup:", pe)
+        elif not is_nested:
+            try:
+                cursor_pos = QCursor.pos()
+                screen = QApplication.screenAt(cursor_pos)
+                if not screen:
+                    screen = QApplication.primaryScreen()
+                s_geom = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+                dlg_width = dlg.width() if dlg.width() > 100 else 550
+                x = cursor_pos.x() + 20
+                if x + dlg_width > s_geom.right():
+                    x = cursor_pos.x() - dlg_width - 20
+                if x < s_geom.left():
+                    x = s_geom.left() + 10
+                y = cursor_pos.y() - 50
+                if y + 250 > s_geom.bottom():
+                    y = max(s_geom.top() + 10, s_geom.bottom() - 270)
+                if y < s_geom.top() + 10:
+                    y = s_geom.top() + 10
+                dlg.move(QPoint(x, y))
+            except Exception as pe:
+                log(f"_show_card_preview_popup fallback position error: {pe}")
         else:
-            log(f"_show_card_preview_popup: skip positioning (parent_widget alive={_is_widget_alive(parent_widget)}, is_nested={is_nested})")
+            log(f"_show_card_preview_popup: skip positioning (is_nested={is_nested})")
 
         # Charger les préférences cartes EDN
         show_rank = True
@@ -1711,23 +1909,50 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                         }}
                     }}
                     
+                    function applyDualBorder(el, leftColor, rightColor) {{
+                        if (!el) return;
+                        el.style.borderImage = "none";
+                        el.style.borderColor = "transparent";
+                        var bg = window.getComputedStyle(el).backgroundColor;
+                        if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {{
+                            var isNight = document.body && (document.body.classList.contains("nightMode") || document.body.classList.contains("night_mode"));
+                            bg = isNight ? "#373a41" : "#f5f6f7";
+                        }}
+                        var existingBg = el.style.backgroundImage;
+                        if (existingBg && !existingBg.includes("linear-gradient")) {{
+                            el.style.backgroundImage = existingBg + ", linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                        }} else {{
+                            el.style.backgroundImage = "linear-gradient(" + bg + ", " + bg + "), linear-gradient(to right, " + leftColor + " 50%, " + rightColor + " 50%)";
+                        }}
+                        el.style.backgroundOrigin = "border-box";
+                        el.style.backgroundClip = "padding-box, border-box";
+                    }}
+
+                    function clearDualBorder(el) {{
+                        if (!el) return;
+                        el.style.borderImage = "none";
+                        el.style.backgroundOrigin = "";
+                        el.style.backgroundClip = "";
+                        var existingBg = el.style.backgroundImage;
+                        if (existingBg && existingBg.includes("linear-gradient")) {{
+                            el.style.backgroundImage = "";
+                        }}
+                    }}
+
                     var sections = document.getElementsByClassName("section");
                     var hiders = document.getElementsByClassName("barHider");
                     var barsList = document.getElementsByClassName("bar");
                     
                     if (showFlags && dualFlags && virtualFlagColor && realColor) {{
-                        var dualGradient = "linear-gradient(to right, " + virtualFlagColor + " 50%, " + realColor + " 50%) 1";
                         document.documentElement.style.setProperty('--card-flag-color', realColor);
                         for (var s of sections) {{
-                            s.style.borderColor = "transparent";
-                            s.style.borderImage = dualGradient;
+                            applyDualBorder(s, virtualFlagColor, realColor);
                         }}
                         for (var h of hiders) {{
-                            h.style.borderColor = "transparent";
-                            h.style.borderImage = dualGradient;
+                            applyDualBorder(h, virtualFlagColor, realColor);
                         }}
                         for (var b of barsList) {{
-                            b.style.borderImage = "none";
+                            clearDualBorder(b);
                             b.style.borderColor = virtualFlagColor;
                         }}
                     }} else {{
@@ -1735,29 +1960,29 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                         if (activeColor) {{
                             document.documentElement.style.setProperty('--card-flag-color', activeColor);
                             for (var s of sections) {{
-                                s.style.borderImage = "none";
+                                clearDualBorder(s);
                                 s.style.borderColor = activeColor;
                             }}
                             for (var h of hiders) {{
-                                h.style.borderImage = "none";
+                                clearDualBorder(h);
                                 h.style.borderColor = activeColor;
                             }}
                             for (var b of barsList) {{
-                                b.style.borderImage = "none";
+                                clearDualBorder(b);
                                 b.style.borderColor = activeColor;
                             }}
                         }} else {{
                             document.documentElement.style.removeProperty('--card-flag-color');
                             for (var s of sections) {{
-                                s.style.borderImage = "none";
+                                clearDualBorder(s);
                                 s.style.borderColor = "";
                             }}
                             for (var h of hiders) {{
-                                h.style.borderImage = "none";
+                                clearDualBorder(h);
                                 h.style.borderColor = "";
                             }}
                             for (var b of barsList) {{
-                                b.style.borderImage = "none";
+                                clearDualBorder(b);
                                 b.style.borderColor = "";
                             }}
                         }}
@@ -2116,7 +2341,7 @@ def _get_subspecialty_tags(tags_set: set) -> set:
     return result
 
 
-def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids: set, max_results: int = 30) -> list:
+def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids: set, max_results: int = 100) -> list:
     """Modèle B Validé Statistiquement sur 1000 cartes :
     - Item ECN prioritaire (+14)
     - Titre / Recto overlap (+3 par mot-clé commun, max 6)
@@ -2126,8 +2351,8 @@ def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids
     - Cache LRU borné (<250 Ko RAM)
     """
     global _SUGGESTIONS_CACHE
-    if current_nid in _SUGGESTIONS_CACHE:
-        return _SUGGESTIONS_CACHE[current_nid]
+    if current_nid in _SUGGESTIONS_CACHE and len(_SUGGESTIONS_CACHE[current_nid]) >= max_results:
+        return _SUGGESTIONS_CACHE[current_nid][:max_results]
 
     base_scores = {}
     date_bonuses = {}
@@ -2394,7 +2619,7 @@ def get_note_recto(note, source_note=None):
         pass
     return get_fields_recto(note.fields, is_cloze=is_cloze, fld_names=fld_names, source_note=source_note, target_note=note)
 
-def _bg_fetch_relations(col, current_nid: str, note_fields: list[str]) -> dict:
+def _bg_fetch_relations(col, current_nid: str, note_fields: list[str], suggestions_enabled: bool = True) -> dict:
     """Récupère en une seule passe SQLite (<20ms) :
     1. Les backlinks (liens entrants)
     2. Les liens sortants
@@ -2472,10 +2697,9 @@ def _bg_fetch_relations(col, current_nid: str, note_fields: list[str]) -> dict:
 
     # 3. Suggestions de liens (calculées en 10-15ms dans le même thread background)
     suggestions = []
-    config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
-    if config.get("suggestions_de_liens", True):
+    if suggestions_enabled:
         try:
-            suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=30)
+            suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=60)
         except Exception as se:
             print("Error computing suggestions in _bg_fetch_relations:", se)
 
@@ -2489,7 +2713,9 @@ def _bg_fetch_relations(col, current_nid: str, note_fields: list[str]) -> dict:
     _RELATIONS_CACHE[current_nid] = res
     return res
 
-def update_assistant(editor):
+def update_assistant(editor, immediate: bool = False):
+    from aqt import mw
+
     # Cacher le popup de preview existant lors d'une mise à jour/chargement
     try:
         global _preview_popup
@@ -2611,10 +2837,10 @@ def update_assistant(editor):
         config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
         suggestions_enabled = config.get("suggestions_de_liens", True)
         if suggestions_enabled:
-            html += "<h3>Liens Suggérés</h3><div class='section' id='edn-suggestions-section'>"
+            html += "<h3>Liens Proposés (Suggestions)</h3><div class='section' id='edn-suggestions-section'>"
             _PAGE_SIZE = 5
             if not suggestions:
-                html += "<div class='empty'>Aucune suggestion. Ajoutez des liens pour en voir apparaître.</div>"
+                html += "<div class='empty'>Aucun lien proposé. Ajoutez des tags ou des cartes pour en voir apparaître.</div>"
             else:
                 for idx, n in enumerate(suggestions):
                     recto_esc = (n['recto']
@@ -2623,7 +2849,7 @@ def update_assistant(editor):
                         .replace('"', '&quot;')
                         .replace('<', '&lt;')
                         .replace('>', '&gt;'))
-                    score_badge = f"<span class='score-badge'>★ {n['score']}</span>"
+                    score_badge = f"<span class='score-badge' title='Score de pertinence : {n['score']} points'>Score: {n['score']}</span>"
                     add_btn = (f"<button class='btn-add' data-action='add_suggested' "
                                f"data-nid='{n['nid']}' data-recto='{recto_esc}'>+ Ajouter</button>")
                     hidden_class = " suggested-hidden" if idx >= _PAGE_SIZE else ""
@@ -2970,16 +3196,70 @@ def update_assistant(editor):
             editor._editor_assistant_web = None
             return
 
-    if HAS_QUERY_OP:
-        op = QueryOp(
-            parent=mw,
-            op=lambda col: _bg_fetch_relations(col, current_nid, note_fields),
-            success=on_success
-        )
-        op.run_in_background()
-    else:
-        res = _bg_fetch_relations(mw.col, current_nid, note_fields)
-        on_success(res)
+    # ── Rendu immédiat depuis le cache (0ms) ou debounce adaptatif (250ms) ──
+    cached_res = _RELATIONS_CACHE.get(current_nid)
+    if cached_res is not None:
+        # Stopper tout timer d'assistant en attente sur cet éditeur
+        existing_timer = getattr(editor, '_assistant_debounce_timer', None)
+        if existing_timer is not None:
+            existing_timer.stop()
+        on_success(cached_res)
+        return
+
+    _seq_at_schedule = _update_seq
+
+    suggestions_enabled = True
+    try:
+        config = mw.addonManager.getConfig("Anki_EDN_Lier_les_cartes") or {}
+        suggestions_enabled = config.get("suggestions_de_liens", True)
+    except Exception:
+        suggestions_enabled = True
+
+    def _launch_query_op():
+        # Vérifier que l'update est encore valide (séquence inchangée)
+        if getattr(editor, '_assistant_update_seq', -1) != _seq_at_schedule:
+            return
+        if HAS_QUERY_OP:
+            parent_win = getattr(editor, "parentWindow", None) or getattr(editor, "widget", None) or mw
+            op = QueryOp(
+                parent=parent_win,
+                op=lambda col: _bg_fetch_relations(col, current_nid, note_fields, suggestions_enabled=suggestions_enabled),
+                success=on_success
+            )
+            op.failure(lambda exc: print("Error fetching relations in background:", exc))
+            op.run_in_background()
+        else:
+            res = _bg_fetch_relations(mw.col, current_nid, note_fields, suggestions_enabled=suggestions_enabled)
+            on_success(res)
+
+    existing_timer = getattr(editor, '_assistant_debounce_timer', None)
+    if existing_timer is not None:
+        existing_timer.stop()
+
+    if immediate:
+        _launch_query_op()
+        return
+
+    try:
+        from aqt.qt import QTimer as _QTimer
+        parent_widget = getattr(editor, 'widget', None) or getattr(editor, 'parentWindow', None) or mw
+        if existing_timer is None:
+            timer = _QTimer(parent_widget)
+            timer.setSingleShot(True)
+            editor._assistant_debounce_timer = timer
+        else:
+            timer = existing_timer
+
+        try:
+            timer.timeout.disconnect()
+        except Exception:
+            pass
+
+        timer.timeout.connect(_launch_query_op)
+        timer.start(450)
+    except Exception:
+        # Fallback sans debounce si QTimer indisponible
+        _launch_query_op()
 
 def _find_field_by_name_or_default(note, preferred_name):
     flds = note.note_type()['flds']
@@ -3010,11 +3290,10 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label
+            from .linked_cards import generate_smart_link_label, make_card_link
             smart_desc = generate_smart_link_label(note, other_note) if other_note else recto
             final_desc = smart_desc if smart_desc else recto
-            desc_escaped = final_desc.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
-            badge_html = f'{desc_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
+            badge_html = make_card_link(nid, final_desc)
             
             # Recherche intelligente du champ correspondant
             source_field_name = None
@@ -3039,10 +3318,11 @@ def handle_assistant_message(handled, message, context):
                 note.fields[target_fidx] = new_val
                 mw.col.update_note(note)
                 
+                clear_assistant_preview_cache(note.id)
                 editor_reload_note(editor)
-                update_assistant(editor)
+                update_assistant(editor, immediate=True)
             
-            editor_save_now(editor, on_saved)
+            editor_save_now(editor, on_saved, keep_focus=True)
             
         except Exception as e:
             print("Erreur add_mirror:", e)
@@ -3063,11 +3343,10 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label
+            from .linked_cards import generate_smart_link_label, make_card_link
             smart_desc = generate_smart_link_label(target_note, current_note) if target_note else get_note_recto(current_note)
             final_desc = smart_desc if smart_desc else get_note_recto(current_note)
-            desc_escaped = final_desc.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
-            badge_html = f'{desc_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{current_nid}"><span class="edn-nid">{current_nid}</span></kbd>&nbsp;'
+            badge_html = make_card_link(current_nid, final_desc)
             
             # Recherche intelligente du champ correspondant
             source_field_name = None
@@ -3091,7 +3370,8 @@ def handle_assistant_message(handled, message, context):
                 target_note.fields[target_fidx] = new_val
                 mw.col.update_note(target_note)
             
-            update_assistant(editor)
+            clear_assistant_preview_cache(current_nid)
+            update_assistant(editor, immediate=True)
             
         except Exception as e:
             print("Erreur make_reciprocal:", e)
@@ -3114,11 +3394,10 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label
+            from .linked_cards import generate_smart_link_label, make_card_link
             smart_desc = generate_smart_link_label(note, target_note) if target_note else recto
             final_desc = smart_desc if smart_desc else recto
-            desc_escaped = final_desc.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
-            badge_html = f'{desc_escaped} — <kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="{nid}"><span class="edn-nid">{nid}</span></kbd>&nbsp;'
+            badge_html = make_card_link(nid, final_desc)
             
             target_fidx = _find_field_by_name_or_default(note, None)
             current_note_ref = note
@@ -3134,8 +3413,9 @@ def handle_assistant_message(handled, message, context):
                     current_note_ref.fields[target_fidx] = new_val
                     mw.col.update_note(current_note_ref)
                     
+                    clear_assistant_preview_cache(current_note_ref.id)
                     editor_reload_note(editor)
-                    update_assistant(editor)
+                    update_assistant(editor, immediate=True)
                     
                     # Proposer la création du miroir uniquement pour le lien suggéré qui vient d'être ajouté
                     try:
@@ -3149,7 +3429,7 @@ def handle_assistant_message(handled, message, context):
                 except Exception as save_err:
                     print("Erreur _on_suggested_saved:", save_err)
             
-            editor_save_now(editor, _on_suggested_saved)
+            editor_save_now(editor, _on_suggested_saved, keep_focus=True)
             
         except Exception as e:
             print("Erreur add_suggested:", e)
@@ -3357,20 +3637,28 @@ def _setup_assistant_ui(editor):
         splitter.setSizes([w, 0])
         
         editor._editor_assistant_web = assistant
+
+        # Restaurer le focus sur le webview principal de l'editeur apres reparentage dans QSplitter
+        QTimer.singleShot(60, lambda: refocus_editor_field(editor, 0))
         
     except Exception as e:
         print("Failed to setup editor assistant:", e)
 
 def on_editor_did_init(editor):
-    # Toujours pré-initialiser l'UI (splitter + webview cachée)
-    # pour que l'ouverture soit instantanée et sans bug dès le premier clic
+    # Installer le raccourci Echap sur la fenetre parente si c'est EditCurrent
+    parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+    if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
+        install_editcurrent_escape_shortcut(parent_win)
+
+    # Toujours pre-initialiser l'UI (splitter + webview cachee)
+    # pour que l'ouverture soit instantanee et sans bug des le premier clic
     QTimer.singleShot(100, lambda: _setup_assistant_ui(editor))
-    # Restaurer le panneau au démarrage si l'utilisateur l'avait laissé ouvert
+    # Restaurer le panneau au demarrage si l'utilisateur l'avait laisse ouvert
     if _get_assistant_should_open():
         QTimer.singleShot(250, lambda: _restore_assistant_state(editor))
 
 def _restore_assistant_state(editor):
-    """Ouvre le panneau si l'utilisateur l'avait laissé ouvert la dernière fois."""
+    """Ouvre le panneau si l'utilisateur l'avait laisse ouvert la derniere fois."""
     try:
         if _get_assistant_should_open():
             _show_assistant(editor)
@@ -3380,9 +3668,9 @@ def _restore_assistant_state(editor):
 def toggle_assistant(editor):
     """Affiche ou masque le panneau assistant (cartes miroir).
     
-    Si le panneau n'est pas encore configuré, il est créé d'abord.
-    Le panneau commence caché et s'affiche sur Ctrl+Alt+B.
-    Mémorise l'état pour la prochaine session et les prochaines cartes.
+    Si le panneau n'est pas encore configure, il est cree d'abord.
+    Le panneau commence cache et s'affiche sur Ctrl+Alt+B.
+    Memorise l'etat pour la prochaine session et les prochaines cartes.
     """
     if not getattr(editor, '_editor_assistant_setup', False):
         # Setup non encore fait : le faire maintenant
@@ -3405,7 +3693,7 @@ def toggle_assistant(editor):
         _save_assistant_state(True)
 
 def _show_assistant(editor):
-    """Affiche le panneau assistant et le met à jour."""
+    """Affiche le panneau assistant et le met a jour."""
     assistant = getattr(editor, '_editor_assistant_web', None)
     if not assistant:
         return
@@ -3425,49 +3713,90 @@ def _show_assistant(editor):
         except Exception:
             pass
 
-    # Invalider le cache pour garantir une analyse fraîche des champs récemment édités
+    # Invalider le cache pour garantir une analyse fraiche des champs recemment edites
     note = _get_editor_note(editor)
     if note and getattr(note, 'id', None):
         clear_assistant_preview_cache(note.id)
 
-    # Afficher un indicateur propre si aucun contenu n'a encore été chargé
+    # Afficher un indicateur propre si aucun contenu n'a encore ete charge
     try:
         if not getattr(assistant, '_has_loaded_content', False):
             assistant.stdHtml(f"<style>{_assistant_css}</style><body><div class='suggestions-loading'>Chargement des liens...</div></body>")
     except Exception:
         pass
 
-    # Déclencher la mise à jour une seule fois après un court délai
-    QTimer.singleShot(60, lambda: update_assistant(editor))
+    # Declencher la mise a jour une seule fois apres un court delai
+    QTimer.singleShot(60, lambda: update_assistant(editor, immediate=True))
+    # Ne pas laisser l'affichage de l'assistant voler le focus au champ de l'editeur
+    QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
 
 def on_editor_did_load_note(editor):
-    # Si le panneau doit être ouvert mais n'a pas encore été configuré
+    # Si le panneau doit etre ouvert mais n'a pas encore ete configure
     if _get_assistant_should_open():
         if not getattr(editor, '_editor_assistant_setup', False):
             _setup_assistant_ui(editor)
         assistant = getattr(editor, '_editor_assistant_web', None)
         if assistant:
             try:
-                assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
+                assistant.objectName()  # leve RuntimeError si l'objet C++ est detruit
                 if assistant.isHidden():
                     _show_assistant(editor)
                 else:
-                    QTimer.singleShot(200, lambda: update_assistant(editor))
+                    update_assistant(editor, immediate=False)
             except RuntimeError:
                 editor._editor_assistant_web = None
+        parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+        if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
+            install_editcurrent_escape_shortcut(parent_win)
+            QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
         return
 
-    # Si le panneau n'est pas configuré pour s'ouvrir par défaut, ne mettre à jour que s'il est affiché
+    # Si le panneau n'est pas configure pour s'ouvrir par defaut, ne mettre a jour que s'il est affiche
     assistant = getattr(editor, '_editor_assistant_web', None)
     if assistant:
         try:
-            assistant.objectName()  # lève RuntimeError si l'objet C++ est détruit
+            assistant.objectName()  # leve RuntimeError si l'objet C++ est detruit
             if not assistant.isHidden():
-                QTimer.singleShot(200, lambda: update_assistant(editor))
+                update_assistant(editor, immediate=False)
         except RuntimeError:
             editor._editor_assistant_web = None
+
+    parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+    if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
+        install_editcurrent_escape_shortcut(parent_win)
+        QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
 
 def init_assistant():
     gui_hooks.editor_did_init.append(on_editor_did_init)
     gui_hooks.editor_did_load_note.append(on_editor_did_load_note)
     gui_hooks.webview_did_receive_js_message.append(handle_assistant_message)
+
+    # Patch global sur EditCurrent et NewEditCurrent pour garantir le raccourci Echap et le focus des l'ouverture via raccourci "e"
+    try:
+        import aqt.editcurrent as ec_mod
+        for cls_name in ["EditCurrent", "NewEditCurrent"]:
+            ec_cls = getattr(ec_mod, cls_name, None)
+            if ec_cls and not getattr(ec_cls, "_edn_shortcut_patched", False):
+                ec_cls._edn_shortcut_patched = True
+                orig_ec_init = ec_cls.__init__
+                def make_ec_init(orig_init):
+                    def _patched_ec_init(self, mw):
+                        orig_init(self, mw)
+                        install_editcurrent_escape_shortcut(self)
+                        QTimer.singleShot(120, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
+                        QTimer.singleShot(350, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
+                    return _patched_ec_init
+                ec_cls.__init__ = make_ec_init(orig_ec_init)
+
+                orig_ec_reopen = getattr(ec_cls, 'reopen', None)
+                if orig_ec_reopen:
+                    def make_ec_reopen(orig_reopen):
+                        def _patched_ec_reopen(self, mw):
+                            orig_reopen(self, mw)
+                            self.activateWindow()
+                            self.raise_()
+                            QTimer.singleShot(100, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
+                        return _patched_ec_reopen
+                    ec_cls.reopen = make_ec_reopen(orig_ec_reopen)
+    except Exception as e:
+        log(f"Failed to patch EditCurrent: {e}")

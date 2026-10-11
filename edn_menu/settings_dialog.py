@@ -1019,6 +1019,77 @@ class EDNSettingsDialog(QDialog):
 
         layout.addWidget(group_visual)
 
+        # ── Group 2 : Formatage Visuel Automatique ──
+        group_formatting = QFrame()
+        group_formatting.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T["bg_card"]};
+                border: 1px solid {T["border_card"]};
+                border-radius: 8px;
+            }}
+        """)
+        gf_layout = QVBoxLayout(group_formatting)
+        gf_layout.setContentsMargins(14, 12, 14, 12)
+        gf_layout.setSpacing(10)
+
+        gf_layout.addWidget(make_selectable_label(f"<b style='color: {T['text_main']};'>Formatage Visuel Automatique</b>"))
+        gf_layout.addWidget(make_selectable_label(
+            f"<span style='color: {T['text_muted']}; font-size: 11.5px;'>"
+            f"Activez ou désactivez les règles de mise en page automatique appliquées à vos cartes."
+            f"</span>"
+        ))
+
+        # 1. Compresser les sauts de ligne multiples
+        self.cb_clean_duplicate_line_breaks = QCheckBox("Compresser les sauts de ligne multiples consécutifs")
+        self.cb_clean_duplicate_line_breaks.setChecked(self.prefs.get("cleanDuplicateLineBreaks", True))
+        self.cb_clean_duplicate_line_breaks.setToolTip(
+            "Si activé (par défaut), remplace les séquences de sauts de ligne consécutifs (<br><br>) par un saut unique.\n"
+            "Si désactivé, préserve scrupuleusement tous vos sauts de ligne et lignes vides."
+        )
+        gf_layout.addWidget(self.cb_clean_duplicate_line_breaks)
+
+        lbl_br_desc = make_selectable_label(
+            f"<small style='color: {T['text_muted']}; margin-left: 20px;'>"
+            f"Désactivez cette option si vous souhaitez que vos lignes vides et espacements restent intacts."
+            f"</small>"
+        )
+        gf_layout.addWidget(lbl_br_desc)
+
+        # 2. Saut de ligne automatique après chaque carte liée
+        self.cb_auto_line_break_linked_cards = QCheckBox("Saut de ligne automatique après chaque carte liée")
+        self.cb_auto_line_break_linked_cards.setChecked(self.prefs.get("autoLineBreakLinkedCards", True))
+        self.cb_auto_line_break_linked_cards.setToolTip(
+            "Si activé, insère automatiquement un saut de ligne après chaque badge de carte liée et nettoie les sauts en début/fin de section.\n"
+            "Si désactivé, respecte strictement la disposition manuelle de vos cartes liées."
+        )
+        gf_layout.addWidget(self.cb_auto_line_break_linked_cards)
+
+        # 3. Majuscule première lettre des champs et puces
+        self.cb_auto_capitalize_fields = QCheckBox("Mettre en majuscule la première lettre des champs et des puces")
+        self.cb_auto_capitalize_fields.setChecked(self.prefs.get("autoCapitalizeFields", True))
+        self.cb_auto_capitalize_fields.setToolTip(
+            "Si activé, met automatiquement en majuscule le premier caractère de chaque champ et de chaque puce lors de l'affichage."
+        )
+        gf_layout.addWidget(self.cb_auto_capitalize_fields)
+
+        # 4. Majuscule première lettre des cartes liées
+        self.cb_auto_capitalize_linked_cards = QCheckBox("Mettre en majuscule la première lettre des cartes liées")
+        self.cb_auto_capitalize_linked_cards.setChecked(self.prefs.get("autoCapitalizeLinkedCards", True))
+        self.cb_auto_capitalize_linked_cards.setToolTip(
+            "Si activé, met automatiquement en majuscule le premier mot de chaque entrée dans la section des cartes liées."
+        )
+        gf_layout.addWidget(self.cb_auto_capitalize_linked_cards)
+
+        # 5. Nettoyage du presse-papier
+        self.cb_clean_clipboard_formatting = QCheckBox("Nettoyer les styles de couleur et de fond au copier-coller")
+        self.cb_clean_clipboard_formatting.setChecked(self.prefs.get("cleanClipboardFormatting", True))
+        self.cb_clean_clipboard_formatting.setToolTip(
+            "Si activé, supprime les couleurs et arrière-plans résiduels lors de la copie de texte depuis une carte."
+        )
+        gf_layout.addWidget(self.cb_clean_clipboard_formatting)
+
+        layout.addWidget(group_formatting)
+
         # ── Group 2 : Multi-appareils info ──
         sentinel_info = make_selectable_label(
             f"<span style='font-size: 11.5px; color: {T['notice_text']};'><b>Synchronisation multi-appareils :</b> Les préférences "
@@ -1435,6 +1506,12 @@ class EDNSettingsDialog(QDialog):
             self.combo_flag_review_leech.setCurrentIndex(idx_rev_leech)
         self._update_flag_row_style(self.combo_flag_review_leech, self.frame_flag_review_leech)
 
+        self.cb_clean_duplicate_line_breaks.setChecked(DEFAULT_PREFS.get("cleanDuplicateLineBreaks", True))
+        self.cb_auto_line_break_linked_cards.setChecked(DEFAULT_PREFS.get("autoLineBreakLinkedCards", True))
+        self.cb_auto_capitalize_fields.setChecked(DEFAULT_PREFS.get("autoCapitalizeFields", True))
+        self.cb_auto_capitalize_linked_cards.setChecked(DEFAULT_PREFS.get("autoCapitalizeLinkedCards", True))
+        self.cb_clean_clipboard_formatting.setChecked(DEFAULT_PREFS.get("cleanClipboardFormatting", True))
+
         # 2. Rétablir Lier les cartes
         self.cb_mirror_on_paste.setChecked(DEFAULT_LINKED_CARDS_CONFIG["mirror_link_on_paste"])
         self.cb_desc_intelligent.setChecked(DEFAULT_LINKED_CARDS_CONFIG["description_intelligente"])
@@ -1534,6 +1611,11 @@ class EDNSettingsDialog(QDialog):
         self.prefs["virtual_flag_color_leech"] = self.combo_flag_review_leech.currentData()
         self.prefs["virtual_flag_color_suspended"] = self.combo_flag_sus.currentData()
         self.prefs["previewDualFlags"] = self.cb_preview_dual_flags.isChecked()
+        self.prefs["cleanDuplicateLineBreaks"] = self.cb_clean_duplicate_line_breaks.isChecked()
+        self.prefs["autoLineBreakLinkedCards"] = self.cb_auto_line_break_linked_cards.isChecked()
+        self.prefs["autoCapitalizeFields"] = self.cb_auto_capitalize_fields.isChecked()
+        self.prefs["autoCapitalizeLinkedCards"] = self.cb_auto_capitalize_linked_cards.isChecked()
+        self.prefs["cleanClipboardFormatting"] = self.cb_clean_clipboard_formatting.isChecked()
 
         save_prefs(self.prefs)
         _push_prefs_to_webview()

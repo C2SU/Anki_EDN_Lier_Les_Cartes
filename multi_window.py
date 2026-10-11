@@ -88,6 +88,19 @@ if not getattr(DialogManager, "_multi_window_patched", False):
         (creator, _) = self._dialogs[name]
         instance = creator(*args, **kwargs)
         self._openDialogs.append(instance)
+        if name in ("EditCurrent", "NewEditCurrent") and instance:
+            try:
+                try:
+                    from .editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
+                except ImportError:
+                    from Anki_EDN_Lier_les_cartes.editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
+                install_editcurrent_escape_shortcut(instance)
+                if hasattr(instance, "editor"):
+                    from aqt.qt import QTimer
+                    QTimer.singleShot(150, lambda: refocus_editor_field(instance.editor, 0))
+                    QTimer.singleShot(350, lambda: refocus_editor_field(instance.editor, 0))
+            except Exception:
+                pass
         return instance
     DialogManager.openMany = openMany
 
@@ -152,9 +165,11 @@ if not getattr(DialogManager, "_multi_window_patched", False):
             onsuccess()
             return
 
+        closed_instances = set()
         for instance in list(self._openDialogs):
             try:
                 if instance is not None and not sip.isdeleted(instance):
+                    closed_instances.add(id(instance))
                     if getattr(instance, "silentlyClose", False):
                         instance.close()
                         callback()
@@ -168,5 +183,10 @@ if not getattr(DialogManager, "_multi_window_patched", False):
                 pass
 
         _clean_dead_references(self)
+        if hasattr(self, "_dialogs"):
+            for name, entry in list(self._dialogs.items()):
+                inst = entry[1]
+                if inst is not None and id(inst) in closed_instances:
+                    entry[1] = None
         return old_closeAll(self, onsuccess)
     DialogManager.closeAll = closeAll

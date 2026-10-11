@@ -7,6 +7,7 @@ Persiste les préférences via localStorage injecté dans le reviewer et via une
 from __future__ import annotations
 import os
 import json
+import re
 
 from aqt import mw, gui_hooks
 from aqt.qt import *
@@ -38,6 +39,11 @@ DEFAULT_PREFS = {
     "flagAgainEnabled": False,
     "flagAgainCount": 7,
     "virtual_flag_color_leech": "flag2",
+    "cleanDuplicateLineBreaks": True,
+    "autoLineBreakLinkedCards": True,
+    "autoCapitalizeFields": True,
+    "autoCapitalizeLinkedCards": True,
+    "cleanClipboardFormatting": True,
 }
 
 ANKI_FLAGS = [
@@ -212,6 +218,14 @@ def _push_prefs_to_webview(card=None):
 def _on_card_will_show(text: str, card, kind: str) -> str:
     """Injecte l'état is_new, is_difficult et le CSS dynamique dans le HTML de la carte avant son affichage."""
     try:
+        # 1. Supprimer le script externe bloquant sur desktop pour éviter tout gel du reviewer
+        if '_edn_prefs.js' in text:
+            text = re.sub(r'<script\s+src=["\']_edn_prefs\.js["\']\s*>\s*</script>', '', text, flags=re.IGNORECASE)
+
+        # 2. Éviter les injections redondantes si un autre module a déjà injecté les styles
+        if "id='edn-dynamic-card-styles'" in text or 'id="edn-dynamic-card-styles"' in text:
+            return text
+
         prefs = load_prefs()
         injections = []
         
@@ -219,33 +233,33 @@ def _on_card_will_show(text: str, card, kind: str) -> str:
         if dynamic_css:
             injections.append(f"<style id='edn-dynamic-card-styles'>{dynamic_css}</style>")
             
-        if prefs.get("showFlagBorders", True):
-            reps = getattr(card, 'reps', 0)
-            card_type = getattr(card, 'type', 0)
-            queue = getattr(card, 'queue', 0)
-            is_new = (reps == 0 and (card_type == 0 or queue == 0 or queue == 1))
-            is_new_js = "true" if (is_new and prefs.get("virtualBlueFlagForNewCards", False)) else "false"
+        reps = getattr(card, 'reps', 0)
+        card_type = getattr(card, 'type', 0)
+        queue = getattr(card, 'queue', 0)
+        is_new = (reps == 0 and (card_type == 0 or queue == 0 or queue == 1))
+        is_new_js = "true" if (is_new and prefs.get("virtualBlueFlagForNewCards", False)) else "false"
+        
+        lapses = getattr(card, 'lapses', 0)
+        again_threshold = prefs.get("flagAgainCount", 7)
+        is_diff = (prefs.get("flagAgainEnabled", False) and lapses >= again_threshold)
+        is_diff_js = "true" if is_diff else "false"
+        
+        sentinel_tags = []
+        if is_new and prefs.get("virtualBlueFlagForNewCards", False):
+            sentinel_tags.append("<div id='ednVirtualFlagData' style='display:none;'>new</div>")
+        if is_diff:
+            sentinel_tags.append("<div id='ednDifficultFlagData' style='display:none;'>difficult</div>")
             
-            lapses = getattr(card, 'lapses', 0)
-            again_threshold = prefs.get("flagAgainCount", 7)
-            is_diff = (prefs.get("flagAgainEnabled", False) and lapses >= again_threshold)
-            is_diff_js = "true" if is_diff else "false"
-            
-            sentinel_tags = []
-            if is_new and prefs.get("virtualBlueFlagForNewCards", False):
-                sentinel_tags.append("<div id='ednVirtualFlagData' style='display:none;'>new</div>")
-            if is_diff:
-                sentinel_tags.append("<div id='ednDifficultFlagData' style='display:none;'>difficult</div>")
-                
-            injections.append(
-                f"<script>"
-                f"window._ednIsNewCard = {is_new_js}; "
-                f"window._ednIsDifficultCard = {is_diff_js}; "
-                f"window._ednCardLapses = {lapses};"
-                f"</script>"
-            )
-            if sentinel_tags:
-                injections.append("".join(sentinel_tags))
+        injections.append(
+            f"<script>"
+            f"window.edn_prefs = {json.dumps(prefs)}; "
+            f"window._ednIsNewCard = {is_new_js}; "
+            f"window._ednIsDifficultCard = {is_diff_js}; "
+            f"window._ednCardLapses = {lapses};"
+            f"</script>"
+        )
+        if sentinel_tags:
+            injections.append("".join(sentinel_tags))
             
         if injections:
             return "".join(injections) + text
@@ -447,6 +461,59 @@ class CardStylesDialog(QDialog):
         virtual_flag_desc.setStyleSheet(f"color: {muted_color}; margin-left: 36px;")
         layout.addWidget(virtual_flag_desc)
 
+        layout.addSpacing(8)
+
+        # ── Groupe : Formatage visuel automatique ──
+        sep_fmt = QFrame()
+        sep_fmt.setFrameShape(QFrame.Shape.HLine)
+        sep_fmt.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep_fmt)
+
+        fmt_title = QLabel("<b>Formatage visuel automatique</b>")
+        layout.addWidget(fmt_title)
+
+        fmt_desc = QLabel(
+            "<small>Personnalisez ou désactivez les règles de mise en page automatique appliquées à vos cartes.</small>"
+        )
+        fmt_desc.setStyleSheet(f"color: {muted_color};")
+        layout.addWidget(fmt_desc)
+
+        self.cb_clean_duplicate_br = QCheckBox("Compresser les sauts de ligne multiples consécutifs")
+        self.cb_clean_duplicate_br.setChecked(self.prefs.get("cleanDuplicateLineBreaks", True))
+        self.cb_clean_duplicate_br.setToolTip(
+            "Si activé (par défaut), remplace les suites de sauts de ligne consécutifs (<br><br>) par un saut unique.\n"
+            "Si désactivé, préserve l'intégralité des sauts de ligne et lignes vides de vos cartes."
+        )
+        layout.addWidget(self.cb_clean_duplicate_br)
+
+        self.cb_auto_lb_linked = QCheckBox("Saut de ligne automatique après chaque carte liée")
+        self.cb_auto_lb_linked.setChecked(self.prefs.get("autoLineBreakLinkedCards", True))
+        self.cb_auto_lb_linked.setToolTip(
+            "Si activé, insère automatiquement un saut de ligne après chaque carte liée et nettoie les sauts en début/fin de section."
+        )
+        layout.addWidget(self.cb_auto_lb_linked)
+
+        self.cb_auto_cap_fields = QCheckBox("Mettre en majuscule la première lettre des champs et des puces")
+        self.cb_auto_cap_fields.setChecked(self.prefs.get("autoCapitalizeFields", True))
+        self.cb_auto_cap_fields.setToolTip(
+            "Si activé, met automatiquement en majuscule la première lettre de chaque champ et de chaque puce."
+        )
+        layout.addWidget(self.cb_auto_cap_fields)
+
+        self.cb_auto_cap_linked = QCheckBox("Mettre en majuscule la première lettre des cartes liées")
+        self.cb_auto_cap_linked.setChecked(self.prefs.get("autoCapitalizeLinkedCards", True))
+        self.cb_auto_cap_linked.setToolTip(
+            "Si activé, met automatiquement en majuscule le premier mot de chaque entrée de carte liée."
+        )
+        layout.addWidget(self.cb_auto_cap_linked)
+
+        self.cb_clean_clipboard = QCheckBox("Nettoyer les styles de couleur et de fond au copier-coller")
+        self.cb_clean_clipboard.setChecked(self.prefs.get("cleanClipboardFormatting", True))
+        self.cb_clean_clipboard.setToolTip(
+            "Si activé, supprime les couleurs et styles d'arrière-plan résiduels lors de la copie du texte d'une carte."
+        )
+        layout.addWidget(self.cb_clean_clipboard)
+
         layout.addSpacing(16)
 
         # Info note sentinelle
@@ -503,6 +570,11 @@ class CardStylesDialog(QDialog):
         self.prefs["virtual_flag_color_suspended"] = self.combo_flag_sus.currentData()
         self.prefs["reviewDualFlags"]   = self.cb_dual_flags_review.isChecked()
         self.prefs["previewDualFlags"]  = self.cb_preview_dual_flags.isChecked()
+        self.prefs["cleanDuplicateLineBreaks"] = self.cb_clean_duplicate_br.isChecked()
+        self.prefs["autoLineBreakLinkedCards"] = self.cb_auto_lb_linked.isChecked()
+        self.prefs["autoCapitalizeFields"] = self.cb_auto_cap_fields.isChecked()
+        self.prefs["autoCapitalizeLinkedCards"] = self.cb_auto_cap_linked.isChecked()
+        self.prefs["cleanClipboardFormatting"] = self.cb_clean_clipboard.isChecked()
         save_prefs(self.prefs)
         _push_prefs_to_webview()
         tooltip("Préférences cartes sauvegardées !")
