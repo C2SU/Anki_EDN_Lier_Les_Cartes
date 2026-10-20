@@ -78,15 +78,23 @@ def _prefs_file() -> str:
     return os.path.join(ADDON_PATH, "edn_card_prefs.json")
 
 
+_CACHED_PREFS = None
+
+
 def load_prefs() -> dict:
+    global _CACHED_PREFS
+    if _CACHED_PREFS is not None:
+        return _CACHED_PREFS
     try:
         p = _prefs_file()
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as f:
-                return {**DEFAULT_PREFS, **json.load(f)}
+                _CACHED_PREFS = {**DEFAULT_PREFS, **json.load(f)}
+                return _CACHED_PREFS
     except Exception:
         pass
-    return dict(DEFAULT_PREFS)
+    _CACHED_PREFS = dict(DEFAULT_PREFS)
+    return _CACHED_PREFS
 
 
 def _generate_dynamic_css(prefs: dict) -> str:
@@ -164,6 +172,8 @@ def _write_prefs_to_media_folder(prefs: dict):
 
 
 def save_prefs(prefs: dict):
+    global _CACHED_PREFS
+    _CACHED_PREFS = dict(prefs)
     try:
         p = _prefs_file()
         with open(p, "w", encoding="utf-8") as f:
@@ -630,6 +640,8 @@ def _sync_prefs_from_media_file():
                 merged_prefs = {**DEFAULT_PREFS, **prefs}
                 with open(local_path, "w", encoding="utf-8") as f:
                     json.dump(merged_prefs, f, ensure_ascii=False, indent=2)
+                global _CACHED_PREFS
+                _CACHED_PREFS = merged_prefs
                 print(f"[EDN Card Styles] Prefs initialisees depuis _edn_prefs.js (premier demarrage)")
     except Exception as e:
         print(f"[EDN Card Styles] Erreur sync depuis _edn_prefs.js: {e}")
@@ -652,6 +664,9 @@ def _on_profile_opened():
 
 def init_card_styles():
     """Initialise les hooks du reviewer."""
+    if getattr(mw, "_edn_card_styles_hooks_registered", False):
+        return
+    mw._edn_card_styles_hooks_registered = True
     gui_hooks.reviewer_did_show_question.append(_on_reviewer_did_show_question)
     gui_hooks.card_will_show.append(_on_card_will_show)
     gui_hooks.profile_did_open.append(_on_profile_opened)

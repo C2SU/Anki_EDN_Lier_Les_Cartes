@@ -435,6 +435,18 @@ def get_active_editor(context=None):
             except Exception:
                 pass
 
+    # 3.5 Check focused widget's window editor
+    if hasattr(mw, 'app') and hasattr(mw.app, 'focusWidget'):
+        try:
+            fw = mw.app.focusWidget()
+            if fw and hasattr(fw, 'window'):
+                f_win = fw.window()
+                if f_win and hasattr(f_win, 'editor') and f_win.editor and _is_editor_valid(f_win.editor):
+                    log("get_active_editor: returned focusWidget window editor")
+                    return _sync_current_editor(f_win.editor)
+        except Exception:
+            pass
+
     # 4. Check active window's editor
     if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow'):
         win = mw.app.activeWindow()
@@ -610,28 +622,69 @@ def _is_preview_popup_alive():
         _preview_popup = None
         return False
 
-def refocus_editor_field(editor, field_idx=0):
-    """Restaure proprement le focus sur la fenetre parente, sur editor.web,
-    et active le champ cible (champ 0 par defaut) dans le Svelte Editor."""
+def refocus_editor_field(editor, field_idx=None, only_if_unfocused=False, activate_window=False):
+    """Restaure proprement le focus sur la fenetre parente et sur editor.web.
+    Preserve le champ actif courant ou last_field_index par defaut sans ecraser la selection."""
     if not editor:
         return
     try:
-        parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
-        if parent_win and hasattr(parent_win, 'activateWindow'):
+        from PyQt6 import sip
+    except ImportError:
+        try:
+            import sip
+        except ImportError:
+            sip = None
+    try:
+        ed_widget = getattr(editor, 'widget', None)
+        if sip and ed_widget and sip.isdeleted(ed_widget):
+            return
+        parent_win = getattr(editor, 'parentWindow', None) or (ed_widget.window() if ed_widget else None)
+        if sip and parent_win and sip.isdeleted(parent_win):
+            return
+        if parent_win and hasattr(parent_win, 'activateWindow') and (activate_window or (hasattr(parent_win, 'isActiveWindow') and parent_win.isActiveWindow())):
             parent_win.activateWindow()
             if hasattr(parent_win, 'raise_'):
                 parent_win.raise_()
 
         if hasattr(editor, 'web') and editor.web:
-            editor.web.setFocus()
-            target = field_idx if field_idx is not None else 0
+            if sip and sip.isdeleted(editor.web):
+                return
+            if activate_window or (parent_win and hasattr(parent_win, 'isActiveWindow') and parent_win.isActiveWindow()):
+                editor.web.setFocus()
+            target_py = field_idx
+            if target_py is None:
+                cur_f = getattr(editor, 'currentField', None)
+                if cur_f is not None and isinstance(cur_f, int):
+                    target_py = cur_f
+                else:
+                    last_f = getattr(editor, 'last_field_index', None)
+                    if last_f is not None and isinstance(last_f, int):
+                        target_py = last_f
+            target_js = f"{target_py}" if target_py is not None else "null"
+            only_unfocused_js = "true" if only_if_unfocused else "false"
             js = f"""
             (function() {{
                 try {{
+                    var onlyUnfocused = {only_unfocused_js};
+                    var hasFocus = (typeof _hasActiveFieldFocus === 'function') ? _hasActiveFieldFocus() : false;
+                    if (onlyUnfocused && hasFocus) {{
+                        return;
+                    }}
+                    var actIdx = (typeof _resolveActiveFieldIndex === 'function') ? _resolveActiveFieldIndex() : -1;
+                    if (actIdx < 0 && typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) {{
+                        actIdx = window._ednLastActiveField;
+                    }}
+                    var target = {target_js};
+                    if (target === null || typeof target === 'undefined') {{
+                        target = actIdx >= 0 ? actIdx : 0;
+                    }}
+                    if (actIdx === target && hasFocus) {{
+                        return;
+                    }}
                     if (typeof focusField === 'function') {{
-                        focusField({target});
+                        focusField(target);
                     }} else if (typeof globalThis.focusField === 'function') {{
-                        globalThis.focusField({target});
+                        globalThis.focusField(target);
                     }}
                 }} catch(e) {{}}
             }})();
@@ -868,10 +921,9 @@ def handle_preview_popup_message(message, context=None):
             print("Error forwarding key to assistant:", e)
     elif message.startswith("open_browser:"):
         try:
-            nid = message[len("open_browser:"):]
-            from aqt import dialogs
-            browser = dialogs.open("Browser", mw)
-            browser.search_for(f"nid:{nid}")
+            nid = message[len("open_browser:"):].strip(" :()\"'")
+            from .linked_cards import open_card_in_browser
+            open_card_in_browser(nid)
         except Exception as e:
             print("Erreur open_browser from preview:", e)
 
@@ -1137,10 +1189,16 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
             var sendPycmd = pycmd;
             window.sendPycmd = pycmd;
 
+            window._ednLastOpenBrowserTime = 0;
+            window._ednLastOpenBrowserNid = null;
             window.cards_ct_click = function(nid) {
-                if (nid) {
-                    pycmd('open_browser:' + nid);
-                }
+                var cleanNid = String(nid || '').trim().replace(/[^0-9]/g, '');
+                if (!cleanNid) return;
+                var now = Date.now();
+                if (window._ednLastOpenBrowserNid === cleanNid && (now - window._ednLastOpenBrowserTime < 1000)) return;
+                window._ednLastOpenBrowserTime = now;
+                window._ednLastOpenBrowserNid = cleanNid;
+                pycmd('open_browser:' + cleanNid);
             };
 
             // Event listener délégué pour remplacer les attributs onclick bloqués par CSP
@@ -1148,17 +1206,34 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 var el = e.target;
                 while (el && el !== document.body) {
                     if (el.getAttribute && el.getAttribute('data-onclick')) {
-                        var clickAttr = el.getAttribute('data-onclick');
-                        if (clickAttr.includes('toggle(')) {
-                            var match = clickAttr.match(/toggle\(['"](.*?)['"]\)/);
-                            if (match && window.toggle) {
-                                window.toggle(match[1]);
+                        var clickAttr = el.getAttribute('data-onclick').trim().replace(/;\s*$/, '');
+                        var toggleMatch = clickAttr.match(/^toggle\(\s*['"]?([^'"]*?)['"]?\s*\)$/);
+                        if (toggleMatch) {
+                            var fn = window.toggle || (typeof toggle !== 'undefined' ? toggle : null);
+                            if (fn) {
+                                try {
+                                    fn(toggleMatch[1]);
+                                } catch(err) {
+                                    console.error("Error executing toggle:", err);
+                                }
                             }
                         } else {
-                            try {
-                                new Function(clickAttr).call(el);
-                            } catch(err) {
-                                console.error("Error executing data-onclick:", err);
+                            var ctMatch = clickAttr.match(/^cards_ct_click\(\s*['"]?([a-zA-Z0-9_-]+)['"]?(?:\s*,\s*(true|false))?\s*\)$/);
+                            if (ctMatch) {
+                                var fnCt = window.cards_ct_click || (typeof cards_ct_click !== 'undefined' ? cards_ct_click : null);
+                                if (fnCt) {
+                                    try {
+                                        if (ctMatch[2]) {
+                                            fnCt(ctMatch[1], ctMatch[2] === 'true');
+                                        } else {
+                                            fnCt(ctMatch[1]);
+                                        }
+                                    } catch(err) {
+                                        console.error("Error executing cards_ct_click:", err);
+                                    }
+                                }
+                            } else {
+                                console.warn("Blocked non-whitelisted data-onclick:", clickAttr);
                             }
                         }
                         break;
@@ -1438,7 +1513,7 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                     previewBadgeClicked = true;
                     var nid = _gn(b);
                     if (nid) {
-                        sendPycmd('open_browser:' + nid);
+                        window.cards_ct_click(nid);
                     }
                 }
             });
@@ -3438,10 +3513,9 @@ def handle_assistant_message(handled, message, context):
  
     elif message.startswith("open_browser:"):
         try:
-            nid = message[len("open_browser:"):]
-            from aqt import dialogs
-            browser = dialogs.open("Browser", mw)
-            browser.search_for(f"nid:{nid}")
+            nid = message[len("open_browser:"):].strip(" :()\"'")
+            from .linked_cards import open_card_in_browser
+            open_card_in_browser(nid)
         except Exception as e:
             print("Erreur open_browser:", e)
         return (True, None)
@@ -3638,8 +3712,8 @@ def _setup_assistant_ui(editor):
         
         editor._editor_assistant_web = assistant
 
-        # Restaurer le focus sur le webview principal de l'editeur apres reparentage dans QSplitter
-        QTimer.singleShot(60, lambda: refocus_editor_field(editor, 0))
+        # Restaurer le focus sur le webview principal de l'editeur apres reparentage dans QSplitter sans forcer le champ 0
+        QTimer.singleShot(60, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
         
     except Exception as e:
         print("Failed to setup editor assistant:", e)
@@ -3728,7 +3802,7 @@ def _show_assistant(editor):
     # Declencher la mise a jour une seule fois apres un court delai
     QTimer.singleShot(60, lambda: update_assistant(editor, immediate=True))
     # Ne pas laisser l'affichage de l'assistant voler le focus au champ de l'editeur
-    QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
+    QTimer.singleShot(100, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
 
 def on_editor_did_load_note(editor):
     # Si le panneau doit etre ouvert mais n'a pas encore ete configure
@@ -3748,7 +3822,6 @@ def on_editor_did_load_note(editor):
         parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
         if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
             install_editcurrent_escape_shortcut(parent_win)
-            QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
         return
 
     # Si le panneau n'est pas configure pour s'ouvrir par defaut, ne mettre a jour que s'il est affiche
@@ -3764,7 +3837,6 @@ def on_editor_did_load_note(editor):
     parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
     if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
         install_editcurrent_escape_shortcut(parent_win)
-        QTimer.singleShot(100, lambda: refocus_editor_field(editor, 0))
 
 def init_assistant():
     gui_hooks.editor_did_init.append(on_editor_did_init)
@@ -3783,8 +3855,8 @@ def init_assistant():
                     def _patched_ec_init(self, mw):
                         orig_init(self, mw)
                         install_editcurrent_escape_shortcut(self)
-                        QTimer.singleShot(120, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
-                        QTimer.singleShot(350, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
+                        QTimer.singleShot(120, lambda: refocus_editor_field(getattr(self, 'editor', None), 0, only_if_unfocused=True, activate_window=True))
+                        QTimer.singleShot(350, lambda: refocus_editor_field(getattr(self, 'editor', None), 0, only_if_unfocused=True, activate_window=False))
                     return _patched_ec_init
                 ec_cls.__init__ = make_ec_init(orig_ec_init)
 
@@ -3792,10 +3864,15 @@ def init_assistant():
                 if orig_ec_reopen:
                     def make_ec_reopen(orig_reopen):
                         def _patched_ec_reopen(self, mw):
+                            prev_note = getattr(getattr(self, 'editor', None), 'note', None)
+                            prev_nid = getattr(prev_note, 'id', None)
                             orig_reopen(self, mw)
                             self.activateWindow()
                             self.raise_()
-                            QTimer.singleShot(100, lambda: refocus_editor_field(getattr(self, 'editor', None), 0))
+                            curr_card = getattr(getattr(mw, 'reviewer', None), 'card', None)
+                            curr_nid = getattr(curr_card, 'nid', None)
+                            target_f = 0 if (prev_nid != curr_nid) else None
+                            QTimer.singleShot(100, lambda: refocus_editor_field(getattr(self, 'editor', None), target_f, only_if_unfocused=(target_f is None), activate_window=True))
                         return _patched_ec_reopen
                     ec_cls.reopen = make_ec_reopen(orig_ec_reopen)
     except Exception as e:

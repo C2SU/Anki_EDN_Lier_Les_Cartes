@@ -184,6 +184,16 @@ try:
                     except Exception:
                         pass
                     try:
+                        prev_note = getattr(self, "note", None)
+                        prev_nid = getattr(prev_note, "id", 0) if prev_note is not None else 0
+                        new_nid = getattr(note, "id", 0) if note is not None else 0
+                        if prev_nid and new_nid and prev_nid == new_nid and focusTo is None:
+                            cur_fld = getattr(self, "currentField", None)
+                            if cur_fld is not None:
+                                focusTo = cur_fld
+                    except Exception:
+                        pass
+                    try:
                         return orig(self, note, hide=hide, focusTo=focusTo)
                     except RuntimeError as e:
                         if "has been deleted" in str(e):
@@ -208,19 +218,40 @@ try:
         except Exception:
             pass
 
+    def _force_detach_editcurrent(ec_inst):
+        try:
+            from aqt import gui_hooks
+            op_cb = getattr(ec_inst, "on_operation_did_execute", None)
+            if op_cb:
+                gui_hooks.operation_did_execute.remove(op_cb)
+        except Exception:
+            pass
+        try:
+            import aqt
+            if hasattr(aqt, "dialogs"):
+                if hasattr(aqt.dialogs, "_openDialogs") and ec_inst in aqt.dialogs._openDialogs:
+                    aqt.dialogs._openDialogs.remove(ec_inst)
+                for d_name in ("EditCurrent", "NewEditCurrent"):
+                    if hasattr(aqt.dialogs, "_dialogs") and d_name in aqt.dialogs._dialogs:
+                        if aqt.dialogs._dialogs[d_name][1] is ec_inst:
+                            aqt.dialogs._dialogs[d_name][1] = None
+        except Exception:
+            pass
+
     for ec_cls in ec_classes:
         orig_ec_cleanup = ec_cls.cleanup
         def make_safe_ec_cleanup(orig):
             def safe_ec_cleanup(self):
                 if getattr(self, "_edn_ec_cleaned_up", False):
+                    _force_detach_editcurrent(self)
                     return
+                self._edn_ec_cleaned_up = True
+                _force_detach_editcurrent(self)
                 try:
                     if sip.isdeleted(self):
-                        self._edn_ec_cleaned_up = True
                         return
                 except Exception:
                     pass
-                self._edn_ec_cleaned_up = True
                 try:
                     orig(self)
                 except RuntimeError as e:
@@ -231,16 +262,66 @@ try:
             return safe_ec_cleanup
         ec_cls.cleanup = make_safe_ec_cleanup(orig_ec_cleanup)
 
+        orig_ec_on_op = getattr(ec_cls, "on_operation_did_execute", None)
+        if orig_ec_on_op:
+            def make_safe_ec_on_op(orig):
+                def safe_ec_on_op(self, changes, handler):
+                    if getattr(self, "_edn_ec_cleaned_up", False):
+                        _force_detach_editcurrent(self)
+                        return
+                    try:
+                        if sip.isdeleted(self):
+                            _force_detach_editcurrent(self)
+                            return
+                        if not self.isVisible():
+                            return
+                    except Exception:
+                        _force_detach_editcurrent(self)
+                        return
+                    try:
+                        editor = getattr(self, "editor", None)
+                        if getattr(changes, "note_text", False) and handler is not editor and editor is not None:
+                            note = getattr(editor, "note", None)
+                            if note is not None and hasattr(note, "fields") and hasattr(note, "load"):
+                                old_fields = list(note.fields)
+                                old_tags = list(getattr(note, "tags", []))
+                                try:
+                                    note.load()
+                                except Exception:
+                                    self.cleanup()
+                                    self.close()
+                                    return
+                                if list(note.fields) == old_fields and list(getattr(note, "tags", [])) == old_tags:
+                                    return
+                                cur_fld = getattr(editor, "currentField", None)
+                                if cur_fld is None:
+                                    cur_fld = getattr(editor, "last_field_index", None)
+                                focus_target = cur_fld if self.isActiveWindow() else None
+                                editor.set_note(note, focusTo=focus_target)
+                                return
+                        return orig(self, changes, handler)
+                    except RuntimeError as e:
+                        if "has been deleted" in str(e):
+                            _force_detach_editcurrent(self)
+                        else:
+                            raise
+                return safe_ec_on_op
+            ec_cls.on_operation_did_execute = make_safe_ec_on_op(orig_ec_on_op)
+            if hasattr(ec_cls, "onReset"):
+                ec_cls.onReset = ec_cls.on_operation_did_execute
+
         orig_ec_close_event = getattr(ec_cls, "closeEvent", None)
         if orig_ec_close_event:
             def make_safe_ec_close_event(orig):
                 def safe_ec_close_event(self, evt):
                     if getattr(self, "_edn_ec_cleaned_up", False):
+                        _force_detach_editcurrent(self)
                         if evt:
                             evt.accept()
                         return
                     try:
                         if sip.isdeleted(self):
+                            _force_detach_editcurrent(self)
                             if evt:
                                 evt.accept()
                             return
@@ -250,6 +331,7 @@ try:
                         orig(self, evt)
                     except RuntimeError as e:
                         if "has been deleted" in str(e):
+                            _force_detach_editcurrent(self)
                             if evt:
                                 evt.accept()
                         else:
@@ -261,7 +343,6 @@ try:
         if orig_ec_save_close:
             def make_safe_save_close(orig):
                 def safe_save_and_close(self):
-                    self._edn_ec_cleaned_up = True
                     try:
                         orig(self)
                     except RuntimeError as e:
@@ -269,6 +350,9 @@ try:
                             pass
                         else:
                             raise
+                    finally:
+                        self._edn_ec_cleaned_up = True
+                        _force_detach_editcurrent(self)
                 return safe_save_and_close
             ec_cls._saveAndClose = make_safe_save_close(orig_ec_save_close)
 except Exception as e:

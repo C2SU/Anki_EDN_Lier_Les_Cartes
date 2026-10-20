@@ -15,19 +15,39 @@ if not getattr(DialogManager, "_multi_window_patched", False):
     def shouldBeMultiple(name):
         """Whether window name may have multiple copy.
 
-        Ensure that ["multiple"] exsits in the configuration file. The default value being True.
+        Ensure that ["multiple"] exists in the configuration file. The default value being True.
         """
-        userOption = mw.addonManager.getConfig(__name__)
+        if name in ("Browser", "AddCards", "NewAddCards", "EditCurrent", "NewEditCurrent"):
+            return False
+
+        userOption = None
+        try:
+            addon_name = mw.addonManager.addonFromModule(__name__)
+            userOption = mw.addonManager.getConfig(addon_name)
+        except Exception:
+            pass
+        if not userOption:
+            try:
+                userOption = mw.addonManager.getConfig(__name__)
+            except Exception:
+                pass
         if not userOption:
             userOption = {}
             
         if "multiple" not in userOption:
-            userOption["multiple"] = {"default": True}
+            userOption["multiple"] = {
+                "default": True,
+                "Browser": False,
+                "AddCards": False,
+                "NewAddCards": False,
+                "EditCurrent": False,
+                "NewEditCurrent": False,
+            }
         multipleOption = userOption["multiple"]
         if name in multipleOption:
-            return multipleOption[name]
+            return bool(multipleOption[name])
         elif "default" in multipleOption:
-            return multipleOption["default"]
+            return bool(multipleOption["default"])
         else:
             return True
 
@@ -57,7 +77,7 @@ if not getattr(DialogManager, "_multi_window_patched", False):
 
     def __init__(self, oldDialog=None):
         if oldDialog is not None:
-            DialogManagerMultiple._dialogs = oldDialog._dialogs
+            DialogManager._dialogs = oldDialog._dialogs
         old_init(self)
     DialogManager.__init__ = __init__
 
@@ -69,6 +89,7 @@ if not getattr(DialogManager, "_multi_window_patched", False):
         Or reopen the window name, if it should be single in the
         config, and is already opened.
         """
+        _clean_dead_references(self)
         function = self.openMany if shouldBeMultiple(name) else self.old_open
         return function(name, *args, **kwargs)
     DialogManager.open = open
@@ -88,19 +109,6 @@ if not getattr(DialogManager, "_multi_window_patched", False):
         (creator, _) = self._dialogs[name]
         instance = creator(*args, **kwargs)
         self._openDialogs.append(instance)
-        if name in ("EditCurrent", "NewEditCurrent") and instance:
-            try:
-                try:
-                    from .editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
-                except ImportError:
-                    from Anki_EDN_Lier_les_cartes.editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
-                install_editcurrent_escape_shortcut(instance)
-                if hasattr(instance, "editor"):
-                    from aqt.qt import QTimer
-                    QTimer.singleShot(150, lambda: refocus_editor_field(instance.editor, 0))
-                    QTimer.singleShot(350, lambda: refocus_editor_field(instance.editor, 0))
-            except Exception:
-                pass
         return instance
     DialogManager.openMany = openMany
 

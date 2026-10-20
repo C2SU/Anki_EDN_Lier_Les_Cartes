@@ -26,47 +26,100 @@ def _get_registry() -> dict:
     return mw._edn_registered_modules
 
 def _get_config_path():
-    """Get config path (lazy initialization to avoid profile loading issues)."""
-    global _config_path
-    if _config_path is None:
-        # Prevent crash if profile is not yet loaded (e.g. during addon scan)
-        if mw is None or not mw.pm or not mw.pm.name:
-            return None
-        # CRITICAL: Use profile folder for shared config across all EDN addons
-        _config_path = os.path.join(mw.pm.profileFolder(), "edn_shared_config.json")
-    return _config_path
+    """Get config path dynamically based on currently active profile or fallback."""
+    try:
+        if mw and hasattr(mw, "pm") and mw.pm:
+            # 1. Active profile folder if open
+            try:
+                if getattr(mw.pm, "name", None):
+                    folder = mw.pm.profileFolder()
+                    path = os.path.join(folder, "edn_shared_config.json")
+                    if os.path.exists(path):
+                        return path
+                    # Auto-seed from other profiles if not yet created in active profile
+                    base_dir = getattr(mw.pm, "base", None)
+                    if base_dir and os.path.exists(base_dir):
+                        for sub in os.listdir(base_dir):
+                            candidate = os.path.join(base_dir, sub, "edn_shared_config.json")
+                            if os.path.isfile(candidate):
+                                try:
+                                    import shutil
+                                    shutil.copyfile(candidate, path)
+                                    return path
+                                except Exception:
+                                    pass
+                    return path
+            except Exception:
+                pass
+            # 2. Base directory fallback before profile is fully opened
+            base_dir = getattr(mw.pm, "base", None)
+            if base_dir and os.path.exists(base_dir):
+                for sub in os.listdir(base_dir):
+                    candidate = os.path.join(base_dir, sub, "edn_shared_config.json")
+                    if os.path.isfile(candidate):
+                        return candidate
+    except Exception:
+        pass
+    # 3. Environment APPDATA fallback
+    try:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            anki2_dir = os.path.join(appdata, "Anki2")
+            if os.path.exists(anki2_dir):
+                for sub in os.listdir(anki2_dir):
+                    candidate = os.path.join(anki2_dir, sub, "edn_shared_config.json")
+                    if os.path.isfile(candidate):
+                        return candidate
+    except Exception:
+        pass
+    return None
 
 def get_edn_menu():
     """Get or create the shared Anki EDN menu."""
     global _edn_menu
     
-    # Check if menu already exists (created by another addon instance)
-    if _edn_menu is None:
-        # Prevent crash if UI is not yet fully initialized
-        if not hasattr(mw, "form") or not mw.form or not hasattr(mw.form, "menubar") or not mw.form.menubar:
-            return None
-            
-        # Search for existing menu by object name in menubar
-        for action in mw.form.menubar.actions():
-            menu = action.menu()
-            if menu and menu.objectName() == "AnkiEDNMenu":
-                _edn_menu = menu
-                print("[shared_menu] ✓ Using existing Anki EDN menu")
-                return _edn_menu
-        
-        # Create new menu if not found
+    if not hasattr(mw, "form") or not mw.form:
+        return None
+    menubar = getattr(mw.form, "menubar", None)
+    if not menubar:
+        return None
+
+    existing_menu = None
+    for action in menubar.actions():
+        menu = action.menu()
+        if menu and (menu.objectName() == "AnkiEDNMenu" or menu.title() == "Anki EDN"):
+            existing_menu = menu
+            break
+
+    if existing_menu is not None:
+        _edn_menu = existing_menu
+        _edn_menu.setObjectName("AnkiEDNMenu")
+    elif _edn_menu is None:
         _edn_menu = QMenu("Anki EDN", mw)
-        _edn_menu.setObjectName("AnkiEDNMenu")  # CRITICAL for cross-addon detection
-        mw.form.menubar.addMenu(_edn_menu)
+        _edn_menu.setObjectName("AnkiEDNMenu")
+        menubar.addMenu(_edn_menu)
         
-        # Add settings action at bottom
         _edn_menu.addSeparator()
         settings_action = QAction("Paramètres EDN...", mw)
+        settings_action.setObjectName("EDN_Settings_Action")
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.triggered.connect(open_settings_dialog)
         _edn_menu.addAction(settings_action)
-        
-        print("[shared_menu] ✓ Created new Anki EDN menu")
+
+    if _edn_menu is not None:
+        seen_texts = set()
+        for act in list(_edn_menu.actions()):
+            txt = act.text()
+            if not txt or act.isSeparator() or txt == "Paramètres EDN...":
+                continue
+            if txt in seen_texts:
+                _edn_menu.removeAction(act)
+                try:
+                    act.deleteLater()
+                except Exception:
+                    pass
+            else:
+                seen_texts.add(txt)
     
     return _edn_menu
 
@@ -98,37 +151,59 @@ def should_initialize_module(module_id: str) -> bool:
 
 def register_action(module_id: str, label: str, callback: Callable, 
                    shortcut: Optional[str] = None, icon: Optional[str] = None):
-    """Register a menu action for a module."""
+    """Register a menu action for a module idempotently."""
     if not is_module_enabled(module_id):
         return None
     
     menu = get_edn_menu()
-    
+    if not menu:
+        return None
+
+    action_obj_name = f"EDN_Action_{module_id}_{label}"
+    for existing_action in menu.actions():
+        if existing_action.objectName() == action_obj_name or existing_action.text() == label:
+            existing_action.setObjectName(action_obj_name)
+            try:
+                existing_action.triggered.disconnect()
+            except Exception:
+                pass
+            existing_action.triggered.connect(callback)
+            if shortcut:
+                try:
+                    custom_shortcut = get_shortcut(f"{module_id}_{label}", shortcut)
+                    existing_action.setShortcut(QKeySequence(custom_shortcut))
+                    existing_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+                except Exception:
+                    pass
+            return existing_action
+
     # Create action
     action = QAction(label, mw)
+    action.setObjectName(action_obj_name)
     action.triggered.connect(callback)
     
     if shortcut:
         try:
-            # Get custom shortcut from config or use default
             custom_shortcut = get_shortcut(f"{module_id}_{label}", shortcut)
             action.setShortcut(QKeySequence(custom_shortcut))
-            # CRITICAL: Set shortcut context to ApplicationShortcut so it works globally
             action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             print(f"[shared_menu] Set shortcut '{custom_shortcut}' for {label}")
         except Exception as e:
             print(f"[shared_menu] Error setting shortcut: {e}")
     
-    # Insert before separator (settings is last)
     actions = menu.actions()
     if len(actions) >= 2:
-        menu.insertAction(actions[-2], action)  # Before separator
+        menu.insertAction(actions[-2], action)
     else:
         menu.addAction(action)
     
-    # Track action
     registry = _get_registry()
     if module_id in registry:
+        for act_info in registry[module_id]["actions"]:
+            if act_info.get("label") == label:
+                act_info["action"] = action
+                act_info["shortcut"] = shortcut
+                return action
         registry[module_id]["actions"].append({
             "label": label,
             "shortcut": shortcut,
@@ -141,17 +216,50 @@ def register_action_shortcut_only(module_id: str, label: str, callback: Optional
                                   shortcut: Optional[str] = None, shortcut_key: Optional[str] = None):
     """
     Register a shortcut for a module without adding an item to the EDN menu bar dropdown.
-    Allows the shortcut to appear and be configured in the EDN Shortcuts dialog.
+    Installs the shortcut globally on mw with ApplicationShortcut context,
+    and registers it in the EDN registry for configuration in the Shortcuts dialog.
     """
+    action_key = shortcut_key or f"{module_id}_{label}"
+    effective_shortcut = get_shortcut(action_key, shortcut) if shortcut else ""
+    
+    action = None
+    is_noop_lambda = getattr(callback, "__name__", "") == "<lambda>"
+    if mw and callback and effective_shortcut and not is_noop_lambda:
+        obj_name = f"EDN_ShortcutOnly_{action_key}"
+        for act in mw.actions():
+            if act.objectName() == obj_name:
+                action = act
+                break
+        
+        if action is None:
+            action = QAction(label, mw)
+            action.setObjectName(obj_name)
+            mw.addAction(action)
+        
+        try:
+            action.triggered.disconnect()
+        except Exception:
+            pass
+        action.triggered.connect(callback)
+        action.setShortcut(QKeySequence(effective_shortcut))
+        action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+
     registry = _get_registry()
     if module_id in registry:
+        for item in registry[module_id]["actions"]:
+            if item.get("shortcut_key") == action_key:
+                item["shortcut"] = shortcut
+                item["action"] = action
+                item["callback"] = callback
+                return action
         registry[module_id]["actions"].append({
             "label": label,
             "shortcut": shortcut,
-            "shortcut_key": shortcut_key or f"{module_id}_{label}",
-            "action": None,
+            "shortcut_key": action_key,
+            "action": action,
             "callback": callback
         })
+    return action
 
 def register_interface(module_id: str, widget_class):
     """Register custom configuration widget for a module in settings dialog."""
@@ -159,19 +267,28 @@ def register_interface(module_id: str, widget_class):
     if module_id in registry:
         registry[module_id]["config_widget"] = widget_class
 
+_CACHED_CONFIG = None
+
 def get_config() -> dict:
     """Load EDN configuration."""
+    global _CACHED_CONFIG
+    if _CACHED_CONFIG is not None:
+        return _CACHED_CONFIG
     config_path = _get_config_path()
     if config_path and os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                _CACHED_CONFIG = json.load(f)
+                return _CACHED_CONFIG
         except:
             pass
-    return {"modules": {}, "shortcuts": {}}
+    _CACHED_CONFIG = {"modules": {}, "shortcuts": {}}
+    return _CACHED_CONFIG
 
 def save_config(config: dict):
     """Save EDN configuration."""
+    global _CACHED_CONFIG
+    _CACHED_CONFIG = dict(config)
     config_path = _get_config_path()
     if not config_path:
         return
@@ -261,3 +378,11 @@ def _initialize_card_styles_on_start():
 from aqt import gui_hooks
 gui_hooks.profile_did_open.append(_initialize_card_styles_on_start)
 
+try:
+    if __package__:
+        from .stability_guards import install_stability_guards
+    else:
+        from stability_guards import install_stability_guards
+    install_stability_guards()
+except Exception as e:
+    print(f"[shared_menu] Erreur installation stability_guards: {e}")

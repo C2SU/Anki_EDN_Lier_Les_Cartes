@@ -87,12 +87,30 @@ def _is_night_mode() -> bool:
                     return False
 
 def _toggle_assistant_from_menu():
-    """Bascule le panneau miroir pour l'éditeur courant (depuis le menu EDN)."""
+    """Bascule le panneau miroir pour l'éditeur courant (depuis le menu EDN ou raccourci global)."""
     try:
-        from .editor_assistant import get_active_editor, toggle_assistant
+        from .editor_assistant import get_active_editor
         editor = get_active_editor()
+        if not editor:
+            active_win = mw.app.activeWindow() if (hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow')) else None
+            if active_win and hasattr(active_win, 'editor') and active_win.editor:
+                editor = active_win.editor
+        if not editor:
+            from aqt import dialogs
+            b_entry = dialogs._dialogs.get("Browser")
+            if isinstance(b_entry, (list, tuple)) and len(b_entry) > 1 and b_entry[1]:
+                b = b_entry[1]
+                if hasattr(b, 'editor') and b.editor:
+                    editor = b.editor
         if editor:
-            toggle_assistant(editor)
+            try:
+                _focus_liens_field(editor)
+            except NameError:
+                from .editor_assistant import toggle_assistant
+                toggle_assistant(editor)
+        else:
+            from aqt.utils import tooltip
+            tooltip("Aucun éditeur actif. Ouvrez d'abord une carte en édition.")
     except Exception as e:
         log(f"toggle_assistant error: {e}")
 
@@ -576,95 +594,102 @@ def on_add_cards_did_add_note(note: Any) -> None:
         if not valid_targets:
             return
 
-        # 3. Propose to mirror links
-        parent = mw.app.activeWindow() or mw
-        
-        dialog = MirrorSelectionDialog(parent, valid_targets, source_note=note)
-        result = dialog.exec()
-        
-        accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
-        if result == accepted_code:
-            selected_targets = dialog.get_selected_targets()
-            if not selected_targets:
-                return
-                
-            # 4. Perform the mirroring
-            for nid_str, target_note, fidx, custom_recto in selected_targets:
-                # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
-                link_html = make_card_link(source_nid, custom_recto)
-                current_field_content = target_note.fields[fidx].strip()
-                if not current_field_content or current_field_content == '<br>':
-                    target_note.fields[fidx] = link_html
-                else:
-                    target_note.fields[fidx] = current_field_content + '<br>' + link_html
-                mw.col.update_note(target_note)
-                
-            tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
-            
-            # 5. Propose inter-linking between target cards
-            if len(selected_targets) >= 2:
-                pairs = []
-                for i in range(len(selected_targets)):
-                    for j in range(i + 1, len(selected_targets)):
-                        target_b = selected_targets[i]
-                        target_c = selected_targets[j]
-                        
-                        nid_b, note_b, _, _ = target_b
-                        nid_c, note_c, _, _ = target_c
-                        
-                        # Check if they already have links to each other
-                        already_linked = (
-                            any(nid_c in field for field in note_b.fields) or
-                            any(nid_b in field for field in note_c.fields)
-                        )
-                        if not already_linked:
-                            pairs.append((target_b, target_c))
-                            
-                if pairs:
-                    inter_dialog = InterLinkSelectionDialog(parent, pairs)
-                    inter_result = inter_dialog.exec()
-                    if inter_result == accepted_code:
-                        selected_pairs = inter_dialog.get_selected_pairs()
-                        if selected_pairs:
-                            for target_b, target_c in selected_pairs:
-                                nid_b, note_b, fidx_b = target_b[:3]
-                                nid_c, note_c, fidx_c = target_c[:3]
-                                
-                                smart_desc_b = generate_smart_link_label(note_c, note_b)
-                                recto_b = smart_desc_b if smart_desc_b else get_note_recto(note_b, 240)
-                                
-                                smart_desc_c = generate_smart_link_label(note_b, note_c)
-                                recto_c = smart_desc_c if smart_desc_c else get_note_recto(note_c, 240)
-                                
-                                # Add C's badge to B
-                                link_c = make_card_link(nid_c, recto_c)
-                                current_field_b = note_b.fields[fidx_b].strip()
-                                if not current_field_b or current_field_b == '<br>':
-                                    note_b.fields[fidx_b] = link_c
-                                else:
-                                    note_b.fields[fidx_b] = current_field_b + '<br>' + link_c
-                                mw.col.update_note(note_b)
-                                
-                                # Add B's badge to C
-                                link_b = make_card_link(nid_b, recto_b)
-                                current_field_c = note_c.fields[fidx_c].strip()
-                                if not current_field_c or current_field_c == '<br>':
-                                    note_c.fields[fidx_c] = link_b
-                                else:
-                                    note_c.fields[fidx_c] = current_field_c + '<br>' + link_b
-                                mw.col.update_note(note_c)
-                                
-                            tooltip(f"Liens croisés créés entre {len(selected_pairs)} paires de cartes.")
-            
-            # Refresh assistant if open
+        # 3. Propose to mirror links (différé de 120ms pour laisser AddCards exécuter setFields/focusField(0)
+        # de la carte n+1 avant que la boîte de dialogue modale ne prenne le focus et ne déclenche un blur)
+        def _show_mirror_dialogs():
             try:
-                from .editor_assistant import get_active_editor, update_assistant
-                editor = get_active_editor()
-                if editor:
-                    update_assistant(editor)
-            except Exception:
-                pass
-                
+                parent = mw.app.activeWindow() or mw
+
+                dialog = MirrorSelectionDialog(parent, valid_targets, source_note=note)
+                result = dialog.exec()
+
+                accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
+                if result == accepted_code:
+                    selected_targets = dialog.get_selected_targets()
+                    if not selected_targets:
+                        return
+
+                    # 4. Perform the mirroring
+                    for nid_str, target_note, fidx, custom_recto in selected_targets:
+                        # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
+                        link_html = make_card_link(source_nid, custom_recto)
+                        current_field_content = target_note.fields[fidx].strip()
+                        if not current_field_content or current_field_content == '<br>':
+                            target_note.fields[fidx] = link_html
+                        else:
+                            target_note.fields[fidx] = current_field_content + '<br>' + link_html
+                        mw.col.update_note(target_note)
+
+                    tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
+
+                    # 5. Propose inter-linking between target cards
+                    if len(selected_targets) >= 2:
+                        pairs = []
+                        for i in range(len(selected_targets)):
+                            for j in range(i + 1, len(selected_targets)):
+                                target_b = selected_targets[i]
+                                target_c = selected_targets[j]
+
+                                nid_b, note_b, _, _ = target_b
+                                nid_c, note_c, _, _ = target_c
+
+                                # Check if they already have links to each other
+                                already_linked = (
+                                    any(nid_c in field for field in note_b.fields) or
+                                    any(nid_b in field for field in note_c.fields)
+                                )
+                                if not already_linked:
+                                    pairs.append((target_b, target_c))
+
+                        if pairs:
+                            inter_dialog = InterLinkSelectionDialog(parent, pairs)
+                            inter_result = inter_dialog.exec()
+                            if inter_result == accepted_code:
+                                selected_pairs = inter_dialog.get_selected_pairs()
+                                if selected_pairs:
+                                    for target_b, target_c in selected_pairs:
+                                        nid_b, note_b, fidx_b = target_b[:3]
+                                        nid_c, note_c, fidx_c = target_c[:3]
+
+                                        smart_desc_b = generate_smart_link_label(note_c, note_b)
+                                        recto_b = smart_desc_b if smart_desc_b else get_note_recto(note_b, 240)
+
+                                        smart_desc_c = generate_smart_link_label(note_b, note_c)
+                                        recto_c = smart_desc_c if smart_desc_c else get_note_recto(note_c, 240)
+
+                                        # Add C's badge to B
+                                        link_c = make_card_link(nid_c, recto_c)
+                                        current_field_b = note_b.fields[fidx_b].strip()
+                                        if not current_field_b or current_field_b == '<br>':
+                                            note_b.fields[fidx_b] = link_c
+                                        else:
+                                            note_b.fields[fidx_b] = current_field_b + '<br>' + link_c
+                                        mw.col.update_note(note_b)
+
+                                        # Add B's badge to C
+                                        link_b = make_card_link(nid_b, recto_b)
+                                        current_field_c = note_c.fields[fidx_c].strip()
+                                        if not current_field_c or current_field_c == '<br>':
+                                            note_c.fields[fidx_c] = link_b
+                                        else:
+                                            note_c.fields[fidx_c] = current_field_c + '<br>' + link_b
+                                        mw.col.update_note(note_c)
+
+                                    tooltip(f"Liens croisés créés entre {len(selected_pairs)} paires de cartes.")
+
+                    # Refresh assistant if open
+                    try:
+                        from .editor_assistant import get_active_editor, update_assistant
+                        editor = get_active_editor()
+                        if editor:
+                            update_assistant(editor)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"Error in _show_mirror_dialogs: {e}")
+
+        QTimer.singleShot(120, _show_mirror_dialogs)
+
     except Exception as e:
         log(f"Error in on_add_cards_did_add_note: {e}")
 
@@ -755,6 +780,8 @@ def init_linked_cards():
         gui_hooks.editor_did_unfocus_field.append(_on_editor_unfocus_field)
     if hasattr(gui_hooks, 'editor_did_fire_typing_timer'):
         gui_hooks.editor_did_fire_typing_timer.append(_on_editor_typing_timer)
+    if hasattr(gui_hooks, 'editor_will_load_note'):
+        gui_hooks.editor_will_load_note.append(_on_editor_will_load_note)
     if hasattr(gui_hooks, 'editor_did_load_note'):
         gui_hooks.editor_did_load_note.append(_on_editor_load_note)
     
@@ -838,12 +865,14 @@ def build_add_to_card_script():
     kbd_preview = get_shortcut("linked_cards_kbd_preview", "p")
     kbd_navigate = get_shortcut("linked_cards_kbd_navigate", "r")
     kbd_back = get_shortcut("linked_cards_kbd_back", "z")
+    kbd_copy = get_shortcut("linked_cards_copy", "Ctrl+Alt+C")
     vars_js = (
         "<script type=\"text/javascript\">"
         "window._ednKbdOpenCfg = '" + kbd_open + "';"  
         "window._ednKbdPreviewCfg = '" + kbd_preview + "';"  
         "window._ednKbdNavigateCfg = '" + kbd_navigate + "';"  
         "window._ednKbdBackCfg = '" + kbd_back + "';"  
+        "window._ednKbdCopyCfg = '" + kbd_copy + "';"  
         "</script>"
     )
     return vars_js + _add_to_card_script_body
@@ -888,8 +917,12 @@ _add_to_card_script_body = r"""
         window._ednDelegatedClickInit = true;
         document.addEventListener('click', function(e) {
             if (window._ednTouchRecently) return;
+            if (e._ednCardsCtHandled) return;
             var t = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
             if (!t) return;
+            var oc = (t.getAttribute('data-onclick') || '') + (t.getAttribute('onclick') || '');
+            if (oc.indexOf('cards_ct_click') !== -1) return;
+
             // Extraire le NID
             var nid = '';
             if (t.dataset && t.dataset.nid) nid = t.dataset.nid;
@@ -899,8 +932,7 @@ _add_to_card_script_body = r"""
                 else nid = (t.innerText || '').trim().replace(/[^0-9]/g, '');
             }
             if (nid && nid.length > 9) {
-                if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+                cards_ct_click(nid);
             }
         });
     }
@@ -912,9 +944,9 @@ _add_to_card_script_body = r"""
             var el = e.target;
             while (el && el !== document.body) {
                 if (el.getAttribute && el.getAttribute('data-onclick')) {
-                    var clickAttr = el.getAttribute('data-onclick').trim();
+                    var clickAttr = el.getAttribute('data-onclick').trim().replace(/;\s*$/, '');
                     // Match toggle('...') or toggle("...")
-                    var toggleMatch = clickAttr.match(/^toggle\(['"](.*?)['"]\)$/);
+                    var toggleMatch = clickAttr.match(/^toggle\(\s*['"]?([^'"]*?)['"]?\s*\)$/);
                     if (toggleMatch) {
                         var arg = toggleMatch[1];
                         var fn = window.toggle || (typeof toggle !== 'undefined' ? toggle : null);
@@ -926,11 +958,23 @@ _add_to_card_script_body = r"""
                             }
                         }
                     } else {
-                        // Fallback to new Function if it's something else
-                        try {
-                            new Function(clickAttr).call(el);
-                        } catch(err) {
-                            console.error("Error executing data-onclick via new Function:", err);
+                        var ctMatch = clickAttr.match(/^cards_ct_click\(\s*['"]?([a-zA-Z0-9_-]+)['"]?(?:\s*,\s*(true|false))?\s*\)$/);
+                        if (ctMatch) {
+                            e._ednCardsCtHandled = true;
+                            var fnCt = window.cards_ct_click || (typeof cards_ct_click !== 'undefined' ? cards_ct_click : null);
+                            if (fnCt) {
+                                try {
+                                    if (ctMatch[2]) {
+                                        fnCt(ctMatch[1], ctMatch[2] === 'true');
+                                    } else {
+                                        fnCt(ctMatch[1]);
+                                    }
+                                } catch(err) {
+                                    console.error("Error executing cards_ct_click:", err);
+                                }
+                            }
+                        } else {
+                            console.warn("Blocked non-whitelisted data-onclick:", clickAttr);
                         }
                     }
                     break;
@@ -946,18 +990,20 @@ _add_to_card_script_body = r"""
             var el = e.target;
             while (el && el !== document.body) {
                 if (el.getAttribute && el.getAttribute('data-ondblclick')) {
-                    var dblAttr = el.getAttribute('data-ondblclick').trim();
-                    var clickMatch = dblAttr.match(/^cards_ct_click\(['"](.*?)['"]\)$/);
+                    var dblAttr = el.getAttribute('data-ondblclick').trim().replace(/;\s*$/, '');
+                    var clickMatch = dblAttr.match(/^cards_ct_click\(\s*['"]?([a-zA-Z0-9_-]+)['"]?(?:\s*,\s*(true|false))?\s*\)$/);
                     if (clickMatch) {
                         var nid = clickMatch[1];
-                        if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-                        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
-                    } else {
-                        try {
-                            new Function(dblAttr).call(el);
-                        } catch(err) {
-                            console.error("Error executing data-ondblclick:", err);
+                        var fnCt = window.cards_ct_click || (typeof cards_ct_click !== 'undefined' ? cards_ct_click : null);
+                        if (fnCt) {
+                            try {
+                                fnCt(nid);
+                            } catch(err) {
+                                console.error("Error executing cards_ct_click:", err);
+                            }
                         }
+                    } else {
+                        console.warn("Blocked non-whitelisted data-ondblclick:", dblAttr);
                     }
                     break;
                 }
@@ -966,9 +1012,20 @@ _add_to_card_script_body = r"""
         }, true);
     }
 })();
+window._ednLastClickTime = 0;
+window._ednLastClickNid = null;
 function cards_ct_click(nid) {
     if (window._ednTouchRecently) return;
-    if(typeof pycmd !== 'undefined') pycmd("cards_ct_click" + nid);
+    var cleanNid = String(nid || '').trim().replace(/[^0-9]/g, '');
+    if (!cleanNid || cleanNid.length < 9) return;
+    var now = Date.now();
+    if (window._ednLastClickNid === cleanNid && (now - window._ednLastClickTime < 1000)) {
+        return;
+    }
+    window._ednLastClickTime = now;
+    window._ednLastClickNid = cleanNid;
+    if(typeof pycmd !== 'undefined') pycmd("cards_ct_click" + cleanNid);
+    else if (typeof bridgeCommand !== 'undefined') bridgeCommand("cards_ct_click" + cleanNid);
 }
 
 // Extraction robuste du NID depuis un badge (data-nid > span.edn-nid > innerText)
@@ -1137,6 +1194,66 @@ function _capitalizePreview(root) {
                     }
                 }
             }
+
+            function isEmptyInlineNode(node) {
+                if (!node) return false;
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent.replace(/\u00A0/g, ' ').trim() === "";
+                }
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    if (node.nodeName === 'BR' || node.nodeName === 'DIV' || node.nodeName === 'P' || node.nodeName === 'KBD' || node.nodeName === 'IMG' || node.nodeName === 'HR') {
+                        return false;
+                    }
+                    if (node.querySelector && node.querySelector('kbd, img, br, div, p')) {
+                        return false;
+                    }
+                    return (node.textContent || "").replace(/\u00A0/g, ' ').trim() === "";
+                }
+                return false;
+            }
+
+            var child = container.firstChild;
+            while (child) {
+                if (isEmptyInlineNode(child)) {
+                    child = child.nextSibling;
+                } else if (child.nodeName === 'BR') {
+                    var next = child.nextSibling;
+                    child.parentNode.removeChild(child);
+                    child = next;
+                } else {
+                    break;
+                }
+            }
+
+            var blocks = [container].concat(Array.from(container.querySelectorAll('div')));
+            blocks.forEach(function(block) {
+                var lastChild = block.lastChild;
+                while (lastChild) {
+                    if (isEmptyInlineNode(lastChild)) {
+                        lastChild = lastChild.previousSibling;
+                    } else if (lastChild.nodeName === 'BR') {
+                        var prev = lastChild.previousSibling;
+                        lastChild.parentNode.removeChild(lastChild);
+                        lastChild = prev;
+                    } else {
+                        break;
+                    }
+                }
+            });
+
+            var kbds = container.querySelectorAll('kbd.clickable_cards');
+            kbds.forEach(function(kbd) {
+                var next = kbd.nextSibling;
+                var insertBeforeNode = next;
+                while (next && isEmptyInlineNode(next)) {
+                    next = next.nextSibling;
+                    insertBeforeNode = next;
+                }
+                if (next && next.nodeName !== "BR" && next.nodeName !== "DIV" && next.nodeName !== "P" && next.nodeName !== "KBD") {
+                    var br = document.createElement('br');
+                    kbd.parentNode.insertBefore(br, insertBeforeNode);
+                }
+            });
         });
     } catch(e) {}
 }
@@ -1198,6 +1315,26 @@ if (!window._ednListenersAttached) {
     setTimeout(_ednSetupBadges, 300);
 
     document.addEventListener('keydown', function(e) {
+        var kbdCopy = window._ednKbdCopyCfg || 'Ctrl+Alt+C';
+        var isCopyNid = false;
+        if (kbdCopy && kbdCopy.toLowerCase() === 'ctrl+alt+c') {
+            isCopyNid = (e.ctrlKey || e.metaKey) && e.altKey && (e.key === 'c' || e.key === 'C');
+        } else if (kbdCopy) {
+            var parts = kbdCopy.toLowerCase().split('+').map(function(s) { return s.trim(); });
+            var keyTarget = parts[parts.length - 1];
+            var wantCtrl = parts.indexOf('ctrl') !== -1;
+            var wantAlt = parts.indexOf('alt') !== -1;
+            var wantShift = parts.indexOf('shift') !== -1;
+            isCopyNid = (wantCtrl === (e.ctrlKey || e.metaKey)) && (wantAlt === e.altKey) && (wantShift === e.shiftKey) && (e.key.toLowerCase() === keyTarget);
+        }
+        if (isCopyNid) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (typeof pycmd !== 'undefined') pycmd('edn_copy_nid_reviewer');
+            else if (typeof bridgeCommand !== 'undefined') bridgeCommand('edn_copy_nid_reviewer');
+            return;
+        }
+
         var activeEl = document.activeElement || e.target;
         if (activeEl && (
             activeEl.tagName === 'INPUT' || 
@@ -1583,8 +1720,7 @@ if (!window._ednListenersAttached) {
                     if (_ednSingleTapTimer) { clearTimeout(_ednSingleTapTimer); _ednSingleTapTimer = null; }
                     _ednLastTapNid = null;
                     _ednLastTapTime = 0;
-                    if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-                    else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+                    cards_ct_click(nid);
                     if (e.cancelable) e.preventDefault();
                     e.stopPropagation();
                     return;
@@ -1681,8 +1817,9 @@ if (!window._ednListenersAttached) {
         if (window._ednHoverTimer) { clearTimeout(window._ednHoverTimer); window._ednHoverTimer = null; }
         window._ednPreviewBadgeClicked = true;
         var nid = _ednGetNid(target);
-        if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+        if (nid) {
+            cards_ct_click(nid);
+        }
     }, true); // capture phase = fires before any other click handler
 
     document.addEventListener("mouseover", function(e) {
@@ -2465,28 +2602,11 @@ def _on_state_shortcuts_will_change(state: str, shortcuts: list):
         shortcuts.append(('r', _edn_r_key_handler))
         shortcuts.append(('R', _edn_r_key_handler))
     
-    # Ctrl+Alt+C dans le reviewer : copier le NID de la carte en cours
-    shortcut_copy = get_shortcut("linked_cards_copy", "Ctrl+Alt+C")
-    def _copy_nid_from_reviewer():
-        """Copie le NID de la carte en cours de révision dans le clipboard."""
-        if not mw.reviewer or not mw.reviewer.card:
-            return
-        card = mw.reviewer.card
-        nid = str(card.nid)
-        recto = ""
-        try:
-            note = card.note()
-            recto = get_note_recto(note, 240)
-        except:
-            recto = "[Vide]"
-        html = make_card_link(nid, recto)
-        mime = QMimeData()
-        mime.setText(f"{recto} — {nid}")
-        mime.setHtml(html)
-        QApplication.clipboard().setMimeData(mime)
-        tooltip(f"NID copié (reviewer): {recto} — {nid}")
-    
-    shortcuts.append((shortcut_copy, _copy_nid_from_reviewer))
+    # NOTE: On n'installe PAS de QShortcut ici pour Ctrl+Alt+C.
+    # Ce raccourci global est déjà installé sur mw en tant que QAction
+    # (ApplicationShortcut) via register_action_shortcut_only().
+    # Ajouter un QShortcut ici créerait un conflit d'ambiguïté Qt sur mw
+    # qui désactiverait complètement le raccourci en révision.
 
 
 def _hide_reviewer_hover_preview(*args, **kwargs):
@@ -2600,6 +2720,28 @@ def _on_editor_typing_timer(note_or_editor):
                 pass
     except Exception:
         pass
+
+
+def _on_editor_will_load_note(js: str, note, editor) -> str:
+    """Signale au JS que l'éditeur charge une nouvelle note ou change de note pour autoriser la remise à zéro des champs et focusField(0)."""
+    try:
+        is_new_note = bool(getattr(editor, "_edn_loading_new_note", False))
+        if not is_new_note and editor and getattr(editor, "addMode", False) and not getattr(note, "id", 0):
+            if "focusField(0)" in (js or ""):
+                is_new_note = True
+        if is_new_note and isinstance(js, str):
+            prefix = (
+                "window._ednLoadingNewNote = true; "
+                "window._ednNewNoteLoadTime = Date.now(); "
+                "window._ednLastInputTime = 0; "
+                "window._ednLastKeyTime = 0; "
+                "window._ednLastActiveField = 0; "
+                "window._ednSavedFieldIndex = 0; "
+            )
+            return prefix + js
+    except Exception:
+        pass
+    return js
 
 
 def _on_editor_load_note(editor):
@@ -2993,24 +3135,54 @@ def clear_hover_preview_cache(nid=None):
     else:
         _HOVER_PREVIEW_CACHE.clear()
 
+_last_open_browser_time: float = 0.0
+_last_open_browser_nid: str = ""
+
+def open_card_in_browser(nid: Any) -> bool:
+    global _last_open_browser_time, _last_open_browser_nid
+    import time
+    from aqt import dialogs, mw
+
+    nid_str = str(nid).strip().replace("cards_ct_click", "").strip(" :()\"'")
+    if not nid_str or not nid_str.isdigit():
+        return False
+
+    now = time.time()
+    # Anti-rebond: même carte demandée dans les 1.5s ou n'importe quelle ouverture dans les 0.4s
+    if (nid_str == _last_open_browser_nid and (now - _last_open_browser_time) < 1.5) or ((now - _last_open_browser_time) < 0.4):
+        return True
+
+    _last_open_browser_time = now
+    _last_open_browser_nid = nid_str
+
+    try:
+        browser = dialogs.open("Browser", mw)
+        if hasattr(browser, "search_for"):
+            browser.search_for(f"nid:{nid_str}")
+        if hasattr(browser, "activateWindow"):
+            browser.activateWindow()
+        if hasattr(browser, "raise_"):
+            browser.raise_()
+        return True
+    except Exception as e:
+        log(f"Erreur open_card_in_browser({nid_str}): {e}")
+        return False
+
 @perf_log
 def on_js_message_reviewer(handled, message, context):
     if not isinstance(message, str):
         return handled
-    global _ct_click_guard
+    if handled and handled[0]:
+        return handled
+    if message == "edn_copy_nid_reviewer":
+        copy_nid_from_active_browser()
+        return (True, None)
     if message.startswith("cards_ct_click"):
         if isinstance(context, CardLayout):
             tooltip("Liens désactivés dans l'éditeur de type.")
             return (True, None)
-        nid = message.replace("cards_ct_click", "")
-        # Déduplication : éviter double ouverture (ex: clic panneau miroir)
-        if nid in _ct_click_guard:
-            return (True, None)
-        _ct_click_guard.add(nid)
-        from aqt.qt import QTimer
-        QTimer.singleShot(400, lambda n=nid: _ct_click_guard.discard(n))
-        browser = dialogs.open("Browser", mw)
-        browser.search_for(f"nid:{nid}")
+        nid = message.replace("cards_ct_click", "").strip(" :()\"'")
+        open_card_in_browser(nid)
         return (True, None)
     elif message.startswith("cards_ct_hover:"):
         import time
@@ -3230,37 +3402,9 @@ def setup_browser_menu(browser: Browser):
     browser.addAction(action_search)
     browser.addAction(action_focus_liens)
     
-    # Nettoyer d'éventuels QShortcuts résiduels sur le browser ayant les mêmes touches (évite l'ambiguïté Qt)
-    _b_target_seqs = {
-        QKeySequence(shortcut_search).toString(),
-        QKeySequence(shortcut_copy).toString(),
-        QKeySequence(shortcut_liens).toString()
-    }
-    for _child in browser.findChildren(QShortcut):
-        try:
-            if _child.key().toString() in _b_target_seqs:
-                _child.setEnabled(False)
-        except Exception:
-            pass
-
-    # Un seul QShortcut sur le browser, avec comportement contextuel
-    sc_copy = QShortcut(QKeySequence(shortcut_copy), browser)
-    sc_copy.setContext(Qt.ShortcutContext.WindowShortcut)
-    sc_copy.activated.connect(lambda: _copy_nid_smart(browser))
-    
-    sc_search = QShortcut(QKeySequence(shortcut_search), browser)
-    sc_search.setContext(Qt.ShortcutContext.WindowShortcut)
-    sc_search.activated.connect(lambda: _open_search_smart(browser))
-    
-    sc_liens = QShortcut(QKeySequence(shortcut_liens), browser)
-    sc_liens.setContext(Qt.ShortcutContext.WindowShortcut)
-    sc_liens.activated.connect(lambda: _focus_liens_browser(browser))
-    
-    # Keep references to prevent GC
-    browser._edn_sc_copy = sc_copy
-    browser._edn_sc_search = sc_search
-    browser._edn_sc_liens = sc_liens
-    
+    # Les raccourcis globaux (Ctrl+Alt+C, Ctrl+Alt+L, Ctrl+Alt+B) sont installés sur mw
+    # (ApplicationShortcut). Aucun QShortcut local n'est ajouté sur browser pour éviter
+    # les conflits d'ambiguïté Qt (qui désactiveraient les deux raccourcis).
     _setup_browser_preview_shortcuts(browser)
 
 def _add_preview_shortcuts(window, webview):
@@ -3388,6 +3532,17 @@ def copy_nid_from_browser(browser: Browser):
     mime.setText(text_content)
     mime.setHtml(html_content)
     QApplication.clipboard().setMimeData(mime)
+
+    try:
+        import sys
+        interceptor_mod = sys.modules.get("anki_import_diff.src.temp_link_interceptor")
+        if interceptor_mod:
+            interceptor = interceptor_mod.TempLinkInterceptor.instance()
+            if interceptor.is_active():
+                for c_nid, _ in unique_nids:
+                    interceptor.register_copied_nid(c_nid)
+    except Exception:
+        pass
     
     if len(unique_nids) == 1:
         tooltip(f"NID copié: {lines_text[0]}")
@@ -3408,6 +3563,17 @@ def copy_nid_from_editor(editor: Editor):
         mime.setText(f"{recto} — {nid}")
         mime.setHtml(html)
         QApplication.clipboard().setMimeData(mime)
+
+        try:
+            import sys
+            interceptor_mod = sys.modules.get("anki_import_diff.src.temp_link_interceptor")
+            if interceptor_mod:
+                interceptor = interceptor_mod.TempLinkInterceptor.instance()
+                if interceptor.is_active():
+                    interceptor.register_copied_nid(nid)
+        except Exception:
+            pass
+
         tooltip(f"NID copié: {recto} — {nid}")
 
 def add_to_browser_context_menu(browser: Browser, menu: QMenu):
@@ -3720,99 +3886,13 @@ def create_link_for_nid(editor, nid, with_recto=False):
         open_search_dialog(editor)
 
 def _setup_editor_window_shortcuts(editor: Editor):
-    """Place des QShortcut sur la fenêtre parente de l'éditeur.
+    """Enregistre l'éditeur courant.
     
-    Dans le Browser : remplace les QShortcuts créés par setup_browser_menu en les désactivant
-    (un seul QShortcut par combinaison de touches sur une même fenêtre — sinon Qt en désactive
-    tous les deux).
+    Les raccourcis globaux (Ctrl+Alt+L, Ctrl+Alt+C, Ctrl+Alt+B) sont gérés au niveau
+    de l'application via mw (ApplicationShortcut) pour éviter l'ambiguïté Qt.
     """
-    parent_win = None
-    try:
-        if hasattr(editor, 'parentWindow') and editor.parentWindow:
-            parent_win = editor.parentWindow
-        elif hasattr(editor, 'widget') and editor.widget:
-            parent_win = editor.widget.window()
-        elif hasattr(editor, 'mw') and editor.mw:
-            parent_win = editor.mw
-    except:
-        pass
-
-    if not parent_win:
-        return
-
-    shortcut_search = get_shortcut("linked_cards_search", "Ctrl+Alt+L")
-    shortcut_copy   = get_shortcut("linked_cards_copy",   "Ctrl+Alt+C")
-    shortcut_liens  = get_shortcut("linked_cards_liens",  "Ctrl+Alt+B")
-
-    # Désactiver les QShortcuts installés par setup_browser_menu (évite l'ambiguïté Qt)
-    # Inclut maintenant _edn_sc_liens pour éviter le doublon avec le shortcut éditeur ci-dessous
-    for browser_attr in ('_edn_sc_copy', '_edn_sc_search', '_edn_sc_liens'):
-        old_browser_sc = getattr(parent_win, browser_attr, None)
-        if old_browser_sc:
-            try:
-                old_browser_sc.setEnabled(False)
-            except:
-                pass
-
-    # Supprimer les anciens shortcuts EDN éditeur de cette fenêtre pour éviter les doublons
-    for attr in ('_edn_sc_search_editor', '_edn_sc_copy_editor', '_edn_sc_liens_editor'):
-        old_sc = getattr(parent_win, attr, None)
-        if old_sc:
-            try:
-                old_sc.setEnabled(False)
-                old_sc.deleteLater()
-            except:
-                pass
-
-    # Désactiver tout QShortcut en doublon sur editor.widget ou ses enfants
-    # (par ex. installé par anki_import_diff ou Customize Keyboard Shortcuts)
-    # afin d'éviter l'ambiguïté Qt ("Ambiguous shortcut overload") qui désactive le raccourci
-    target_seqs = {
-        QKeySequence(shortcut_search).toString(),
-        QKeySequence(shortcut_copy).toString(),
-        QKeySequence(shortcut_liens).toString()
-    }
-    if hasattr(editor, 'widget') and editor.widget:
-        for child_sc in editor.widget.findChildren(QShortcut):
-            try:
-                if child_sc.key().toString() in target_seqs:
-                    child_sc.setEnabled(False)
-            except Exception:
-                pass
-
-    if parent_win:
-        for child_sc in parent_win.findChildren(QShortcut):
-            try:
-                if child_sc not in (getattr(parent_win, '_edn_sc_search_editor', None),
-                                    getattr(parent_win, '_edn_sc_copy_editor', None),
-                                    getattr(parent_win, '_edn_sc_liens_editor', None)):
-                    if child_sc.key().toString() in target_seqs:
-                        child_sc.setEnabled(False)
-            except Exception:
-                pass
-
-    sc_search = QShortcut(QKeySequence(shortcut_search), parent_win)
-    sc_search.setContext(Qt.ShortcutContext.WindowShortcut)
-    sc_search.activated.connect(lambda: handle_editor_button(editor))
-
-    sc_copy = QShortcut(QKeySequence(shortcut_copy), parent_win)
-    sc_copy.setContext(Qt.ShortcutContext.WindowShortcut)
-    # Dans le browser, utiliser la copie intelligente (pour gérer la sélection multiple/l'éditeur)
-    from aqt.browser import Browser
-    if isinstance(parent_win, Browser):
-        sc_copy.activated.connect(lambda: _copy_nid_smart(parent_win))
-    else:
-        sc_copy.activated.connect(lambda: copy_nid_from_editor(editor))
-
-    # Ctrl+Alt+B : basculer le panneau miroir — géré ici pour éviter le doublon
-    # avec le QShortcut du browser (un seul QShortcut par combo sur une fenêtre)
-    sc_liens = QShortcut(QKeySequence(shortcut_liens), parent_win)
-    sc_liens.setContext(Qt.ShortcutContext.WindowShortcut)
-    sc_liens.activated.connect(lambda: _focus_liens_field(editor))
-
-    parent_win._edn_sc_search_editor = sc_search
-    parent_win._edn_sc_copy_editor   = sc_copy
-    parent_win._edn_sc_liens_editor  = sc_liens
+    global _current_editor
+    _current_editor = editor
 
 
 def on_editor_init(editor: Editor):
@@ -4153,8 +4233,7 @@ def _do_editor_init(editor: Editor):
                 // Exiger Ctrl ou Cmd dans l'éditeur pour ouvrir la carte
                 if (e.ctrlKey || e.metaKey) {
                     if (nid && nid.length > 9) {
-                        if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-                        else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+                        window.cards_ct_click(nid, true);
                     }
                 } else {
                     // Clic simple sans Ctrl/Cmd : sélectionner proprement le badge entier
@@ -4420,12 +4499,20 @@ def _do_editor_init(editor: Editor):
             return true;
         };
 
-        window.cards_ct_click = function(nid) {
-            // Exiger Ctrl ou Cmd dans l'éditeur
+        window._ednEditorLastClickTime = 0;
+        window._ednEditorLastClickNid = null;
+        window.cards_ct_click = function(nid, force) {
+            // Exiger Ctrl ou Cmd dans l'éditeur sauf si force=true
             var e = window.event;
-            if (e && (e.ctrlKey || e.metaKey)) {
-                if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + nid);
-                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + nid);
+            if (force || (e && (e.ctrlKey || e.metaKey))) {
+                var cleanNid = String(nid || '').trim().replace(/[^0-9]/g, '');
+                if (!cleanNid || cleanNid.length < 9) return;
+                var now = Date.now();
+                if (window._ednEditorLastClickNid === cleanNid && (now - window._ednEditorLastClickTime < 1000)) return;
+                window._ednEditorLastClickTime = now;
+                window._ednEditorLastClickNid = cleanNid;
+                if (typeof pycmd !== 'undefined') pycmd('cards_ct_click' + cleanNid);
+                else if (typeof bridgeCommand !== 'undefined') bridgeCommand('cards_ct_click' + cleanNid);
             }
         };
 
@@ -5007,16 +5094,28 @@ def _do_editor_init(editor: Editor):
         // --- Patchs anti-focus jump Svelte ---
         function _installSvelteFocusGuards() {{
             // 0. Intercepter window.fetch pour bloquer updateNotes stale pendant les operations EDN
+            // et détecter l'ajout / création d'une nouvelle note (addNote / newNote) dans NewAddCards
             try {{
                 if (!window._ednOrigFetch && typeof window.fetch === 'function') {{
                     window._ednOrigFetch = window.fetch;
                     window.fetch = async function(url, options) {{
-                        if (window._ednBlockUpdateNotes && typeof url === 'string' && url.includes('/_anki/updateNotes')) {{
-                            console.log('[EDN] Suppressed stale updateNotes during EDN programmatic reload');
-                            return new Response(new Uint8Array(0), {{
-                                status: 200,
-                                headers: {{ 'Content-Type': 'application/binary' }}
-                            }});
+                        if (typeof url === 'string') {{
+                            if (window._ednBlockUpdateNotes && url.includes('/_anki/updateNotes')) {{
+                                console.log('[EDN] Suppressed stale updateNotes during EDN programmatic reload');
+                                return new Response(new Uint8Array(0), {{
+                                    status: 200,
+                                    headers: {{ 'Content-Type': 'application/binary' }}
+                                }});
+                            }}
+                            if (url.includes('/_anki/addNote') || url.includes('/_anki/newNote')) {{
+                                window._ednLoadingNewNote = true;
+                                window._ednNewNoteLoadTime = Date.now();
+                                window._ednLastInputTime = 0;
+                                window._ednLastKeyTime = 0;
+                                window._ednLastActiveField = 0;
+                                window._ednSavedFieldIndex = 0;
+                                setTimeout(function() {{ window._ednLoadingNewNote = false; }}, 800);
+                            }}
                         }}
                         return window._ednOrigFetch.apply(this, arguments);
                     }};
@@ -5027,21 +5126,7 @@ def _do_editor_init(editor: Editor):
             // déclenché par Anki Svelte NoteEditor (a2 / nt.noteText -> I4() reloadNote)
             try {{
                 globalThis.anki = globalThis.anki || {{}};
-                if (!window._ednOrigOnOperationDidExecute && typeof globalThis.anki.onOperationDidExecute === 'function') {{
-                    window._ednOrigOnOperationDidExecute = globalThis.anki.onOperationDidExecute;
-                    globalThis.anki.onOperationDidExecute = function(op) {{
-                        if (op && op.noteText) {{
-                            if (window._ednForceReload) {{
-                                return window._ednOrigOnOperationDidExecute.apply(this, arguments);
-                            }}
-                            if (_isUserEditingNow() || _hasActiveFieldFocus()) {{
-                                var safeOp = Object.assign({{}}, op, {{ noteText: false }});
-                                return window._ednOrigOnOperationDidExecute.call(this, safeOp);
-                            }}
-                        }}
-                        return window._ednOrigOnOperationDidExecute.apply(this, arguments);
-                    }};
-                }} else if (!globalThis.anki._ednOpHookDefined) {{
+                if (!globalThis.anki._ednOpHookDefined) {{
                     globalThis.anki._ednOpHookDefined = true;
                     var _realOp = globalThis.anki.onOperationDidExecute;
                     Object.defineProperty(globalThis.anki, 'onOperationDidExecute', {{
@@ -5102,7 +5187,7 @@ def _do_editor_init(editor: Editor):
                 }}
             }} catch(e) {{}}
 
-            // 3. Intercepter globalThis.loadNote pour préserver le champ actif au lieu de refocus vers 0
+            // 3. Intercepter globalThis.loadNote pour préserver le champ actif uniquement lors d'un reload de la même note
             try {{
                 if (!window._ednLoadNoteGuarded) {{
                     window._ednLoadNoteGuarded = true;
@@ -5113,7 +5198,24 @@ def _do_editor_init(editor: Editor):
                         get: function() {{
                             return function(args) {{
                                 if (args && typeof args === 'object') {{
-                                    if (_hasActiveFieldFocus() && _isUserEditingNow()) {{
+                                    var curNid = (typeof globalThis.getNoteId === 'function') ? globalThis.getNoteId() : null;
+                                    var isNewOrDiffNote = !!(
+                                        window._ednLoadingNewNote ||
+                                        (Date.now() - (window._ednNewNoteLoadTime || 0) < 800) ||
+                                        args.initial ||
+                                        args.stickyFieldsFrom ||
+                                        !args.nid ||
+                                        (curNid && String(args.nid) !== String(curNid))
+                                    );
+                                    if (isNewOrDiffNote) {{
+                                        window._ednLoadingNewNote = true;
+                                        window._ednNewNoteLoadTime = Date.now();
+                                        window._ednLastInputTime = 0;
+                                        window._ednLastKeyTime = 0;
+                                        window._ednLastActiveField = 0;
+                                        window._ednSavedFieldIndex = 0;
+                                        setTimeout(function() {{ window._ednLoadingNewNote = false; }}, 800);
+                                    }} else if (_hasActiveFieldFocus() && _isUserEditingNow()) {{
                                         var curIdx = _resolveActiveFieldIndex();
                                         if (curIdx < 0 && typeof window._ednLastActiveField === 'number') {{
                                             curIdx = window._ednLastActiveField;
@@ -5143,17 +5245,30 @@ def _do_editor_init(editor: Editor):
                         enumerable: true,
                         get: function() {{
                             return function(idx) {{
-                                if (_hasActiveFieldFocus() && _isUserEditingNow()) {{
+                                var isNewLoad = window._ednLoadingNewNote || (Date.now() - (window._ednNewNoteLoadTime || 0) < 800);
+                                if (!isNewLoad && !window._ednForceReload) {{
                                     var isExplicitNav = (Date.now() - (window._ednLastPointerTime || 0) < 400) ||
                                                         (Date.now() - (window._ednLastTabTime || 0) < 400);
                                     if (!isExplicitNav) {{
                                         var curIdx = _resolveActiveFieldIndex();
-                                        if (curIdx < 0 && typeof window._ednLastActiveField === 'number') {{
+                                        if (curIdx < 0 && typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) {{
                                             curIdx = window._ednLastActiveField;
                                         }}
-                                        // Empêcher de ramener le curseur au dernier caractère du recto (champ 0)
-                                        if (curIdx > 0 && (idx === 0 || idx === null || typeof idx === 'undefined')) {{
-                                            return;
+                                        var hasFocus = _hasActiveFieldFocus();
+                                        if (curIdx > 0) {{
+                                            if (idx === 0) {{
+                                                if (!hasFocus) {{
+                                                    return _origFocusField ? _origFocusField.call(this, curIdx) : undefined;
+                                                }}
+                                                return;
+                                            }}
+                                            if ((idx === null || typeof idx === 'undefined' || idx === curIdx) && hasFocus) {{
+                                                return;
+                                            }}
+                                        }} else if (curIdx === 0 && hasFocus) {{
+                                            if (idx === null || typeof idx === 'undefined' || idx === 0) {{
+                                                return;
+                                            }}
                                         }}
                                     }}
                                 }}
@@ -5162,6 +5277,72 @@ def _do_editor_init(editor: Editor):
                         }},
                         set: function(fn) {{
                             _origFocusField = fn;
+                        }}
+                    }});
+                }}
+            }} catch(e) {{}}
+
+            // 5. Intercepter globalThis.setFields pour synchroniser immédiatement le DOM des champs <anki-editable> focusés.
+            // Dans Anki Svelte (Uge/Che dans editor.js), un <anki-editable> ayant le focus est désabonné de son store
+            // sur "focus" et ne met à jour son DOM que sur "blur". Sans ce blur après _origSetFields, le Verso de la
+            // carte n reste affiché dans le DOM du Verso de la carte n+1 lors de la validation dans AddCards.
+            try {{
+                if (!window._ednSetFieldsGuarded) {{
+                    window._ednSetFieldsGuarded = true;
+                    var _origSetFields = globalThis.setFields;
+                    Object.defineProperty(globalThis, 'setFields', {{
+                        configurable: true,
+                        enumerable: true,
+                        get: function() {{
+                            return function() {{
+                                var curNid = (typeof globalThis.getNoteId === 'function') ? globalThis.getNoteId() : null;
+                                var isAddModeNote = (!curNid || String(curNid) === '0');
+                                var curIdxBefore = _resolveActiveFieldIndex();
+                                if (curIdxBefore < 0 && typeof window._ednLastActiveField === 'number') {{
+                                    curIdxBefore = window._ednLastActiveField;
+                                }}
+                                var vals = (arguments.length >= 2 && Array.isArray(arguments[1]))
+                                    ? arguments[1]
+                                    : (Array.isArray(arguments[0]) ? arguments[0].map(function(x) {{ return Array.isArray(x) ? x[1] : x; }}) : []);
+                                var isAllEmpty = (vals.length > 0 && vals.every(function(v) {{ return v === ''; }}));
+                                var isClearingActiveField = isAddModeNote && (curIdxBefore > 0 && curIdxBefore < vals.length && vals[curIdxBefore] === '');
+                                if (isClearingActiveField || isAllEmpty) {{
+                                    window._ednLoadingNewNote = true;
+                                    window._ednNewNoteLoadTime = Date.now();
+                                    window._ednLastInputTime = 0;
+                                    window._ednLastKeyTime = 0;
+                                    window._ednLastActiveField = 0;
+                                    window._ednSavedFieldIndex = 0;
+                                    setTimeout(function() {{ window._ednLoadingNewNote = false; }}, 800);
+                                }}
+                                var res = _origSetFields ? _origSetFields.apply(this, arguments) : undefined;
+                                try {{
+                                    var isNewLoad = window._ednLoadingNewNote || (Date.now() - (window._ednNewNoteLoadTime || 0) < 800);
+                                    if (isNewLoad || window._ednForceReload) {{
+                                        var sRoots = _getAllShadowRoots(document.body);
+                                        for (var i = 0; i < sRoots.length; i++) {{
+                                            var act = sRoots[i].activeElement;
+                                            if (act && (act.tagName === 'ANKI-EDITABLE' || act.isContentEditable)) {{
+                                                act.blur();
+                                                if (!isNewLoad) {{
+                                                    act.focus();
+                                                }}
+                                            }}
+                                        }}
+                                        var docAct = document.activeElement;
+                                        if (docAct && (docAct.tagName === 'ANKI-EDITABLE' || docAct.isContentEditable)) {{
+                                            docAct.blur();
+                                            if (!isNewLoad) {{
+                                                docAct.focus();
+                                            }}
+                                        }}
+                                    }}
+                                }} catch(eBlur) {{}}
+                                return res;
+                            }};
+                        }},
+                        set: function(fn) {{
+                            _origSetFields = fn;
                         }}
                     }});
                 }}
@@ -5265,13 +5446,25 @@ def _do_editor_init(editor: Editor):
         }}, true);
         
         document.addEventListener('keydown', function(e) {{
-            window._ednLastKeyTime = Date.now();
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || e.key === 'Return')) {{
+                window._ednLoadingNewNote = true;
+                window._ednNewNoteLoadTime = Date.now();
+                window._ednLastInputTime = 0;
+                window._ednLastKeyTime = 0;
+                window._ednLastActiveField = 0;
+                window._ednSavedFieldIndex = 0;
+                setTimeout(function() {{ window._ednLoadingNewNote = false; }}, 800);
+                return;
+            }}
+            if (!e.ctrlKey && !e.altKey && !e.metaKey) {{
+                window._ednLastKeyTime = Date.now();
+            }}
             if (e.key === 'Tab') {{
                 window._ednLastTabTime = Date.now();
                 window._ednLastInputTime = 0;
             }}
             var insideEditable = _isEventInEditable(e);
-            if (insideEditable) {{
+            if (insideEditable && !e.ctrlKey && !e.altKey && !e.metaKey) {{
                 window._ednLastInputTime = Date.now();
                 var curIdx = _resolveActiveFieldIndex(e);
                 if (curIdx >= 0) window._ednLastActiveField = curIdx;
@@ -5605,7 +5798,11 @@ def on_js_message(handled, message, context):
         except Exception as e:
             print("Error resizing GUI preview:", e)
         return (True, None)
-    elif message.startswith("preview_resize:") or message.startswith("preview_nested:") or message == "preview_back" or message == "escape" or message.startswith("preview_key_to_assistant:") or message.startswith("open_browser:"):
+    elif message.startswith("open_browser:"):
+        nid = message[len("open_browser:"):].strip(" :()\"'")
+        open_card_in_browser(nid)
+        return (True, None)
+    elif message.startswith("preview_resize:") or message.startswith("preview_nested:") or message == "preview_back" or message == "escape" or message.startswith("preview_key_to_assistant:"):
         from .editor_assistant import handle_preview_popup_message
         handle_preview_popup_message(message, context)
         return (True, None)
@@ -5897,31 +6094,116 @@ def get_note_recto(note, limit=None, source_note=None):
     return "[Vide]"
 
 
+_EDN_STOPWORDS = {
+    'de', 'la', 'le', 'les', 'des', 'du', 'd', 'l', 'en', 'un', 'une', 'a', 'au', 'aux',
+    'dans', 'sur', 'pour', 'par', 'et', 'ou', 'ce', 'cet', 'cette', 'ces', 'qui', 'que',
+    'quoi', 'dont', 'avec', 'sans', 'sous', 'vers', 'chez', 'est', 'sont', 'ont', 'fait',
+    'par', 'plus', 'moins', 'tres', 'trop', 'ne', 'pas', 'se', 'sa', 'son', 'ses', 's'
+}
+
+_EDN_QUESTION_PREFIXES = [
+    re.compile(r"^(?:quels?|quelles?)\s+(?:sont\s+)?(?:les\s+)?(?:\d+\s+)?(?:principales?\s+)?(?:types?\s+d['’]|causes?\s+d['’]|signes?\s+d['’]|facteurs?\s+d['’]|criteres?\s+d['’])?", re.IGNORECASE),
+    re.compile(r"^qu['’]est[- ]ce\s+qu[e']\s*", re.IGNORECASE),
+    re.compile(r"^(?:comment|pourquoi)\s+", re.IGNORECASE),
+    re.compile(r"^d[eé]finition\s+d['’e]\s*", re.IGNORECASE),
+    re.compile(r"^types?\s+d['’e]\s*", re.IGNORECASE),
+    re.compile(r"^quelles?\s+sont\s+les\s+", re.IGNORECASE),
+    re.compile(r"^quels?\s+sont\s+les\s+", re.IGNORECASE),
+    re.compile(r"^(?:3|2|4|5|6)\s+(?:situations?|types?|causes?|signes?)\s+(?:de\s+|d['’])?", re.IGNORECASE),
+    re.compile(r"^diff[eé]rence\s+entre\s+.*?\s+et\s+", re.IGNORECASE),
+]
+
+_EDN_ASPECT_PATTERNS = [
+    (re.compile(r'\b(forme pure|pur)\b', re.IGNORECASE), 'Pur'),
+    (re.compile(r'\b(forme impure|impur)\b', re.IGNORECASE), 'Impur'),
+    (re.compile(r'\b(tremblement)\b', re.IGNORECASE), 'Tremblement'),
+    (re.compile(r'\b(akinesie)\b', re.IGNORECASE), 'Akinésie'),
+    (re.compile(r'\b(rigidite)\b', re.IGNORECASE), 'Rigidité'),
+    (re.compile(r'\b(enfant|pediatrie|pediatrique)\b', re.IGNORECASE), 'Enfant'),
+    (re.compile(r'\b(adulte)\b', re.IGNORECASE), 'Adulte'),
+    (re.compile(r'\b(ecg|electrocardiogramme)\b', re.IGNORECASE), 'ECG'),
+    (re.compile(r'\b(enmg|electromyogramme)\b', re.IGNORECASE), 'ENMG'),
+    (re.compile(r'\b(irm)\b', re.IGNORECASE), 'IRM'),
+    (re.compile(r'\b(tdm|scanner)\b', re.IGNORECASE), 'Scanner'),
+    (re.compile(r'\b(radiographie|radio|echographie|imagerie)\b', re.IGNORECASE), 'Imagerie'),
+    (re.compile(r'\b(biologie|bilan biologique|bilan|examens? complementaires?)\b', re.IGNORECASE), 'Examens complémentaires'),
+    (re.compile(r'\b(facteurs? de risque cardio[- ]vasculaire|fdrcv)\b', re.IGNORECASE), 'FdRCV'),
+    (re.compile(r'\b(facteurs? de risque|fdr)\b', re.IGNORECASE), 'FdR'),
+    (re.compile(r'\b(mecanisme d[\'’]action)\b', re.IGNORECASE), "Mécanisme d'action"),
+    (re.compile(r'\b(mecanisme|physiopathologie|physiopath)\b', re.IGNORECASE), 'Physiopathologie'),
+    (re.compile(r'\b(prevention|vaccination|vaccin)\b', re.IGNORECASE), 'Prévention'),
+    (re.compile(r'\b(surveillance|suivi)\b', re.IGNORECASE), 'Surveillance'),
+    (re.compile(r'\b(posologie|modalites)\b', re.IGNORECASE), 'Posologie'),
+    (re.compile(r'\b(contre[- ]indications?|ci)\b', re.IGNORECASE), 'Contre-indications'),
+    (re.compile(r'\b(indications?)\b', re.IGNORECASE), 'Indications'),
+    (re.compile(r'\b(duree d[\'’]evolution|duree|timing|incubation)\b', re.IGNORECASE), 'Durée'),
+    (re.compile(r'\b(critere?s? de gravite|gravite)\b', re.IGNORECASE), 'Critères de gravité'),
+    (re.compile(r'\b(complications?|evolution|pronostic)\b', re.IGNORECASE), 'Complications'),
+    (re.compile(r'\b(causes?|etiologies?|facteurs? favorisants?)\b', re.IGNORECASE), 'Causes'),
+    (re.compile(r'\b(que permettent|permettent|utilite|a quoi sert)\b', re.IGNORECASE), 'Utilité'),
+    (re.compile(r'\b(aspect au tdm|aspect a l[\'’]irm|aspect)\b', re.IGNORECASE), 'Aspect'),
+    (re.compile(r'\b(localisation|site)\b', re.IGNORECASE), 'Localisation'),
+    (re.compile(r'\b(frequence|prevalence|incidence)\b', re.IGNORECASE), 'Fréquence'),
+    (re.compile(r'\b(exemples?)\b', re.IGNORECASE), 'Exemples'),
+    (re.compile(r'\b(iatrogene|iatrogenie)\b', re.IGNORECASE), 'Iatrogène'),
+    (re.compile(r'\b(antibiotherapie|antibiotiques?|atb)\b', re.IGNORECASE), 'ATB'),
+    (re.compile(r'\b(effets? secondaires?|effets? indesirables?)\b', re.IGNORECASE), 'Effets secondaires'),
+    (re.compile(r'\b(chirurgie|chirurgical)\b', re.IGNORECASE), 'Chirurgie'),
+    (re.compile(r'\b(avantages?)\b', re.IGNORECASE), 'Avantages'),
+    (re.compile(r'\b(inconvenients?)\b', re.IGNORECASE), 'Inconvénients'),
+    (re.compile(r'\b(signes? cliniques?|signes?|clinique|symptomes?|semiologie|manifestations?)\b', re.IGNORECASE), 'Signes'),
+    (re.compile(r'\b(diagnostic|diag|criteres diagnostiques|criteres)\b', re.IGNORECASE), 'Diagnostic'),
+    (re.compile(r'\b(prise en charge|pec)\b', re.IGNORECASE), 'PeC'),
+    (re.compile(r'\b(traitement|traitements|therapeutique)\b', re.IGNORECASE), 'Traitement'),
+    (re.compile(r'\b(definition|def|qu\'est-ce que|qu\'est ce que)\b', re.IGNORECASE), 'Définition'),
+]
+
+def _clean_recto_preamble(text: str) -> str:
+    if not text:
+        return ""
+    import unicodedata
+    import html as _html
+    t = text.strip()
+    t_clean = t
+    t_norm = unicodedata.normalize('NFKD', _html.unescape(t)).encode('ASCII', 'ignore').decode('utf-8').lower().strip()
+    for qp in _EDN_QUESTION_PREFIXES:
+        m = qp.search(t_norm)
+        if m and m.start() == 0:
+            t_clean = t_clean[m.end():].strip()
+            break
+    t_clean = re.sub(r'[\s\?\.:!—–-]+$', '', t_clean).strip()
+    if t_clean:
+        t_clean = t_clean[0].upper() + t_clean[1:]
+    return t_clean or t
+
 def generate_smart_link_label(source_note, target_note):
     """Génère une description raccourcie intelligente pour l'insertion de lien dans une note.
     
-    Exemples concrets du deck EDN :
-    - Source: 'Définition de l'exacerbation de l'asthme', Target: 'Traitement de l'exacerbation de l'asthme' -> 'Traitement'
-    - Source: 'Traitement de l'exacerbation de l'asthme', Target: 'Définition de l'exacerbation de l'asthme' -> 'Def'
-    - Source: 'Syndrome néphrotique chez l'adulte', Target: 'Syndrome néphrotique chez l'enfant' -> 'Enfant'
-    - Source: 'Signes de l'hyperkaliémie', Target: 'Aspect ECG de l'hyperkaliémie' -> 'ECG'
-    - Target est le syndrome parent / carte mère -> 'Main' ou 'Def'
+    Pipeline intelligent :
+    1. Relation Enfant -> Parent / Carte mère -> 'Main'
+    2. Détection des facettes médicales canoniques et abréviations (Signes, Traitement, PeC, FdR, etc.)
+    3. Extraction différentielle contextuelle (ne retient que le qualificatif résiduel exclusif)
+    4. Nettoyage des tournures interrogatives et concision (1 à 3 mots).
     """
     if not target_note:
         return ""
     
     target_recto = get_note_recto(target_note, 240)
+    if not target_recto:
+        return ""
     if not source_note:
-        return target_recto
+        return _clean_recto_preamble(target_recto)
         
     source_recto = get_note_recto(source_note, 240)
-    if not source_recto or not target_recto:
-        return target_recto
+    if not source_recto:
+        return _clean_recto_preamble(target_recto)
         
     import unicodedata
     import html as _html
+
     def _norm(s):
-        if not s: return ""
+        if not s:
+            return ""
         s = _html.unescape(s)
         s = re.sub(r'<[^>]+>', ' ', s)
         s = re.sub(r'\{\{c\d+::(.*?)(?:::[^}]+)?\}\}', r'\1', s)
@@ -5932,35 +6214,7 @@ def generate_smart_link_label(source_note, target_note):
     s_norm = _norm(source_recto)
     t_norm = _norm(target_recto)
 
-    aspect_patterns = [
-        # Aspects ultra-spécifiques en premier
-        (r'\b(forme pure|pur)\b', 'Pur'),
-        (r'\b(forme impure|impur)\b', 'Impur'),
-        (r'\b(tremblement)\b', 'Tremblement'),
-        (r'\b(akinesie)\b', 'Akinésie'),
-        (r'\b(rigidite)\b', 'Rigidité'),
-        (r'\b(enfant|pediatrie|pediatrique)\b', 'Enfant'),
-        (r'\b(adulte)\b', 'Adulte'),
-        (r'\b(ecg|electrocardiogramme)\b', 'ECG'),
-        (r'\b(enmg|electromyogramme)\b', 'ENMG'),
-        (r'\b(irm|scanner|tdm|radiographie|radio|echographie|imagerie)\b', 'Imagerie'),
-        (r'\b(biologie|bilan biologique|bilan|examens? complementaires?)\b', 'Examens complémentaires'),
-        (r'\b(facteurs? de risque|fdr|fdrcv)\b', 'FdR'),
-        (r'\b(mecanisme|physiopathologie|physiopath)\b', 'Physiopathologie'),
-        (r'\b(prevention|vaccination|vaccin)\b', 'Prévention'),
-        (r'\b(surveillance|suivi)\b', 'Surveillance'),
-        (r'\b(posologie|dose|modalites)\b', 'Posologie'),
-        (r'\b(contre[- ]indications?|ci)\b', 'Contre-indications'),
-        (r'\b(indications?)\b', 'Indications'),
-        (r'\b(complications?|evolution|pronostic|gravite)\b', 'Complications'),
-        (r'\b(causes?|etiologies?|facteurs? favorisants?)\b', 'Causes'),
-        (r'\b(signes? cliniques?|signes?|clinique|symptomes?|semiologie|manifestations?)\b', 'Signes'),
-        (r'\b(diagnostic|diag|criteres diagnostiques|criteres)\b', 'Diagnostic'),
-        (r'\b(traitement|traitements|pec|prise en charge|therapeutique|chirurgie|infiltration|chirurgical)\b', 'Traitement'),
-        # Définition / Def en dernier des patterns
-        (r'\b(definition|def|qu\'est-ce que|qu\'est ce que)\b', 'Def'),
-    ]
-
+    # 1. Relation Parent / Carte mère -> 'Main'
     try:
         is_target_syndrome = "syndrome" in target_note.note_type()['name'].lower()
         is_source_syndrome = "syndrome" in source_note.note_type()['name'].lower()
@@ -5969,16 +6223,73 @@ def generate_smart_link_label(source_note, target_note):
     except Exception:
         pass
 
-    for pat, label in aspect_patterns:
-        m_target = re.search(pat, t_norm)
-        m_source = re.search(pat, s_norm)
-        if m_target and (not m_source or m_source.group(0) != m_target.group(0)):
-            return label
+    s_tokens = [w for w in re.findall(r'\b[a-zA-Z\u00C0-\u00FF]{2,}\b', s_norm) if w not in _EDN_STOPWORDS]
+    t_tokens = [w for w in re.findall(r'\b[a-zA-Z\u00C0-\u00FF]{2,}\b', t_norm) if w not in _EDN_STOPWORDS]
+    s_set = set(s_tokens)
+    t_set = set(t_tokens)
 
-    if len(target_recto.split()) <= 3:
-        return target_recto
+    # Racine de classification, algorithme ou typologie vers sous-type
+    is_classification_parent = bool(
+        re.search(r'\b(classification|algorithme|typologie|sources)\b', t_norm)
+        and not re.search(r'\b(classification|algorithme|typologie|sources)\b', s_norm)
+    )
+    is_type_instance = bool(re.search(r'\b(type [ivx\d]+|stade \d+|grade \d+)\b', s_norm))
+    if is_classification_parent and (is_type_instance or len(s_set & t_set) >= 1):
+        return "Main"
 
-    return target_recto
+    # Sous-ensemble strict des termes signifiants (sans aspect spécifique nouveau dans la cible)
+    has_specific_aspect_in_target = False
+    for pat, label in _EDN_ASPECT_PATTERNS[:20]:
+        if pat.search(t_norm) and not pat.search(s_norm):
+            has_specific_aspect_in_target = True
+            break
+
+    if t_set and s_set and t_set.issubset(s_set) and len(s_set) > len(t_set) and not has_specific_aspect_in_target:
+        return "Main"
+
+    # 2. Détection d'aspect médical (avec prise en compte du contexte partagé)
+    matched_aspect = None
+    for pat, label in _EDN_ASPECT_PATTERNS:
+        m_target = pat.search(t_norm)
+        m_source = pat.search(s_norm)
+        if m_target:
+            if not m_source:
+                matched_aspect = label
+                break
+
+    if matched_aspect:
+        return matched_aspect
+
+    # 3. Extraction différentielle contextuelle
+    common_tokens = s_set & t_set
+    if len(common_tokens) >= 1:
+        diff_tokens = [w for w in t_tokens if w not in s_set]
+        if diff_tokens:
+            # Numéro ou chiffre romain
+            num_match = re.search(r'\b(type\s+)?([ivx]+|\d+)\b', t_norm)
+            if num_match and ('type' in diff_tokens or num_match.group(2) in diff_tokens):
+                val = num_match.group(2).upper()
+                return val if 'type' in s_norm else f"Type {val}"
+
+            if len(diff_tokens) <= 3:
+                diff_words_pattern = r'\b(?:' + '|'.join(re.escape(w) for w in diff_tokens) + r')\b'
+                matches = list(re.finditer(diff_words_pattern, t_norm))
+                if matches:
+                    start_char = matches[0].start()
+                    end_char = matches[-1].end()
+                    raw_diff = target_recto[start_char:end_char].strip()
+                    raw_diff = re.sub(r'[\s\?\.:!—–-]+$', '', raw_diff).strip()
+                    if raw_diff and len(raw_diff.split()) <= 4:
+                        raw_diff = raw_diff[0].upper() + raw_diff[1:]
+                        return raw_diff
+
+    # 4. Nettoyage préambule et concision fallback
+    clean_t = _clean_recto_preamble(target_recto)
+    words = clean_t.split()
+    if len(words) <= 3:
+        return clean_t
+
+    return clean_t
 
 class LinkInserter:
     def __init__(self, editor):
@@ -6015,6 +6326,19 @@ class LinkInserter:
                 if not col_note or not col_note.fields:
                     _profiler_log("LINK_INSERTER:_do_commit", "col_note or col_note.fields is empty -> aborted", caller=commit_caller)
                     return
+
+                # Enregistrement auprès de l'intercepteur de liens temporaires (si diff import actif)
+                try:
+                    import sys
+                    interceptor_mod = sys.modules.get("anki_import_diff.src.temp_link_interceptor")
+                    if interceptor_mod:
+                        interceptor = interceptor_mod.TempLinkInterceptor.instance()
+                        if interceptor.is_active():
+                            src_id = getattr(col_note, 'id', None)
+                            for it_nid, _ in items:
+                                interceptor.register_link_creation(src_id, it_nid, col_note)
+                except Exception:
+                    pass
 
                 # Déterminer le champ cible
                 fidx = target_fidx
@@ -7934,9 +8258,7 @@ class LinkedCardsDialog(QDialog):
                 
             def on_click(self):
                 self._hover_timer.stop()
-                from aqt import dialogs, mw
-                browser = dialogs.open("Browser", mw)
-                browser.search_for(f"nid:{self.nid}")
+                open_card_in_browser(self.nid)
                 self.dialog_parent.hide_preview_popup()
 
             def on_context_menu(self, pos):
@@ -8492,6 +8814,66 @@ class LinkedCardsDialog(QDialog):
                             }
                         }
                     }
+
+                    function isEmptyInlineNode(node) {
+                        if (!node) return false;
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            return node.textContent.replace(/\u00A0/g, ' ').trim() === "";
+                        }
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.nodeName === 'BR' || node.nodeName === 'DIV' || node.nodeName === 'P' || node.nodeName === 'KBD' || node.nodeName === 'IMG' || node.nodeName === 'HR') {
+                                return false;
+                            }
+                            if (node.querySelector && node.querySelector('kbd, img, br, div, p')) {
+                                return false;
+                            }
+                            return (node.textContent || "").replace(/\u00A0/g, ' ').trim() === "";
+                        }
+                        return false;
+                    }
+
+                    var child = container.firstChild;
+                    while (child) {
+                        if (isEmptyInlineNode(child)) {
+                            child = child.nextSibling;
+                        } else if (child.nodeName === 'BR') {
+                            var next = child.nextSibling;
+                            child.parentNode.removeChild(child);
+                            child = next;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    var blocks = [container].concat(Array.from(container.querySelectorAll('div')));
+                    blocks.forEach(function(block) {
+                        var lastChild = block.lastChild;
+                        while (lastChild) {
+                            if (isEmptyInlineNode(lastChild)) {
+                                lastChild = lastChild.previousSibling;
+                            } else if (lastChild.nodeName === 'BR') {
+                                var prev = lastChild.previousSibling;
+                                lastChild.parentNode.removeChild(lastChild);
+                                lastChild = prev;
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+
+                    var kbds = container.querySelectorAll('kbd.clickable_cards');
+                    kbds.forEach(function(kbd) {
+                        var next = kbd.nextSibling;
+                        var insertBeforeNode = next;
+                        while (next && isEmptyInlineNode(next)) {
+                            next = next.nextSibling;
+                            insertBeforeNode = next;
+                        }
+                        if (next && next.nodeName !== "BR" && next.nodeName !== "DIV" && next.nodeName !== "P" && next.nodeName !== "KBD") {
+                            var br = document.createElement('br');
+                            kbd.parentNode.insertBefore(br, insertBeforeNode);
+                        }
+                    });
                 });
             } catch(e) {}
         }
@@ -8511,17 +8893,34 @@ class LinkedCardsDialog(QDialog):
             var el = e.target;
             while (el && el !== document.body) {
                 if (el.getAttribute && el.getAttribute('data-onclick')) {
-                    var clickAttr = el.getAttribute('data-onclick');
-                    if (clickAttr.includes('toggle(')) {
-                        var match = clickAttr.match(/toggle\(['"](.*?)['"]\)/);
-                        if (match && window.toggle) {
-                            window.toggle(match[1]);
+                    var clickAttr = el.getAttribute('data-onclick').trim().replace(/;\s*$/, '');
+                    var toggleMatch = clickAttr.match(/^toggle\(\s*['"]?([^'"]*?)['"]?\s*\)$/);
+                    if (toggleMatch) {
+                        var fn = window.toggle || (typeof toggle !== 'undefined' ? toggle : null);
+                        if (fn) {
+                            try {
+                                fn(toggleMatch[1]);
+                            } catch(err) {
+                                console.error("Error executing toggle:", err);
+                            }
                         }
                     } else {
-                        try {
-                            new Function(clickAttr).call(el);
-                        } catch(err) {
-                            console.error("Error executing data-onclick:", err);
+                        var ctMatch = clickAttr.match(/^cards_ct_click\(\s*['"]?([a-zA-Z0-9_-]+)['"]?(?:\s*,\s*(true|false))?\s*\)$/);
+                        if (ctMatch) {
+                            var fnCt = window.cards_ct_click || (typeof cards_ct_click !== 'undefined' ? cards_ct_click : null);
+                            if (fnCt) {
+                                try {
+                                    if (ctMatch[2]) {
+                                        fnCt(ctMatch[1], ctMatch[2] === 'true');
+                                    } else {
+                                        fnCt(ctMatch[1]);
+                                    }
+                                } catch(err) {
+                                    console.error("Error executing cards_ct_click:", err);
+                                }
+                            }
+                        } else {
+                            console.warn("Blocked non-whitelisted data-onclick:", clickAttr);
                         }
                     }
                     break;
@@ -8679,6 +9078,8 @@ class LinkedCardsDialog(QDialog):
             }
         });
 
+        window._guiLastClickTime = 0;
+        window._guiLastClickNid = null;
         document.addEventListener("click", function(e) {
             if (_guiLongPressTriggered || _guiTouchRecently) {
                 e.preventDefault();
@@ -8687,7 +9088,15 @@ class LinkedCardsDialog(QDialog):
             }
             if(e.target && e.target.classList && e.target.classList.contains("clickable_cards")) {
                 var nid = _gn(e.target);
-                if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + nid);
+                if (nid) {
+                    var cleanNid = String(nid).trim().replace(/[^0-9]/g, '');
+                    if (!cleanNid) return;
+                    var now = Date.now();
+                    if (window._guiLastClickNid === cleanNid && (now - window._guiLastClickTime < 1000)) return;
+                    window._guiLastClickTime = now;
+                    window._guiLastClickNid = cleanNid;
+                    if(typeof pycmd !== 'undefined') pycmd('gui_preview_click:' + cleanNid);
+                }
             }
         });
 
@@ -9318,9 +9727,7 @@ class LinkedCardsDialog(QDialog):
 
     def on_gui_preview_click(self, nid):
         self.hide_preview_popup()
-        from aqt import dialogs, mw
-        browser = dialogs.open("Browser", mw)
-        browser.search_for(f"nid:{nid}")
+        open_card_in_browser(nid)
         self.close()
 
     def hide_preview_popup(self):
@@ -9775,23 +10182,92 @@ def open_search_dialog(editor, selected_text=""):
 def open_search_dialog_from_menu():
     from .editor_assistant import get_active_editor
     editor = get_active_editor()
+    if not editor:
+        active_win = mw.app.activeWindow() if (hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow')) else None
+        if active_win and hasattr(active_win, 'editor') and active_win.editor:
+            editor = active_win.editor
+    if not editor:
+        from aqt import dialogs
+        b_entry = dialogs._dialogs.get("Browser")
+        if isinstance(b_entry, (list, tuple)) and len(b_entry) > 1 and b_entry[1]:
+            b = b_entry[1]
+            if hasattr(b, 'editor') and b.editor:
+                editor = b.editor
     if editor:
-        open_search_dialog(editor)
+        handle_editor_button(editor)
     else:
         from aqt.utils import tooltip
         tooltip("Aucun éditeur actif. Ouvrez d'abord une carte en édition.")
 
+_last_copy_nid_timestamp = 0.0
+
 def copy_nid_from_active_browser():
-    from aqt import mw, dialogs
-    from aqt.utils import tooltip
-    browser = dialogs._dialogs.get("Browser")
-    if browser and isinstance(browser, tuple):
-        browser = browser[1]
+    global _last_copy_nid_timestamp
+    import time
+    now = time.time()
+    if now - _last_copy_nid_timestamp < 0.35:
+        return
+    _last_copy_nid_timestamp = now
+
+    active_win = mw.app.activeWindow() if (hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow')) else None
     
+    from aqt.browser import Browser
+    if isinstance(active_win, Browser):
+        _copy_nid_smart(active_win)
+        return
+        
+    if active_win and hasattr(active_win, 'editor') and active_win.editor:
+        note = _get_editor_note(active_win.editor)
+        if note and getattr(note, 'id', None):
+            copy_nid_from_editor(active_win.editor)
+            return
+            
+    if getattr(mw, 'state', None) == 'review' and getattr(mw, 'reviewer', None) and mw.reviewer.card:
+        card = mw.reviewer.card
+        nid = str(card.nid)
+        recto = ""
+        try:
+            note = card.note()
+            recto = get_note_recto(note, 240)
+        except:
+            recto = "[Vide]"
+        html = make_card_link(nid, recto)
+        mime = QMimeData()
+        mime.setText(f"{recto} — {nid}")
+        mime.setHtml(html)
+        QApplication.clipboard().setMimeData(mime)
+        try:
+            import sys
+            interceptor_mod = sys.modules.get("anki_import_diff.src.temp_link_interceptor")
+            if interceptor_mod:
+                interceptor = interceptor_mod.TempLinkInterceptor.instance()
+                if interceptor.is_active():
+                    interceptor.register_copied_nid(nid)
+        except Exception:
+            pass
+        from aqt.utils import tooltip
+        tooltip(f"NID copié: {recto} — {nid}")
+        return
+
+    from .editor_assistant import get_active_editor
+    ed = get_active_editor()
+    if ed and _get_editor_note(ed):
+        copy_nid_from_editor(ed)
+        return
+
+    from aqt import dialogs
+    b_entry = dialogs._dialogs.get("Browser")
+    browser = None
+    if isinstance(b_entry, (list, tuple)) and len(b_entry) > 1:
+        browser = b_entry[1]
+    elif isinstance(b_entry, Browser):
+        browser = b_entry
+        
     if browser and hasattr(browser, 'selected_cards'):
-        copy_nid_from_browser(browser)
+        _copy_nid_smart(browser)
     else:
-        tooltip("Aucun browser ouvert ou aucune carte sélectionnée.")
+        from aqt.utils import tooltip
+        tooltip("Aucun éditeur ou carte sélectionnée pour copier le NID.")
 
 # --- Settings Widget (Menu EDN) ---
 
@@ -10035,8 +10511,29 @@ def _patch_editor_save_now():
             cls._edn_orig_loadNote = orig_load
             def _make_patched_load(orig_l):
                 def patched_loadNote(self, focusTo=None, *args, **kwargs):
-                    if getattr(self, "note", None):
-                        self._edn_last_loaded_note_key = getattr(self.note, "id", 0) or id(self.note)
+                    note_obj = getattr(self, "note", None)
+                    new_key = (getattr(note_obj, "id", 0) or id(note_obj)) if note_obj is not None else None
+                    prev_key = getattr(self, "_edn_last_loaded_note_key", None)
+                    is_new_note_instance = (new_key != prev_key)
+                    if is_new_note_instance or (focusTo == 0 and getattr(self, "addMode", False) and not getattr(note_obj, "id", 0)):
+                        self._edn_loading_new_note = True
+                        if focusTo is not None:
+                            self.currentField = focusTo
+                            self.last_field_index = focusTo
+                        from aqt.qt import QTimer
+                        QTimer.singleShot(750, lambda: setattr(self, "_edn_loading_new_note", False))
+                    else:
+                        self._edn_loading_new_note = False
+                        if focusTo is None:
+                            cur_fld = getattr(self, "currentField", None)
+                            if cur_fld is not None:
+                                focusTo = cur_fld
+                            else:
+                                last_fld = getattr(self, "last_field_index", None)
+                                p_win = getattr(self, "parentWindow", None)
+                                if last_fld is not None and p_win and hasattr(p_win, "isActiveWindow") and p_win.isActiveWindow():
+                                    focusTo = last_fld
+                    self._edn_last_loaded_note_key = new_key
                     return orig_l(self, focusTo=focusTo, *args, **kwargs)
                 return patched_loadNote
             cls.loadNote = _make_patched_load(orig_load)
@@ -10047,9 +10544,28 @@ def _patch_editor_save_now():
             def _make_patched_bridge(orig_b):
                 def patched_onBridgeCmd(self, cmd, *args, **kwargs):
                     if isinstance(cmd, str):
+                        if getattr(self, "_edn_loading_new_note", False):
+                            if cmd.startswith("blur:") or cmd.startswith("key:"):
+                                return None
                         if cmd.startswith("focus:"):
                             try:
-                                self.last_field_index = int(cmd.split(":", 1)[1])
+                                fld_idx = int(cmd.split(":", 1)[1])
+                                self.last_field_index = fld_idx
+                                self.currentField = fld_idx
+                            except Exception:
+                                pass
+                        elif cmd.startswith("key:") and not getattr(self, "addMode", False):
+                            try:
+                                parts = cmd.split(":", 3)
+                                if len(parts) >= 4:
+                                    ord_idx = int(parts[1])
+                                    nid_val = int(parts[2]) if parts[2].isdigit() else 0
+                                    raw_txt = parts[3]
+                                    note = getattr(self, "note", None)
+                                    if note and getattr(note, "id", 0) == nid_val and 0 <= ord_idx < len(note.fields):
+                                        munged = self.mungeHTML(raw_txt) if hasattr(self, "mungeHTML") else raw_txt
+                                        if munged == note.fields[ord_idx]:
+                                            return None
                             except Exception:
                                 pass
                     return orig_b(self, cmd, *args, **kwargs)
@@ -10449,9 +10965,7 @@ def prompt_modify_hyperlink(nid: str, default_text: str, webview) -> None:
             pass
 
 def open_nid_in_browser(nid: str) -> None:
-    from aqt import dialogs
-    browser = dialogs.open("Browser", mw)
-    browser.search_for(f"nid:{nid}")
+    open_card_in_browser(nid)
 
 def show_card_context_menu(nid: str, pos=None, webview=None, default_text: str = "", source: str = None) -> None:
     from aqt.qt import QMenu, QCursor, QPoint

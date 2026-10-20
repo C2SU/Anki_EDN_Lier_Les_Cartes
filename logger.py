@@ -16,6 +16,8 @@ try:
 except Exception:
     DEBUG_MODE = False
 
+MAX_LOG_SIZE = 1024 * 1024  # 1 MB
+
 def log(message, level="INFO"):
     """
     Logs a message to the addon's log file and console.
@@ -29,7 +31,14 @@ def log(message, level="INFO"):
         print(formatted_message_console, file=sys.stdout)
         sys.stdout.flush()
     
+    # Suppress disk logging when DEBUG_MODE is False for INFO level
+    if not DEBUG_MODE and level == "INFO":
+        return
+
     try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > MAX_LOG_SIZE:
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] [INFO] Log truncated (exceeded 1MB cap)\n")
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(formatted_message_file)
     except Exception as e:
