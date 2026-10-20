@@ -15,7 +15,8 @@ from aqt.browser import Browser
 from aqt.clayout import CardLayout
 from anki import hooks
 
-from .logger import log, perf_log
+import traceback
+from .logger import log, log_error, perf_log
 from .edn_menu import register_module, register_action, get_shortcut
 
 import importlib
@@ -6600,17 +6601,26 @@ class ProposalQueue:
         self.running = True
         task_fn = self.queue.pop(0)
         
+        done_called = False
         def on_done():
+            nonlocal done_called
+            if done_called:
+                return
+            done_called = True
             self.running = False
             self.trigger_next()
             
-        QTimer.singleShot(0, lambda: self._run_task(task_fn, on_done))
+        # Watchdog: force release apres 30 secondes en cas de blocage inattendu
+        QTimer.singleShot(30000, lambda: on_done() if not done_called else None)
+        # Latence minimale (40ms) : permet a Qt de traiter la fermeture du dialogue precedent sans attente perceptible
+        QTimer.singleShot(40, lambda: self._run_task(task_fn, on_done))
         
     def _run_task(self, task_fn, on_done):
         try:
             task_fn(on_done)
         except Exception as e:
-            log(f"Error running queue task: {e}")
+            log_error(f"Error running queue task: {e}\n{traceback.format_exc()}")
+            _profiler_log("PROPOSAL_QUEUE:ERROR", f"Error running queue task: {e}", caller="ProposalQueue:_run_task")
             on_done()
 
 _proposal_queue = ProposalQueue()
@@ -6672,14 +6682,26 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
                 pass
                 
         if not valid_targets:
+            _profiler_log("MIRROR_LINKS", "no valid_targets found (already linked or nonexistent)", caller="_propose_mirror_links_group")
             on_done()
             return
             
-        parent = editor.widget if editor.widget else mw
+        parent = (
+            getattr(editor, 'parentWindow', None)
+            or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+            or (mw.app.activeWindow() if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow') else None)
+            or mw
+        )
+        _profiler_log("MIRROR_LINKS", f"opening MirrorSelectionDialog with {len(valid_targets)} targets (parent={type(parent).__name__})", caller="_propose_mirror_links_group")
+        
         dialog = MirrorSelectionDialog(parent, valid_targets, source_note=source_note)
+        dialog.raise_()
+        dialog.activateWindow()
         result = dialog.exec()
         
         accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
+        _profiler_log("MIRROR_LINKS", f"MirrorSelectionDialog closed with result={result} (accepted={result == accepted_code})", caller="_propose_mirror_links_group")
+        
         if result == accepted_code:
             selected_targets = dialog.get_selected_targets()
             if selected_targets:
@@ -6696,7 +6718,8 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
                 if editor:
                     update_assistant(editor)
     except Exception as e:
-        log(f"Error in _propose_mirror_links_group: {e}")
+        log_error(f"Error in _propose_mirror_links_group: {e}\n{traceback.format_exc()}")
+        _profiler_log("MIRROR_LINKS:ERROR", f"Exception in _propose_mirror_links_group: {e}", caller="_propose_mirror_links_group")
     finally:
         on_done()
 
@@ -6877,7 +6900,15 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                 
                 # Show custom checklist dialog
                 accepted_code = getattr(QDialog.DialogCode, "Accepted", None) or getattr(QDialog, "Accepted", 1)
-                dialog = CrossLinksSelectionDialog(editor.widget if editor.widget else mw, links_to_create)
+                parent = (
+                    getattr(editor, 'parentWindow', None)
+                    or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+                    or (mw.app.activeWindow() if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow') else None)
+                    or mw
+                )
+                dialog = CrossLinksSelectionDialog(parent, links_to_create)
+                dialog.raise_()
+                dialog.activateWindow()
                 result = dialog.exec()
                 if result == accepted_code:
                     selected_links = dialog.get_selected_links()
@@ -6912,16 +6943,26 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
             finally:
                 on_done()
                         
+        called = False
+        def _safe_got_field_idx(idx_str):
+            nonlocal called
+            if called:
+                return
+            called = True
+            _got_field_idx(idx_str)
+
         try:
             editor.web.evalWithCallback(
                 "(typeof window._ednSavedFieldIndex !== 'undefined') ? window._ednSavedFieldIndex : -1;",
-                _got_field_idx
+                _safe_got_field_idx
             )
+            QTimer.singleShot(400, lambda: _safe_got_field_idx(-1))
         except Exception:
-            _do_cross_links(-1)
+            _safe_got_field_idx(-1)
             
     except Exception as e:
-        log(f"Cross links error: {e}")
+        log_error(f"Cross links error: {e}\n{traceback.format_exc()}")
+        _profiler_log("CROSS_LINKS:ERROR", f"Cross links error: {e}", caller="_propose_cross_links")
         on_done()
 
 
