@@ -15,10 +15,41 @@ if not getattr(DialogManager, "_multi_window_patched", False):
     def shouldBeMultiple(name):
         """Whether window name may have multiple copy.
 
-        Ensure that ["multiple"] exists in the configuration file. The default value being True.
+        Defaults: Browser=True, AddCards=True, EditCurrent=False.
+        Configurable via EDN Shared Settings (edn_shared_config.json -> multi_window).
         """
-        if name in ("Browser", "AddCards", "NewAddCards", "EditCurrent", "NewEditCurrent"):
-            return False
+        mw_cfg = None
+        try:
+            from .shared_menu import get_multi_window_config
+            mw_cfg = get_multi_window_config()
+        except Exception:
+            try:
+                from shared_menu import get_multi_window_config
+                mw_cfg = get_multi_window_config()
+            except Exception:
+                try:
+                    from edn_menu.shared_menu import get_multi_window_config
+                    mw_cfg = get_multi_window_config()
+                except Exception:
+                    pass
+
+        if mw_cfg is None:
+            shared = getattr(mw, "_edn_cached_shared_config", None)
+            if shared and isinstance(shared, dict) and "multi_window" in shared:
+                mw_cfg = shared.get("multi_window", {})
+            else:
+                try:
+                    from .shared_menu import get_config
+                    mw_cfg = get_config().get("multi_window", {})
+                except Exception:
+                    mw_cfg = {}
+
+        if name == "Browser":
+            return bool(mw_cfg.get("browser", True))
+        elif name in ("AddCards", "NewAddCards"):
+            return bool(mw_cfg.get("add_cards", True))
+        elif name in ("EditCurrent", "NewEditCurrent"):
+            return bool(mw_cfg.get("edit_current", False))
 
         userOption = None
         try:
@@ -31,25 +62,14 @@ if not getattr(DialogManager, "_multi_window_patched", False):
                 userOption = mw.addonManager.getConfig(__name__)
             except Exception:
                 pass
-        if not userOption:
-            userOption = {}
-            
-        if "multiple" not in userOption:
-            userOption["multiple"] = {
-                "default": True,
-                "Browser": False,
-                "AddCards": False,
-                "NewAddCards": False,
-                "EditCurrent": False,
-                "NewEditCurrent": False,
-            }
-        multipleOption = userOption["multiple"]
-        if name in multipleOption:
-            return bool(multipleOption[name])
-        elif "default" in multipleOption:
-            return bool(multipleOption["default"])
-        else:
-            return True
+        if userOption and "multiple" in userOption:
+            multipleOption = userOption["multiple"]
+            if name in multipleOption:
+                return bool(multipleOption[name])
+            elif "default" in multipleOption:
+                return bool(multipleOption["default"])
+
+        return False
 
     DialogManager._openDialogs = list()
 
@@ -109,6 +129,19 @@ if not getattr(DialogManager, "_multi_window_patched", False):
         (creator, _) = self._dialogs[name]
         instance = creator(*args, **kwargs)
         self._openDialogs.append(instance)
+        if name in ("EditCurrent", "NewEditCurrent") and instance:
+            try:
+                try:
+                    from .editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
+                except ImportError:
+                    from Anki_EDN_Lier_les_cartes.editor_assistant import install_editcurrent_escape_shortcut, refocus_editor_field
+                install_editcurrent_escape_shortcut(instance)
+                if hasattr(instance, "editor"):
+                    from aqt.qt import QTimer
+                    QTimer.singleShot(150, lambda: refocus_editor_field(instance.editor, 0))
+                    QTimer.singleShot(350, lambda: refocus_editor_field(instance.editor, 0))
+            except Exception:
+                pass
         return instance
     DialogManager.openMany = openMany
 

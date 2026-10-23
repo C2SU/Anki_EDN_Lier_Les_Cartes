@@ -8,13 +8,19 @@ from aqt import mw
 from aqt.qt import *
 
 try:
-    from .shared_menu import get_registered_modules, is_module_enabled, set_module_enabled
+    from .shared_menu import (
+        get_registered_modules, is_module_enabled, set_module_enabled,
+        get_config, save_config, get_multi_window_config, set_multi_window_config
+    )
     from .card_styles import (
         load_prefs, save_prefs, _push_prefs_to_webview,
         ANKI_FLAGS, FLAG_COLORS, DEFAULT_PREFS
     )
 except ImportError:
-    from shared_menu import get_registered_modules, is_module_enabled, set_module_enabled
+    from shared_menu import (
+        get_registered_modules, is_module_enabled, set_module_enabled,
+        get_config, save_config, get_multi_window_config, set_multi_window_config
+    )
     from card_styles import (
         load_prefs, save_prefs, _push_prefs_to_webview,
         ANKI_FLAGS, FLAG_COLORS, DEFAULT_PREFS
@@ -322,6 +328,10 @@ class EDNSettingsDialog(QDialog):
         self.module_checkboxes = {}
         self.preview_section_cbs = {}
         self.linked_cards_cfg = self._load_linked_cards_config()
+        try:
+            self.multi_window_cfg = get_multi_window_config()
+        except Exception:
+            self.multi_window_cfg = {"browser": True, "add_cards": True, "edit_current": False}
         self.setup_ui(initial_tab)
 
     def _load_linked_cards_config(self) -> dict:
@@ -701,6 +711,52 @@ class EDNSettingsDialog(QDialog):
         for item in rec_addons:
             card = self._create_addon_card(item)
             container_layout.addWidget(card)
+
+        # Section 3 : Gestion multi-fenêtres
+        container_layout.addSpacing(6)
+        mw_header = make_selectable_label(
+            f"<span style='font-size: 13.5px; font-weight: bold; color: {T['text_main']};'>Gestion multi-fenêtres</span>"
+        )
+        container_layout.addWidget(mw_header)
+
+        mw_frame = QFrame()
+        mw_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T["bg_card"]};
+                border: 1px solid {T["border_card"]};
+                border-radius: 6px;
+            }}
+        """)
+        mw_frame_layout = QVBoxLayout(mw_frame)
+        mw_frame_layout.setContentsMargins(14, 10, 14, 10)
+        mw_frame_layout.setSpacing(8)
+
+        mw_desc = make_selectable_label(
+            f"<span style='font-size: 11.5px; color: {T['text_dim']};'>"
+            "Permet d'ouvrir plusieurs fenêtres simultanées au lieu de ramener la fenêtre existante au premier plan."
+            "</span>"
+        )
+        mw_frame_layout.addWidget(mw_desc)
+
+        self.cb_mw_browser = QCheckBox("Navigateur de cartes (Browser)")
+        self.cb_mw_browser.setChecked(self.multi_window_cfg.get("browser", True))
+        self.cb_mw_browser.setToolTip("Permet d'ouvrir plusieurs fenêtres du navigateur de cartes en parallèle.")
+        mw_frame_layout.addWidget(self.cb_mw_browser)
+
+        self.cb_mw_add_cards = QCheckBox("Ajout de cartes (AddCards)")
+        self.cb_mw_add_cards.setChecked(self.multi_window_cfg.get("add_cards", True))
+        self.cb_mw_add_cards.setToolTip("Permet d'ouvrir plusieurs fenêtres d'ajout de cartes en parallèle.")
+        mw_frame_layout.addWidget(self.cb_mw_add_cards)
+
+        self.cb_mw_edit_current = QCheckBox("Édition de la carte en cours (EditCurrent - déconseillé pendant la révision)")
+        self.cb_mw_edit_current.setChecked(self.multi_window_cfg.get("edit_current", False))
+        self.cb_mw_edit_current.setToolTip(
+            "Permet d'ouvrir plusieurs fenêtres d'édition 'E' pendant les révisions.\n"
+            "Désactivé par défaut pour préserver la stabilité du focus et éviter les conflits de synchronisation."
+        )
+        mw_frame_layout.addWidget(self.cb_mw_edit_current)
+
+        container_layout.addWidget(mw_frame)
 
         container_layout.addStretch()
         scroll.setWidget(container)
@@ -1512,6 +1568,14 @@ class EDNSettingsDialog(QDialog):
         self.cb_auto_capitalize_linked_cards.setChecked(DEFAULT_PREFS.get("autoCapitalizeLinkedCards", True))
         self.cb_clean_clipboard_formatting.setChecked(DEFAULT_PREFS.get("cleanClipboardFormatting", True))
 
+        # Multi-fenêtres par défaut (Browser=True, AddCards=True, EditCurrent=False)
+        if hasattr(self, "cb_mw_browser"):
+            self.cb_mw_browser.setChecked(True)
+        if hasattr(self, "cb_mw_add_cards"):
+            self.cb_mw_add_cards.setChecked(True)
+        if hasattr(self, "cb_mw_edit_current"):
+            self.cb_mw_edit_current.setChecked(False)
+
         # 2. Rétablir Lier les cartes
         self.cb_mirror_on_paste.setChecked(DEFAULT_LINKED_CARDS_CONFIG["mirror_link_on_paste"])
         self.cb_desc_intelligent.setChecked(DEFAULT_LINKED_CARDS_CONFIG["description_intelligente"])
@@ -1620,6 +1684,17 @@ class EDNSettingsDialog(QDialog):
         save_prefs(self.prefs)
         _push_prefs_to_webview()
 
+        # Sauvegarde Multi-fenêtres dans la configuration partagée EDN
+        try:
+            mw_updates = {
+                "browser": self.cb_mw_browser.isChecked(),
+                "add_cards": self.cb_mw_add_cards.isChecked(),
+                "edit_current": self.cb_mw_edit_current.isChecked(),
+            }
+            set_multi_window_config(mw_updates)
+        except Exception as e:
+            print(f"[EDN Settings] Erreur sauvegarde multi_window: {e}")
+
         # Sauvegarde Lier les cartes
         hiddens = [box_id for box_id, cb in self.preview_section_cbs.items() if cb.isChecked()]
         linked_updates = {

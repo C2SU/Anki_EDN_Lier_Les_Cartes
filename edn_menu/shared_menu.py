@@ -269,9 +269,18 @@ def register_interface(module_id: str, widget_class):
 
 _CACHED_CONFIG = None
 
+DEFAULT_MULTI_WINDOW_CONFIG = {
+    "browser": True,
+    "add_cards": True,
+    "edit_current": False,
+}
+
 def get_config() -> dict:
     """Load EDN configuration."""
     global _CACHED_CONFIG
+    if mw and getattr(mw, "_edn_cached_shared_config", None) is not None:
+        _CACHED_CONFIG = mw._edn_cached_shared_config
+        return _CACHED_CONFIG
     if _CACHED_CONFIG is not None:
         return _CACHED_CONFIG
     config_path = _get_config_path()
@@ -279,21 +288,43 @@ def get_config() -> dict:
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 _CACHED_CONFIG = json.load(f)
+                if mw:
+                    mw._edn_cached_shared_config = _CACHED_CONFIG
                 return _CACHED_CONFIG
         except:
             pass
     _CACHED_CONFIG = {"modules": {}, "shortcuts": {}}
+    if mw:
+        mw._edn_cached_shared_config = _CACHED_CONFIG
     return _CACHED_CONFIG
 
 def save_config(config: dict):
     """Save EDN configuration."""
     global _CACHED_CONFIG
     _CACHED_CONFIG = dict(config)
+    if mw:
+        mw._edn_cached_shared_config = _CACHED_CONFIG
     config_path = _get_config_path()
     if not config_path:
         return
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+def get_multi_window_config() -> dict:
+    """Get multi-window configuration with targeted native defaults."""
+    cfg = get_config()
+    mw_cfg = dict(DEFAULT_MULTI_WINDOW_CONFIG)
+    if "multi_window" in cfg and isinstance(cfg["multi_window"], dict):
+        mw_cfg.update(cfg["multi_window"])
+    return mw_cfg
+
+def set_multi_window_config(multi_window_cfg: dict):
+    """Save multi-window configuration."""
+    cfg = get_config()
+    if "multi_window" not in cfg or not isinstance(cfg["multi_window"], dict):
+        cfg["multi_window"] = {}
+    cfg["multi_window"].update(multi_window_cfg)
+    save_config(cfg)
 
 def is_module_enabled(module_id: str) -> bool:
     """Check if a module is enabled."""

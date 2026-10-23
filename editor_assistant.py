@@ -2260,29 +2260,27 @@ def _adjust_height(dlg, h):
 
 # Stop-words médicaux et communs (français) — filtrés lors de la suggestion de liens
 _SUGGESTION_STOP_WORDS = frozenset([
-    # Mots grammaticaux courts
+    # Mots grammaticaux et génériques courts
     "dans", "avec", "pour", "les", "des", "une", "qui", "que", "par", "sur",
     "son", "ses", "leur", "leurs", "ces", "cette", "comme", "mais", "aussi",
-    "plus", "tout", "bien", "dont", "sans", "vers", "sous", "entre", "elle",
+    "plus", "tout", "tous", "toute", "toutes", "bien", "dont", "sans", "vers", "sous", "entre", "elle",
     "elles", "nous", "vous", "ils", "etre", "avoir", "faire", "peut", "doit",
-    "selon", "apres", "avant", "lors", "chez", "donc", "alors", "aussi",
-    "plus", "moins", "tres", "bien", "souvent", "rarement", "jamais",
-    # Termes médicaux génériques non discriminants
-    "syndrome", "diagnostic", "traitement", "patient", "patients", "maladie",
-    "maladies", "clinique", "signe", "signes", "symptome", "symptomes",
-    "forme", "formes", "type", "types", "cause", "causes", "risque", "risques",
-    "facteur", "facteurs", "bilan", "examen", "examens", "resultat", "resultats",
-    "prise", "charge", "pathologie", "pathologies", "presentation", "anomalie",
-    "anomalies", "aspect", "aspects", "cartes", "carte", "lien", "liens",
-    "definition", "epidemiologie", "physiopathologie", "classification",
-    "complication", "complications", "etiologie", "pronostic", "prevention",
-    "indication", "indications", "contre", "association", "associations",
-    "principaux", "principales", "principal", "principale", "atteinte",
-    "atteintes", "important", "importante", "frequence", "evolution",
-    "caracteristique", "caracteristiques", "mecanisme", "mecanismes",
-    "absence", "presence", "niveau", "niveaux", "nombre", "valeur", "valeurs",
-    # Abréviations génériques médicales
-    "atcd", "fdr", "pec", "nfs", "bilan",
+    "selon", "apres", "avant", "lors", "chez", "donc", "alors", "moins", "tres",
+    "souvent", "rarement", "jamais", "autre", "autres", "meme", "memes",
+    # Termes génériques non discriminants
+    "aspect", "aspects", "carte", "cartes", "lien", "liens",
+    "principaux", "principales", "principal", "principale",
+    "important", "importante", "importants", "importantes",
+    "frequence", "niveau", "niveaux", "nombre", "valeur", "valeurs",
+    "definition", "generalites", "introduction"
+])
+
+# Termes et acronymes médicaux courts essentiels (3 lettres)
+_SHORT_MEDICAL_TERMS = frozenset([
+    "vhp", "avc", "ecg", "hta", "vih", "eeg", "oap", "sca", "ira", "irc", 
+    "crp", "tsh", "inr", "cmf", "orl", "mpr", "lca", "dbt", "pad", "pas",
+    "rein", "foie", "sang", "yeux", "oeil", "peau", "bras", "main", "pied",
+    "choc", "coma", "dos", "os", "fdr", "pec", "nfs", "aomi", "bav", "fa"
 ])
 
 # Tags de spécialité EDN (pour le scoring par tag)
@@ -2293,7 +2291,7 @@ _SPECIALTY_TAGS = frozenset([
     "Oncologie", "Infectiologie", "Psychiatrie", "Geriatrie", "Anesthesie",
     "Reanimation", "Urgences", "Sante-publique", "Medecine-legale", "Pharmacologie",
     "Hepato-gastro-enterologie", "Chirurgie", "ORL", "LCA", "Immunologie",
-    "Rhumatologie", "Douleur", "Soins-palliatifs", "Geriatrie",
+    "Douleur", "Soins-palliatifs", "MPR", "Locomoteur", "Nutrition", "CMF", "Epidemiologie"
 ])
 
 def _normalize_for_keywords(text: str) -> str:
@@ -2324,17 +2322,19 @@ def _normalize_for_keywords(text: str) -> str:
 def _extract_keywords(text: str) -> set:
     """Extrait les mots-clés significatifs d'un texte HTML (champ Anki).
     
-    Utilise la normalisation Unicode de evolution_tracker.py :
-    accents supprimés → comparaisons robustes. Tokens ≥ 5 lettres uniquement.
-    Stop-words filtrés.
+    Tokens ≥ 4 lettres ou acronymes médicaux courts (3 lettres). Stop-words filtrés.
     """
     if not text:
         return set()
     normalized = _normalize_for_keywords(text)
-    # Tokeniser (lettres ASCII uniquement après normalisation)
-    tokens = re.findall(r'[a-z]{5,}', normalized)
-    # Filtrer stop-words (sur texte normalisé)
-    return {t for t in tokens if t not in _SUGGESTION_STOP_WORDS}
+    tokens = re.findall(r'[a-z]{3,}', normalized)
+    result = set()
+    for t in tokens:
+        if len(t) >= 4 and t not in _SUGGESTION_STOP_WORDS:
+            result.add(t)
+        elif len(t) == 3 and t in _SHORT_MEDICAL_TERMS and t not in _SUGGESTION_STOP_WORDS:
+            result.add(t)
+    return result
 
 
 def _extract_tags_normalized(tags_str: str) -> set:
@@ -2363,17 +2363,47 @@ def _get_specialty_norm():
     return _SPECIALTY_NORM
 
 
+def _extract_item_numbers_from_tags(tags_iterable) -> set:
+    """Extrait tous les numéros d'items EDN présents dans les tags (ex: item-328 -> 328)."""
+    item_nums = set()
+    for t in tags_iterable:
+        for m in re.finditer(r'item-(\d+)', t, re.IGNORECASE):
+            try:
+                item_nums.add(int(m.group(1)))
+            except ValueError:
+                pass
+    return item_nums
+
+
+def _extract_subspecialties_from_tags(tags_iterable) -> set:
+    """Extrait les sous-spécialités hiérarchiques (ex: 'Pharmacologie::Dispositif-médicaux')."""
+    subspecs = set()
+    for t in tags_iterable:
+        tl = t.lower()
+        if '::' in t and not any(tl.startswith(p) for p in ('ann', 'edn::item', 'source::', 'maj::', 'rang::', 'new::')):
+            subspecs.add(t)
+    return subspecs
+
+
+def _extract_specialties_from_tags(tags_iterable) -> set:
+    """Extrait les spécialités médicales racines de haut niveau."""
+    spec_norm = _get_specialty_norm()
+    result = set()
+    for t in tags_iterable:
+        norm = _normalize_for_keywords(t)
+        if norm in spec_norm:
+            result.add(norm)
+        elif '::' in norm:
+            root = norm.split('::')[0]
+            if root in spec_norm:
+                result.add(root)
+    return result
+
+
 def _get_item_tag(tags_set: set) -> str:
-    """Retourne le tag 'item-' EDN (format: edn::item-NNN-nom) si présent, sinon ''.
-    
-    Le tag est normalisé (accents supprimés, minuscules) donc on cherche
-    'edn::item-' dans les tags normalisés.
-    Exemple réel: 'EDN::item-117-Psoriasis' -> normalisé 'edn::item-117-psoriasis'
-    """
     for t in tags_set:
         if 'edn::item-' in t:
             return t
-    # Fallback : tag item- générique
     for t in tags_set:
         if '::item-' in t:
             return t
@@ -2381,62 +2411,28 @@ def _get_item_tag(tags_set: set) -> str:
 
 
 def _get_specialty_tags(tags_set: set) -> set:
-    """Retourne les tags de spécialité de haut niveau parmi les tags normalisés.
-    
-    Gère les tags plats ('dermatologie') et hiérarchiques ('dermatologie::lesions_elementaires').
-    Retourne la partie racine (avant '::') pour les tags hiérarchiques.
-    """
-    spec_norm = _get_specialty_norm()
-    result = set()
-    for t in tags_set:
-        # Tag plat exact
-        if t in spec_norm:
-            result.add(t)
-        # Tag hiérarchique : vérifier la racine (ex: 'dermatologie::lesions...' -> 'dermatologie')
-        elif '::' in t:
-            root = t.split('::')[0]
-            if root in spec_norm:
-                result.add(root)
-    return result
+    return _extract_specialties_from_tags(tags_set)
 
 
 def _get_subspecialty_tags(tags_set: set) -> set:
-    """Retourne les sous-spécialités (tags hiérarchiques de niveau 2).
-    
-    Exemple: 'dermatologie::lesions_elementaires' -> {'dermatologie::lesions_elementaires'}
-    Utile pour matcher les cartes de même sous-chapitre.
-    """
-    result = set()
-    spec_norm = _get_specialty_norm()
-    for t in tags_set:
-        if '::' in t:
-            root = t.split('::')[0]
-            if root in spec_norm:
-                result.add(t)  # ex: 'dermatologie::lesions_elementaires'
-    return result
+    return _extract_subspecialties_from_tags(tags_set)
 
 
-def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids: set, max_results: int = 100) -> list:
-    """Modèle B Validé Statistiquement sur 1000 cartes :
-    - Item ECN prioritaire (+14)
-    - Titre / Recto overlap (+3 par mot-clé commun, max 6)
-    - Spécialité (+8 max 16)
-    - Date mod SQLite (+1..6)
-    - Rang & MAJ (+2)
-    - Cache LRU borné (<250 Ko RAM)
+def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids: set, max_results: int = 100, note_tags: list = None) -> list:
+    """Moteur de suggestion de liens EDN haute précision :
+    - Item ECN prioritaire (+20 points)
+    - Sous-spécialité clinique (+12 points)
+    - Overlap mots-clés Recto/Titre (+6 par mot-clé, max 18)
+    - Overlap mots-clés Verso/Contenu (+3 par mot-clé, max 9)
+    - Découverte lexicale SQLite pour liens inter-items (mots-clés discriminants)
+    - Spécialité racine (+4) uniquement si relation thématique avérée
+    - Filtrage strict anti-pollution (score < 8 ou hors-sujet exclu)
     """
     global _SUGGESTIONS_CACHE
     if current_nid in _SUGGESTIONS_CACHE and len(_SUGGESTIONS_CACHE[current_nid]) >= max_results:
         return _SUGGESTIONS_CACHE[current_nid][:max_results]
 
-    base_scores = {}
-    date_bonuses = {}
-    rank_bonuses = {}
-    maj_bonuses = {}
-    has_topic_relation = {}
-    candidate_data = {}  # cnid -> (fields, tags_norm, mod, mid)
-
-    all_linked = set(existing_nids) | {str(current_nid)}
+    all_linked = set(str(n) for n in existing_nids) | {str(current_nid)}
 
     source_tags_raw = ""
     source_mod = 0
@@ -2448,108 +2444,97 @@ def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids
     except Exception:
         pass
 
-    source_tags_norm = _extract_tags_normalized(source_tags_raw)
-    source_item_tag = _get_item_tag(source_tags_norm)
-    source_specialty_tags = _get_specialty_tags(source_tags_norm)
-    source_ranks = {t for t in source_tags_norm if 'rang::' in t}
-    source_majs = {t for t in source_tags_norm if 'maj::' in t}
+    if note_tags:
+        raw_tags_list = list(note_tags)
+    else:
+        raw_tags_list = source_tags_raw.strip().split()
+
+    source_item_nums = _extract_item_numbers_from_tags(raw_tags_list)
+    source_subspecialties = _extract_subspecialties_from_tags(raw_tags_list)
+    source_specialties = _extract_specialties_from_tags(raw_tags_list)
+    source_ranks = {t.lower() for t in raw_tags_list if 'rang::' in t.lower()}
+    source_majs = {t.lower() for t in raw_tags_list if 'maj::' in t.lower()}
 
     source_title_tokens = _extract_keywords(note_fields[0] if note_fields else "")
-    source_full_tokens = set(source_title_tokens)
+    source_content_tokens = set()
     for fld in (note_fields[1:3] if len(note_fields) > 1 else []):
-        source_full_tokens |= _extract_keywords(fld)
+        source_content_tokens |= _extract_keywords(fld)
 
-    def ingest_candidate_rows(rows, default_score=0, is_topic=False):
-        for row in rows:
-            cnid = str(row[0])
+    raw_candidates = {}  # cnid -> (fields_list, tags_list, rmod, rmid, boost, is_fof)
+
+    def add_candidates(rows, boost=0, is_fof=False):
+        for r in rows:
+            cnid = str(r[0])
             if cnid in all_linked:
                 continue
-            rflds = row[1]
-            rtags = row[2] or ''
-            rmod = int(row[3]) if row[3] is not None else 0
-            rmid = row[4]
-            
-            if cnid not in candidate_data:
-                fields = rflds.split("\x1f") if rflds else []
-                tags_norm = _extract_tags_normalized(rtags)
-                candidate_data[cnid] = (fields, tags_norm, rmod, rmid)
+            if cnid not in raw_candidates:
+                rflds = r[1]
+                rtags = r[2] or ''
+                rmod = int(r[3]) if r[3] is not None else 0
+                rmid = r[4] if len(r) > 4 else None
+                flds_list = rflds.split("\x1f") if rflds else []
+                tags_list = rtags.strip().split()
+                raw_candidates[cnid] = (flds_list, tags_list, rmod, rmid, boost, is_fof)
             else:
-                tags_norm = candidate_data[cnid][1]
-                rmod = candidate_data[cnid][2]
+                old = raw_candidates[cnid]
+                raw_candidates[cnid] = (old[0], old[1], old[2], old[3], max(old[4], boost), old[5] or is_fof)
 
-            b_score = base_scores.get(cnid, 0) + default_score
-            topic_rel = has_topic_relation.get(cnid, False) or is_topic
-
-            # 1. Item ECN (+14)
-            c_item_tag = _get_item_tag(tags_norm)
-            if source_item_tag and c_item_tag and source_item_tag == c_item_tag:
-                b_score += 14
-                topic_rel = True
-
-            # 2. Spécialité (+8 max 16)
-            c_specialty = _get_specialty_tags(tags_norm)
-            common_spec = source_specialty_tags & c_specialty
-            if common_spec:
-                b_score += min(len(common_spec) * 8, 16)
-                topic_rel = True
-
-            # 3. Bonus Mots-clés Titre Recto (+3 par mot, max 6)
-            cfields = candidate_data[cnid][0]
-            cand_title_tokens = _extract_keywords(cfields[0] if cfields else "")
-            common_title = len(source_title_tokens & cand_title_tokens)
-            if common_title >= 1:
-                b_score += min(common_title * 3, 6)
-                topic_rel = True
-
-            cranks = {t for t in tags_norm if 'rang::' in t}
-            rank_bonus = 2 if (source_ranks & cranks) else 0
-            cmajs = {t for t in tags_norm if 'maj::' in t}
-            maj_bonus = 2 if (source_majs & cmajs) else 0
-
-            diff_creation_days = abs(int(current_nid) - int(cnid)) / (1000 * 60 * 60 * 24)
-            diff_mod_days = abs(source_mod - rmod) / (60 * 60 * 24)
-            diff_days = min(diff_creation_days, diff_mod_days)
-
-            if diff_days <= 1.0:
-                date_bonus = 6
-            elif diff_days <= 7.0:
-                date_bonus = 3
-            elif diff_days <= 30.0:
-                date_bonus = 1
-            else:
-                date_bonus = 0
-
-            base_scores[cnid] = b_score
-            has_topic_relation[cnid] = topic_rel
-            date_bonuses[cnid] = date_bonus
-            rank_bonuses[cnid] = rank_bonus
-            maj_bonuses[cnid] = maj_bonus
-
-    # 1. Candidats Item ECN (ultra rapide : 1ms)
-    if source_item_tag:
+    # 1. Candidats du même item EDN (insensible aux accents et au préfixe)
+    for item_num in source_item_nums:
+        item_patterns = [
+            f'%item-{item_num}-%',
+            f'%item-{item_num}:%',
+            f'%item-{item_num} %',
+            f'%item-{item_num}'
+        ]
+        if item_num < 100:
+            item_patterns.extend([
+                f'%item-0{item_num}-%',
+                f'%item-0{item_num}:%',
+                f'%item-0{item_num} %',
+                f'%item-0{item_num}'
+            ])
+        where_clauses = " OR ".join(["tags LIKE ?"] * len(item_patterns))
         try:
-            item_kw = source_item_tag.replace('edn::', '')
             rows = col.db.all(
-                "SELECT id, flds, tags, mod, mid FROM notes WHERE tags LIKE ? AND id != ? LIMIT 150",
-                f'%{item_kw}%', int(current_nid)
+                f"SELECT id, flds, tags, mod, mid FROM notes WHERE ({where_clauses}) AND id != ? LIMIT 150",
+                *item_patterns, int(current_nid)
             )
-            ingest_candidate_rows(rows, default_score=0, is_topic=True)
+            add_candidates(rows, boost=0)
         except Exception:
             pass
 
-    # 2. Candidats Spécialité (2-3ms)
-    if source_specialty_tags:
-        for spec in list(source_specialty_tags)[:2]:
+    # 2. Candidats par sous-spécialité (ex: Pharmacologie::Dispositif-médicaux)
+    for subspec in list(source_subspecialties)[:3]:
+        sub_root = subspec.split('::')[-1]
+        if len(sub_root) >= 4:
+            sub_wildcard = re.sub(r'[éèêëàâäôöûüïîçÉÈÊËÀÂÄÔÖÛÜÏÎÇ]', '_', sub_root)
             try:
                 rows = col.db.all(
                     "SELECT id, flds, tags, mod, mid FROM notes WHERE tags LIKE ? AND id != ? LIMIT 80",
-                    f'%{spec}%', int(current_nid)
+                    f'%{sub_wildcard}%', int(current_nid)
                 )
-                ingest_candidate_rows(rows, default_score=0, is_topic=True)
+                add_candidates(rows, boost=0)
             except Exception:
                 pass
 
-    # 3. Friends-of-friends (réseau de liens proches)
+    # 3. Candidats par mots-clés du Titre (Découverte lexicale SQLite de sujets identiques)
+    salient_title_tokens = [t for t in source_title_tokens if t not in ('prescription', 'indication', 'modalites', 'signes', 'forme', 'formes')]
+    if not salient_title_tokens:
+        salient_title_tokens = list(source_title_tokens)
+    for kw in salient_title_tokens[:3]:
+        if len(kw) >= 4:
+            kw_wildcard = re.sub(r'[éèêëàâäôöûüïîçÉÈÊËÀÂÄÔÖÛÜÏÎÇ]', '_', kw)
+            try:
+                rows = col.db.all(
+                    "SELECT id, flds, tags, mod, mid FROM notes WHERE flds LIKE ? AND id != ? LIMIT 40",
+                    f'%{kw_wildcard}%', int(current_nid)
+                )
+                add_candidates(rows, boost=0)
+            except Exception:
+                pass
+
+    # 4. Friends-of-friends (réseau de liens proches)
     linked_nids_for_fof = list(all_linked - {str(current_nid)})[:6]
     if linked_nids_for_fof:
         try:
@@ -2559,55 +2544,106 @@ def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids
             fof_target_ids = set()
             for frow in fof_rows:
                 rflds = frow[1].split("\x1f") if frow[1] else []
-                out_nids = extract_nids_from_fields_list(rflds)
-                for onid in out_nids:
-                    if onid not in all_linked:
-                        fof_target_ids.add(int(onid))
-            
-            if fof_target_ids:
+                for f in rflds:
+                    for match in re.finditer(r'data-nid=[\"\'](\d{10,})[\"\']', f):
+                        fof_target_ids.add(match.group(1))
+                    for match in re.finditer(r'\b(1\d{12})\b', f):
+                        fof_target_ids.add(match.group(1))
+            cand_fof_nids = [int(tid) for tid in fof_target_ids if str(tid) not in all_linked][:40]
+            if cand_fof_nids:
                 cand_fof_rows = col.db.all(
-                    f"SELECT id, flds, tags, mod, mid FROM notes WHERE id IN ({','.join(map(str, list(fof_target_ids)[:40]))})"
+                    f"SELECT id, flds, tags, mod, mid FROM notes WHERE id IN ({','.join(map(str, cand_fof_nids))})"
                 )
-                ingest_candidate_rows(cand_fof_rows, default_score=5, is_topic=True)
+                add_candidates(cand_fof_rows, boost=8, is_fof=True)
         except Exception:
             pass
 
-    # 4. Mots-clés généraux sur tous les candidats (en mémoire, 0 requêtes SQL !)
-    if source_full_tokens and candidate_data:
-        for cnid, cdata in candidate_data.items():
-            cfields = cdata[0]
-            if cfields:
-                cand_full_tokens = _extract_keywords(cfields[0])
-                if len(cfields) > 1:
-                    cand_full_tokens |= _extract_keywords(cfields[1])
-                common_count = len(source_full_tokens & cand_full_tokens)
-                if common_count >= 2:
-                    keyword_score = min(common_count * 2, 10)
-                    base_scores[cnid] = base_scores.get(cnid, 0) + keyword_score
-                    has_topic_relation[cnid] = True
-
+    # 5. Calcul de pertinence précis (score calculé une seule fois par candidat)
     final_scores = {}
-    for nid, b_sc in base_scores.items():
-        if has_topic_relation.get(nid, False):
-            final_scores[nid] = b_sc + date_bonuses.get(nid, 0) + rank_bonuses.get(nid, 0) + maj_bonuses.get(nid, 0)
-        else:
-            final_scores[nid] = b_sc
+    for cnid, (flds_list, tags_list, rmod, rmid, boost, is_fof) in raw_candidates.items():
+        score = boost
+        topic_rel = is_fof
 
-    MIN_SCORE = 4
+        # A. Item ECN (+20)
+        cand_item_nums = _extract_item_numbers_from_tags(tags_list)
+        if source_item_nums and (source_item_nums & cand_item_nums):
+            score += 20
+            topic_rel = True
+
+        # B. Sous-spécialité clinique (+12)
+        cand_subspec = _extract_subspecialties_from_tags(tags_list)
+        common_subspec = source_subspecialties & cand_subspec
+        if common_subspec:
+            score += min(len(common_subspec) * 12, 24)
+            topic_rel = True
+
+        # C. Mots-clés Recto/Titre (+6 par mot, max 18)
+        cand_title_tokens = _extract_keywords(flds_list[0] if flds_list else "")
+        common_title = len(source_title_tokens & cand_title_tokens)
+        if common_title >= 1:
+            score += min(common_title * 6, 18)
+            topic_rel = True
+
+        # D. Mots-clés croisés Recto/Verso (+3 par mot, max 9)
+        cand_content_tokens = set()
+        for f in (flds_list[1:3] if len(flds_list) > 1 else []):
+            cand_content_tokens |= _extract_keywords(f)
+        common_cross = len(source_title_tokens & cand_content_tokens) + len(source_content_tokens & cand_title_tokens)
+        if common_cross >= 1:
+            score += min(common_cross * 3, 9)
+            topic_rel = True
+
+        # E. Spécialité racine (+4) — UNIQUEMENT si relation thématique déjà établie !
+        cand_specialties = _extract_specialties_from_tags(tags_list)
+        if topic_rel and (source_specialties & cand_specialties):
+            score += 4
+
+        # F. Tie-breakers — UNIQUEMENT si relation thématique avérée
+        if topic_rel:
+            cranks = {t.lower() for t in tags_list if 'rang::' in t.lower()}
+            if source_ranks & cranks:
+                score += 1
+
+            cmajs = {t.lower() for t in tags_list if 'maj::' in t.lower()}
+            if source_majs & cmajs:
+                score += 1
+
+            diff_creation_days = abs(int(current_nid) - int(cnid)) / (1000 * 60 * 60 * 24)
+            diff_mod_days = abs(source_mod - rmod) / (60 * 60 * 24)
+            diff_days = min(diff_creation_days, diff_mod_days)
+            if diff_days <= 1.0:
+                score += 2
+            elif diff_days <= 7.0:
+                score += 1
+
+            final_scores[cnid] = score
+        else:
+            # Sans relation de sujet, conserver uniquement les correspondances de titre fortes (score >= 12)
+            if score >= 12:
+                final_scores[cnid] = score
+
+    MIN_SCORE = 8
     qualified = {nid: sc for nid, sc in final_scores.items() if sc >= MIN_SCORE}
     sorted_nids = sorted(qualified.keys(), key=lambda n: qualified[n], reverse=True)[:max_results]
 
     results = []
     class SimpleNote:
-        def __init__(self, flds):
+        def __init__(self, flds, mid=None, col_ref=None):
             self.fields = flds
+            self.mid = mid
+            self._col = col_ref
         def note_type(self):
+            if self.mid and self._col:
+                try:
+                    return self._col.models.get(self.mid)
+                except Exception:
+                    pass
             return {"name": "", "type": 0, "flds": []}
 
     for nid in sorted_nids:
-        if nid in candidate_data:
-            cfields = candidate_data[nid][0]
-            sn = SimpleNote(cfields)
+        if nid in raw_candidates:
+            cfields, _, _, rmid, _, _ = raw_candidates[nid]
+            sn = SimpleNote(cfields, mid=rmid, col_ref=col)
             recto = get_note_recto(sn)
             if recto and recto != "[Vide]":
                 results.append({
@@ -2774,7 +2810,8 @@ def _bg_fetch_relations(col, current_nid: str, note_fields: list[str], suggestio
     suggestions = []
     if suggestions_enabled:
         try:
-            suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=60)
+            src_tags = list(source_note.tags) if source_note else None
+            suggestions = _compute_suggestions(col, current_nid, note_fields, existing_nids, max_results=60, note_tags=src_tags)
         except Exception as se:
             print("Error computing suggestions in _bg_fetch_relations:", se)
 
