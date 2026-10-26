@@ -22,9 +22,9 @@ kbd.clickable_cards {
   box-shadow: none !important;
 }
 kbd.clickable_cards:hover {
-  color: #7c3aed !important;
-  border-color: #a78bfa !important;
-  background: #f5f3ff !important;
+  color: #2c7bb6 !important;
+  border-color: #93c5fd !important;
+  background: #f0f7ff !important;
 }
 kbd.clickable_cards:focus,
 kbd.clickable_cards:focus-visible {
@@ -49,8 +49,8 @@ body.night-mode kbd.clickable_cards {
 body.nightMode kbd.clickable_cards:hover,
 body.night_mode kbd.clickable_cards:hover,
 body.night-mode kbd.clickable_cards:hover {
-  color: #BD93BD !important;
-  border-color: #BD93BD !important;
+  color: #64b5f6 !important;
+  border-color: #1976d2 !important;
 }
 
 kbd.clickable_cards .edn-nid {

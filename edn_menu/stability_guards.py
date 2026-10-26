@@ -70,6 +70,43 @@ def _install_reviewer_guard() -> None:
         except ImportError:
             return
 
+    # --- show ---
+    orig_show = getattr(Reviewer, "show", None)
+    if orig_show and not hasattr(Reviewer, "_cr_orig_show"):
+        Reviewer._cr_orig_show = orig_show
+
+        def patched_show(self, *args, **kwargs):
+            self.state = ""
+            self._user_nav_refresh = True
+            self._in_reviewer_show = True
+            try:
+                try:
+                    return Reviewer._cr_orig_show(self)
+                except TypeError:
+                    return Reviewer._cr_orig_show(self, *args, **kwargs)
+            finally:
+                self._in_reviewer_show = False
+                self._user_nav_refresh = False
+
+        Reviewer.show = patched_show
+
+    # --- cleanup ---
+    orig_cleanup = getattr(Reviewer, "cleanup", None)
+    if orig_cleanup and not hasattr(Reviewer, "_cr_orig_cleanup"):
+        Reviewer._cr_orig_cleanup = orig_cleanup
+
+        def patched_cleanup(self, *args, **kwargs):
+            self.state = ""
+            self.card = None
+            self._user_nav_refresh = False
+            self._in_reviewer_show = False
+            try:
+                return Reviewer._cr_orig_cleanup(self)
+            except TypeError:
+                return Reviewer._cr_orig_cleanup(self, *args, **kwargs)
+
+        Reviewer.cleanup = patched_cleanup
+
     # --- nextCard ---
     orig_nextCard = getattr(Reviewer, "nextCard", None)
     if orig_nextCard and not hasattr(Reviewer, "_cr_orig_nextCard"):
@@ -133,6 +170,16 @@ def _install_reviewer_guard() -> None:
                 mw.reviewer._user_nav_refresh = True
 
         gui_hooks.state_did_undo.append(_mark_nav_from_hook)
+
+        def _reset_state_on_reviewer_end(*args, **kwargs):
+            from aqt import mw
+            if mw and getattr(mw, "reviewer", None):
+                mw.reviewer.state = ""
+                mw.reviewer.card = None
+                mw.reviewer._user_nav_refresh = False
+                mw.reviewer._in_reviewer_show = False
+
+        gui_hooks.reviewer_will_end.append(_reset_state_on_reviewer_end)
     except Exception:
         pass
 
@@ -142,23 +189,50 @@ def _install_reviewer_guard() -> None:
         Reviewer._cr_orig_refresh_if_needed = orig_refresh_if_needed
 
         def patched_refresh_if_needed(self, *args, **kwargs):
+            # 1. ALWAYS allow show() to initialize and load the first card
+            if getattr(self, "_in_reviewer_show", False):
+                try:
+                    return Reviewer._cr_orig_refresh_if_needed(self)
+                except TypeError:
+                    return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
+
+            # 2. If there is NO active card (e.g. entering review, or empty queue),
+            # we MUST NEVER block RefreshNeeded.QUEUES, otherwise nextCard() is never called
+            # and the user cannot study.
             card = getattr(self, "card", None)
-            cur_state = getattr(self, "state", None)
+            if card is None:
+                try:
+                    return Reviewer._cr_orig_refresh_if_needed(self)
+                except TypeError:
+                    return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
+
+            # 3. If main window is NOT in review mode, never block
+            from aqt import mw
+            if mw and getattr(mw, "state", None) != "review":
+                try:
+                    return Reviewer._cr_orig_refresh_if_needed(self)
+                except TypeError:
+                    return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
+
             refresh_needed = getattr(self, "_refresh_needed", None)
 
             user_nav = getattr(self, "_user_nav_refresh", False)
             if user_nav:
                 self._user_nav_refresh = False
+                try:
+                    return Reviewer._cr_orig_refresh_if_needed(self)
+                except TypeError:
+                    return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
 
-            # Defer background RefreshNeeded.QUEUES nextCard() triggers while viewing an active card
+            # 4. Defer background RefreshNeeded.QUEUES nextCard() triggers
+            # ONLY while actively viewing a card (card is not None and user is in review)
             if (
                 RefreshNeeded is not None
-                and (cur_state == "transition" or card is not None or _in_next_card)
+                and not _in_next_card
                 and refresh_needed is getattr(RefreshNeeded, "QUEUES", None)
             ):
-                if not user_nav:
-                    self._refresh_needed = None
-                    return
+                self._refresh_needed = None
+                return
 
             try:
                 return Reviewer._cr_orig_refresh_if_needed(self)

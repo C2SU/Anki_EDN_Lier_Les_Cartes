@@ -17,13 +17,12 @@ _assistant_css = """
   --incoming-color: #f59e0b;
   --reciprocal-color: #10b981;
   --outgoing-color: #3b82f6;
-  --suggested-color: #8b5cf6;
-  --shadow-light: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03);
+  --suggested-color: #0284c7;
+  --shadow-light: 0 1px 2px rgba(0,0,0,0.04);
 }
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
 body {
-  font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 13px;
   margin: 0;
   padding: 12px 14px;
@@ -61,7 +60,7 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   cursor: pointer;
   position: relative;
   overflow: hidden;
@@ -69,26 +68,24 @@ h3 {
 
 /* Color-coded left borders */
 .card-item.incoming {
-  border-left: 4px solid var(--incoming-color);
+  border-left: 3px solid var(--incoming-color);
 }
 .card-item.reciprocal {
-  border-left: 4px solid var(--reciprocal-color);
+  border-left: 3px solid var(--reciprocal-color);
 }
 .card-item.outgoing {
-  border-left: 4px solid var(--outgoing-color);
+  border-left: 3px solid var(--outgoing-color);
 }
 
 .card-item:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.04);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.06);
   background: var(--highlight-bg, #f3f4f6);
 }
 
 .card-item.active-card {
   background: var(--highlight-bg, #eff6ff) !important;
   border-color: var(--link, #3b82f6) !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4) !important;
-  transform: scale(1.01);
+  box-shadow: 0 0 0 1.5px rgba(44, 123, 182, 0.3) !important;
 }
 
 .card-title {
@@ -109,7 +106,7 @@ h3 {
   border-radius: 4px;
   padding: 1.5px 5px;
   width: fit-content;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .card-item:hover .card-nid-badge {
@@ -192,7 +189,7 @@ h3 {
   cursor: pointer;
   font-size: 11px;
   font-family: inherit;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 .btn-load-more:hover {
   opacity: 1;
