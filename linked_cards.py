@@ -115,6 +115,25 @@ def _toggle_assistant_from_menu():
     except Exception as e:
         log(f"toggle_assistant error: {e}")
 
+def _note_has_main_link(note) -> bool:
+    """Vérifie si la note contient déjà un lien avec le titre 'Main'."""
+    if not note or not getattr(note, 'fields', None):
+        return False
+    try:
+        import re
+        for fld in note.fields:
+            if not fld:
+                continue
+            # Badge avec description "Main" : <span class="edn-desc">Main</span>
+            if re.search(r'<span[^>]*class=["\']edn-desc["\'][^>]*>\s*Main\s*</span>', fld, flags=re.IGNORECASE):
+                return True
+            # Texte brut "Main — <kbd" ou "Main - <kbd"
+            if re.search(r'(?:^|[\r\n>])\s*Main\s*(?:&nbsp;|\s)*[—–-](?:&nbsp;|\s)*<kbd', fld, flags=re.IGNORECASE):
+                return True
+    except Exception:
+        pass
+    return False
+
 class MirrorTargetRowWidget(QWidget):
     def __init__(self, parent, nid_str, target_note, fidx, source_note=None):
         super().__init__(parent)
@@ -181,7 +200,8 @@ class MirrorTargetRowWidget(QWidget):
             lbl.setStyleSheet("color: #64748b; font-size: 11px;")
         row2.addWidget(lbl)
         
-        source_recto = generate_smart_link_label(target_note, source_note) if source_note else ""
+        can_main = not _note_has_main_link(target_note)
+        source_recto = generate_smart_link_label(target_note, source_note, allow_main=can_main) if source_note else ""
         self.desc_edit = QLineEdit(source_recto, self)
         if is_night:
             self.desc_edit.setStyleSheet(
@@ -306,11 +326,13 @@ class MirrorSelectionDialog(QDialog):
         
         if yes_btn:
             yes_btn.setText("Oui")
-            yes_btn.setDefault(True)
-            yes_btn.setAutoDefault(True)
+            yes_btn.setDefault(False)
+            yes_btn.setAutoDefault(False)
             yes_btn.clicked.connect(self.accept)
         if no_btn:
             no_btn.setText("Non")
+            no_btn.setDefault(False)
+            no_btn.setAutoDefault(False)
             no_btn.clicked.connect(self.reject)
             
         layout.addWidget(self.button_box)
@@ -423,11 +445,13 @@ class InterLinkSelectionDialog(QDialog):
         
         if yes_btn:
             yes_btn.setText("Oui")
-            yes_btn.setDefault(True)
-            yes_btn.setAutoDefault(True)
+            yes_btn.setDefault(False)
+            yes_btn.setAutoDefault(False)
             yes_btn.clicked.connect(self.accept)
         if no_btn:
             no_btn.setText("Non")
+            no_btn.setDefault(False)
+            no_btn.setAutoDefault(False)
             no_btn.clicked.connect(self.reject)
             
         layout.addWidget(self.button_box)
@@ -1259,6 +1283,30 @@ function _capitalizePreview(root) {
     } catch(e) {}
 }
 
+function _centerSoloMathjaxPreview(root) {
+    try {
+        var items = root.querySelectorAll('.items');
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item.querySelector('anki-mathjax, mjx-container')) continue;
+            if (item.querySelector('img, table, ul, ol, iframe, canvas, audio, video')) continue;
+
+            var clone = item.cloneNode(true);
+            var mathEls = clone.querySelectorAll('anki-mathjax, mjx-container, script, style');
+            for (var j = 0; j < mathEls.length; j++) {
+                if (mathEls[j].parentNode) mathEls[j].parentNode.removeChild(mathEls[j]);
+            }
+
+            var remaining = (clone.textContent || '')
+                .replace(/[\s\u00a0\u200b\u200c\u200d\ufeff\r\n\t]+/g, '');
+
+            if (remaining === '') {
+                item.classList.add('edn-solo-mathjax');
+            }
+        }
+    } catch(e) {}
+}
+
 // -- Aperçu des cartes liées au survol -- (guard : enregistrement unique des listeners) --
 
 // -- Raccourcis clavier badges liés (mis à jour à chaque carte) --
@@ -2030,6 +2078,7 @@ if (!window._ednListenersAttached) {
         window._ednPreviewUpdating = true;
         box.innerHTML = tempDiv.innerHTML;
         _capitalizePreview(box);
+        _centerSoloMathjaxPreview(box);
         
         // Appliquer les styles de rang et de flag selon les préférences EDN
         try {
@@ -2681,8 +2730,12 @@ def _on_editor_unfocus_field(changed, note, current_field_idx):
         if note and getattr(note, 'fields', None):
             for i, f in enumerate(note.fields):
                 cleaned_val = f
-                if 'edn-cursor-marker' in cleaned_val:
-                    cleaned_val = re.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', cleaned_val, flags=re.IGNORECASE | re.DOTALL)
+                # NOTE: Ne PAS supprimer edn-cursor-marker ici pendant qu'une insertion est en cours,
+                # car saveNow() déclenche editor_did_unfocus_field juste avant que LinkInserter ne lise le marker !
+                # LinkInserter se charge lui-même de remplacer ou nettoyer le marker lors du commit.
+                if not getattr(LinkInserter, 'is_inserting', False):
+                    if 'edn-cursor-marker' in cleaned_val or ':::EDN_MARKER:::' in cleaned_val:
+                        cleaned_val = re.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', cleaned_val, flags=re.IGNORECASE | re.DOTALL)
                 if 'clickable_cards' in cleaned_val:
                     cleaned_val = _clean_kbd_html(cleaned_val)
                 if cleaned_val != f:
@@ -2753,8 +2806,8 @@ def _on_editor_load_note(editor):
             if getattr(note, 'fields', None):
                 for i, f in enumerate(note.fields):
                     cleaned_val = f
-                    if 'edn-cursor-marker' in cleaned_val:
-                        cleaned_val = re.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', cleaned_val, flags=re.IGNORECASE | re.DOTALL)
+                    if 'edn-cursor-marker' in cleaned_val or ':::EDN_MARKER:::' in cleaned_val:
+                        cleaned_val = re.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', cleaned_val, flags=re.IGNORECASE | re.DOTALL)
                     if 'clickable_cards' in cleaned_val:
                         cleaned_val = _clean_kbd_html(cleaned_val)
                     if cleaned_val != f:
@@ -2882,8 +2935,16 @@ hr {
 }
 
 [id*="edn-cursor-marker"],
-#edn-cursor-marker {
+#edn-cursor-marker,
+.edn-cursor-marker {
     display: none !important;
+    visibility: hidden !important;
+    font-size: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    user-select: none !important;
 }
 
 .card > *:last-child {
@@ -3007,8 +3068,15 @@ div[class*='section'] {
     display: inline !important;
 }
 
-[id*="edn-cursor-marker"], .items > span[id*="edn-cursor-marker"] {
+[id*="edn-cursor-marker"], .items > span[id*="edn-cursor-marker"], .edn-cursor-marker {
     display: none !important;
+    visibility: hidden !important;
+    font-size: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    user-select: none !important;
 }
 
 .items.answer {
@@ -3244,7 +3312,7 @@ def on_js_message_reviewer(handled, message, context):
                         isolated = re.sub(r'(?:<br>\s*)?<span[^>]*id=["\'][^"\']*FSRS[^"\']*["\'][^>]*>.*?</span>', '', isolated, flags=re.IGNORECASE | re.DOTALL)
                         
                         # Nettoyer les marqueurs de curseur résiduels
-                        isolated = re.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', isolated, flags=re.IGNORECASE | re.DOTALL)
+                        isolated = re.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', isolated, flags=re.IGNORECASE | re.DOTALL)
 
                         # Forcer l'affichage SEULEMENT des sections (pour éviter de révéler les métadonnées/licences cachées)
                         isolated = re.sub(r'(<div[^>]*class=["\'][^"\']*section[^"\']*["\'][^>]*style=["\'])display:\s*none;?([^"\']*["\'])', r'\1display: flex !important;\2', isolated, flags=re.IGNORECASE)
@@ -3256,7 +3324,7 @@ def on_js_message_reviewer(handled, message, context):
                         # Compresser et nettoyer les <br> orphelins ou inutiles dans cartesLiees
                         def _clean_cartes_liees(match):
                             inner = match.group(2)
-                            inner = re.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', inner, flags=re.IGNORECASE | re.DOTALL)
+                            inner = re.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', inner, flags=re.IGNORECASE | re.DOTALL)
                             # Supprimer les br consécutifs ou séparés par des espaces / nbsp
                             inner = re.sub(r'(?:\s*&nbsp;\s*)*<br\s*/?>\s*(?:&nbsp;\s*)*', '<br>', inner, flags=re.IGNORECASE)
                             inner = re.sub(r'(?:\s*<br\s*/?>\s*)+', '<br>', inner, flags=re.IGNORECASE)
@@ -3631,7 +3699,7 @@ def _focus_liens_field(editor):
 
 def handle_editor_button(editor):
     """Smart Link: Direct link if selection is NID, else Search GUI."""
-    editor.web.evalWithCallback("""
+    editor.web.evalWithCallback(r"""
         (function() {
             function _getAllRoots(root) {
                 root = root || document.body;
@@ -3706,10 +3774,15 @@ def handle_editor_button(editor):
                 if (!selection || selection.rangeCount === 0) return;
                 try {
                     let r = selection.getRangeAt(0);
-                    r.deleteContents();
                     let m = document.createElement('span');
                     m.id = 'edn-cursor-marker';
-                    r.insertNode(m);
+                    m.className = 'edn-cursor-marker';
+                    m.style.cssText = 'display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;';
+                    m.textContent = ':::EDN_MARKER:::';
+                    window._ednMarkerPending = true;
+                    let rCloned = r.cloneRange();
+                    rCloned.collapse(false);
+                    rCloned.insertNode(m);
                     let editable = m.closest ? m.closest('anki-editable') : null;
                     if (!editable) {
                         let rn = m.getRootNode ? m.getRootNode() : null;
@@ -3749,7 +3822,8 @@ def handle_editor_button(editor):
 
                 if (editable) {
                     let inner = (editable.innerText || editable.textContent || '').trim();
-                    if (/^\\d{10,}$/.test(inner)) {
+                    // Conversion directe automatique UNIQUEMENT si le champ entier ne contient rien d'autre qu'un NID brut
+                    if (/^\d{10,}$/.test(inner)) {
                         textValue = inner;
                         isFullField = true;
                         let range = document.createRange();
@@ -3796,19 +3870,20 @@ def _on_selection_check(editor, result):
                     info = {}
                 has_dash = info.get('hasDash', False)
                 is_empty = info.get('isEmpty', False)
+                is_first_line = bool(info.get('isFirstLine', False))
                 
                 if has_dash:
                     # La ligne a déjà un titre avec dash → juste le NID en hyperlien
-                    create_link_for_nid(editor, nid, with_recto=False)
+                    create_link_for_nid(editor, nid, with_recto=False, is_first_line=is_first_line)
                 else:
                     # Ligne vide ou sans dash → incruster le recto
-                    create_link_for_nid(editor, nid, with_recto=True)
+                    create_link_for_nid(editor, nid, with_recto=True, is_first_line=is_first_line)
             
             # Interroger le JS pour connaître le contexte de la ligne
             try:
                 editor.web.evalWithCallback(r"""
                     (function() {
-                        var result = {hasDash: false, isEmpty: false};
+                        var result = {hasDash: false, isEmpty: false, isFirstLine: false};
                         try {
                             var active = document.activeElement;
                             var sel = null;
@@ -3860,6 +3935,18 @@ def _on_selection_check(editor, result):
                                     result.hasDash = lineText.includes('\u2014') || lineText.includes('\u2013') || lineText.includes('—') || lineText.includes('–');
                                     var stripped = lineText.replace(/\d{10,}/g, '').trim();
                                     result.isEmpty = stripped.length === 0;
+
+                                    try {
+                                        var preRangeAll = document.createRange();
+                                        preRangeAll.selectNodeContents(editable);
+                                        preRangeAll.setEnd(range.startContainer, range.startOffset);
+                                        var divPreAll = document.createElement('div');
+                                        divPreAll.appendChild(preRangeAll.cloneContents());
+                                        var htmlPreAll = divPreAll.innerHTML;
+                                        result.isFirstLine = !(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/i.test(htmlPreAll));
+                                    } catch(eFL) {
+                                        result.isFirstLine = false;
+                                    }
                                 }
                             }
                         } catch(e) {}
@@ -3875,13 +3962,15 @@ def _on_selection_check(editor, result):
     selected_text = text.strip() if text and text.strip() else ""
     open_search_dialog(editor, selected_text=selected_text)
 
-def create_link_for_nid(editor, nid, with_recto=False):
+def create_link_for_nid(editor, nid, with_recto=False, is_first_line=False):
     try:
         note = mw.col.get_note(int(nid))
         recto = None
         if with_recto:
-            recto = get_note_recto(note, 240, source_note=_get_editor_note(editor))
-        LinkInserter(editor).insert_link([(nid, recto)])
+            s_note = _get_editor_note(editor)
+            can_main = not _note_has_main_link(s_note)
+            recto = generate_smart_link_label(s_note, note, allow_main=can_main) or get_note_recto(note, 240, source_note=s_note)
+        LinkInserter(editor).insert_link([(nid, recto)], is_first_line=is_first_line)
     except:
         tooltip(f"Note {nid} non trouvée.")
         open_search_dialog(editor)
@@ -3941,9 +4030,9 @@ def _do_editor_init(editor: Editor):
                     box-shadow: none !important;
                 }
                 kbd.clickable_cards:hover {
-                    color: #7c3aed !important;
-                    border-color: #a78bfa !important;
-                    background: #f5f3ff !important;
+                    color: #2c7bb6 !important;
+                    border-color: #93c5fd !important;
+                    background: #f0f7ff !important;
                 }
                 kbd.clickable_cards:focus,
                 kbd.clickable_cards:focus-visible {
@@ -3967,8 +4056,8 @@ def _do_editor_init(editor: Editor):
                 body.nightMode kbd.clickable_cards:hover,
                 body.night_mode kbd.clickable_cards:hover,
                 body.night-mode kbd.clickable_cards:hover {
-                    color: #BD93BD !important;
-                    border-color: #BD93BD !important;
+                    color: #64b5f6 !important;
+                    border-color: #1976d2 !important;
                 }
                 kbd.clickable_cards .edn-nid {
                     color: inherit !important;
@@ -3982,8 +4071,15 @@ def _do_editor_init(editor: Editor):
                     display: block !important;
                     content: "" !important;
                 }
-                [id*="edn-cursor-marker"], #edn-cursor-marker {
+                [id*="edn-cursor-marker"], #edn-cursor-marker, .edn-cursor-marker {
                     display: none !important;
+                    visibility: hidden !important;
+                    font-size: 0 !important;
+                    width: 0 !important;
+                    height: 0 !important;
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                    user-select: none !important;
                 }
             `;
 
@@ -4096,12 +4192,26 @@ def _do_editor_init(editor: Editor):
                 }
             }
 
+            // Determiner quels NID necessitent un titre genere (ligne vierge sans tiret, ou lignes suivantes)
+            var needTitleNids = [];
+            for (var k = 0; k < itemsList.length; k++) {
+                if (itemsList[k].label) continue;
+                if (k > 0 || (!lineEndsWithDash && textBefore === "")) {
+                    needTitleNids.push(itemsList[k].nid);
+                }
+            }
+
+            var _pasteDone = false;
+            function _runPasteInsert(labelMap) {
+            if (_pasteDone) return;
+            _pasteDone = true;
+            labelMap = labelMap || {};
             var htmlLines = [];
             var pastedNids = [];
             for (var i = 0; i < itemsList.length; i++) {
                 var it = itemsList[i];
                 var nid = it.nid;
-                var label = it.label;
+                var label = it.label || labelMap[nid] || "";
                 pastedNids.push(nid);
 
                 var badgeHtml = '<kbd class="clickable_cards" contenteditable="false" tabindex="0" data-nid="' + nid + '"><span class="edn-nid">' + nid + '</span></kbd>&nbsp;';
@@ -4124,53 +4234,103 @@ def _do_editor_init(editor: Editor):
             var fullHtml = htmlLines.join('<br>');
 
             // Insertion directe au niveau du curseur / de la sélection
+            // Priorité absolue à l'insertion par DOM Range pour éviter le bug de Chromium 'insertHTML'
+            // qui déplace l'élément inséré en toute fin de champ lors d'un collage sur la 1ère ligne
             var inserted = false;
-            try {
-                inserted = document.execCommand('insertHTML', false, fullHtml);
-            } catch(eCmd) {
-                inserted = false;
-            }
-            if (!inserted && sel && sel.rangeCount > 0) {
+            var targetRange = null;
+            if (sel && sel.rangeCount > 0) {
                 try {
-                    var curRange = sel.getRangeAt(0);
-                    curRange.deleteContents();
+                    targetRange = sel.getRangeAt(0);
+                } catch(e) { targetRange = null; }
+            }
+            if (!targetRange && window._ednSavedRange) {
+                targetRange = window._ednSavedRange;
+            }
+
+            var lastChildNode = null;
+            if (targetRange) {
+                try {
+                    targetRange.deleteContents();
                     var tempDiv = document.createElement('div');
                     tempDiv.innerHTML = fullHtml;
                     var frag = document.createDocumentFragment();
-                    var childNode, lastChildNode;
+                    var childNode;
                     while ((childNode = tempDiv.firstChild)) {
                         lastChildNode = frag.appendChild(childNode);
                     }
-                    curRange.insertNode(frag);
-                    if (lastChildNode) {
-                        var afterRange = document.createRange();
-                        afterRange.setStartAfter(lastChildNode);
-                        afterRange.collapse(true);
-                        sel.removeAllRanges();
-                        sel.addRange(afterRange);
+                    targetRange.insertNode(frag);
+                    if (lastChildNode && sel) {
+                        try {
+                            var afterRange = document.createRange();
+                            afterRange.setStartAfter(lastChildNode);
+                            afterRange.collapse(true);
+                            sel.removeAllRanges();
+                            sel.addRange(afterRange);
+                        } catch(eSel) {}
                     }
                     inserted = true;
-                } catch(eRange) {}
+                } catch(eRange) {
+                    inserted = false;
+                }
+            }
+            if (!inserted) {
+                try {
+                    inserted = document.execCommand('insertHTML', false, fullHtml);
+                } catch(eCmd) {
+                    inserted = false;
+                }
             }
 
             // Déclencher l'événement input pour synchroniser Svelte et la note Anki
             var activeElement = document.activeElement;
-            if (activeElement) {
-                activeElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                if (activeElement.shadowRoot) {
-                    var innerEd = activeElement.shadowRoot.querySelector('[contenteditable="true"]');
+            var editableToNotify = null;
+            if (lastChildNode) {
+                editableToNotify = (typeof _findEditableAncestor === 'function')
+                    ? _findEditableAncestor(lastChildNode)
+                    : (lastChildNode.closest ? lastChildNode.closest('anki-editable, [contenteditable="true"]') : null);
+            }
+            if (!editableToNotify && targetRange) {
+                editableToNotify = (typeof _findEditableAncestor === 'function')
+                    ? _findEditableAncestor(targetRange.startContainer)
+                    : (targetRange.startContainer.closest ? targetRange.startContainer.closest('anki-editable, [contenteditable="true"]') : null);
+            }
+            if (!editableToNotify) editableToNotify = activeElement;
+
+            if (editableToNotify) {
+                editableToNotify.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                if (editableToNotify.shadowRoot) {
+                    var innerEd = editableToNotify.shadowRoot.querySelector('[contenteditable="true"]');
                     if (innerEd) {
                         innerEd.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                     }
                 }
             }
             if (typeof _dispatchInput === 'function') {
-                _dispatchInput(activeElement);
+                _dispatchInput(editableToNotify || activeElement);
             }
 
             // Proposer les liens miroirs si configuré
             if (pastedNids.length > 0 && typeof pycmd !== 'undefined') {
                 pycmd('edn_pasted_nids:' + pastedNids.join(','));
+            }
+            }
+
+            if (needTitleNids.length > 0 && typeof pycmd !== 'undefined') {
+                var token = String(Date.now()) + '_' + Math.floor(Math.random() * 100000);
+                window._ednPasteResolvers = window._ednPasteResolvers || {};
+                window._ednPasteResolvers[token] = function(map) {
+                    delete window._ednPasteResolvers[token];
+                    _runPasteInsert(map);
+                };
+                setTimeout(function() {
+                    if (window._ednPasteResolvers && window._ednPasteResolvers[token]) {
+                        delete window._ednPasteResolvers[token];
+                        _runPasteInsert({});
+                    }
+                }, 1500);
+                pycmd('edn_paste_titles:' + JSON.stringify({token: token, nids: needTitleNids}));
+            } else {
+                _runPasteInsert({});
             }
         }, true);
 
@@ -4575,7 +4735,9 @@ def _do_editor_init(editor: Editor):
 
         // Clic sur un badge dans l'éditeur : positionner le curseur devant ou après le badge
         document.addEventListener('click', function(e) {
-            if (e.ctrlKey || e.metaKey) return; // Ctrl+Clic ouvre la carte
+            if (e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl+Clic ouvre la carte, Alt réserve à la preview
+            var box = document.getElementById("edn-preview-box");
+            if (box && box.contains(e.target)) return;
             var badge = e.target && e.target.closest ? e.target.closest('.clickable_cards') : null;
             if (badge) {
                 var rect = badge.getBoundingClientRect();
@@ -4587,6 +4749,324 @@ def _do_editor_init(editor: Editor):
                 }
             }
         }, true);
+
+        // =========================================================================
+        // APERÇU ALT + SURVOL DANS L'ÉDITEUR (#edn-preview-box)
+        // Comportement calqué sur la preview basique :
+        // - Mouse In avec Alt (pré-activé ou activé sur le badge) avec délai 100ms
+        // - Maintien dans la bulle d'aperçu au survol (mouseenter / mouseleave)
+        // - Mouse Out avec temporisation 300ms pour passage fluide badge -> bulle
+        // - Fermeture immédiate sur clic en dehors ou Échap
+        // =========================================================================
+        window._ednHoverTimer = null;
+        window._ednHideTimer = null;
+        var _ednEdCurrentHoverBadge = null;
+        var _ednEdCurrentPreviewNid = null;
+
+        function _getBadgeNid(badge) {
+            if (!badge) return '';
+            if (badge.dataset && badge.dataset.nid) return badge.dataset.nid.trim();
+            var s = badge.querySelector && badge.querySelector('.edn-nid');
+            if (s) return s.textContent.trim();
+            return (badge.innerText || '').trim().replace(/[^0-9]/g, '');
+        }
+
+        window._ednGetOrCreateBox = function() {
+            var box = document.getElementById("edn-preview-box");
+            if (!box) {
+                box = document.createElement("div");
+                box.id = "edn-preview-box";
+                box.style.cssText = "position:fixed;z-index:99999;display:none;max-height:90vh;max-width:480px;width:fit-content;overflow-y:auto;box-sizing:border-box;";
+                document.body.appendChild(box);
+
+                box.addEventListener("mouseenter", function() {
+                    if (window._ednHideTimer) {
+                        clearTimeout(window._ednHideTimer);
+                        window._ednHideTimer = null;
+                    }
+                    if (window._ednHoverTimer) {
+                        clearTimeout(window._ednHoverTimer);
+                        window._ednHoverTimer = null;
+                    }
+                });
+
+                box.addEventListener("mouseleave", function(e) {
+                    if (window._edn_parent_badge) {
+                        var rel = e.relatedTarget;
+                        if (rel && (rel === window._edn_parent_badge || window._edn_parent_badge.contains(rel))) {
+                            return;
+                        }
+                    }
+                    if (window._ednHideTimer) clearTimeout(window._ednHideTimer);
+                    window._ednHideTimer = setTimeout(function() {
+                        _hideEdnEditorPreview();
+                    }, 120);
+                });
+            }
+            return box;
+        };
+
+        window._ednPositionAndSizeBox = function(anchorRect) {
+            var box = document.getElementById("edn-preview-box");
+            if (!box) return;
+            if (!anchorRect || (anchorRect.width === 0 && anchorRect.height === 0)) {
+                box.style.display = "none";
+                return;
+            }
+
+            box.style.position = "fixed";
+            box.style.overflowY = "auto";
+
+            var boxWidth = box.offsetWidth || 420;
+            var viewportWidth = window.innerWidth;
+            var viewportHeight = window.innerHeight;
+
+            // Calcul vertical
+            var spaceBelow = viewportHeight - anchorRect.top - 15;
+            var spaceAbove = anchorRect.bottom - 15;
+            var placeBelow = true;
+            if (spaceBelow < 120 && spaceAbove > spaceBelow) {
+                placeBelow = false;
+            }
+
+            if (placeBelow) {
+                box.style.top = Math.max(10, anchorRect.top) + "px";
+                box.style.bottom = "auto";
+                box.style.maxHeight = Math.max(120, spaceBelow) + "px";
+            } else {
+                box.style.bottom = Math.max(10, viewportHeight - anchorRect.bottom) + "px";
+                box.style.top = "auto";
+                box.style.maxHeight = Math.max(120, spaceAbove) + "px";
+            }
+
+            // Calcul horizontal : priorité à droite du badge (+6px)
+            var left = anchorRect.right + 6;
+            if (left + boxWidth > viewportWidth - 10) {
+                // Si dépassement à droite, basculer à gauche du badge
+                var leftCandidate = anchorRect.left - boxWidth - 6;
+                if (leftCandidate < 10) {
+                    box.style.left = "10px";
+                    box.style.right = "auto";
+                } else {
+                    box.style.left = leftCandidate + "px";
+                    box.style.right = "auto";
+                }
+            } else {
+                box.style.left = left + "px";
+                box.style.right = "auto";
+            }
+        };
+
+        function _hideEdnEditorPreview() {
+            if (window._ednHoverTimer) {
+                clearTimeout(window._ednHoverTimer);
+                window._ednHoverTimer = null;
+            }
+            if (window._ednHideTimer) {
+                clearTimeout(window._ednHideTimer);
+                window._ednHideTimer = null;
+            }
+            var box = document.getElementById("edn-preview-box");
+            if (box) {
+                box.style.display = "none";
+            }
+            window._edn_hover_target = null;
+            window._edn_parent_badge = null;
+            _ednEdCurrentPreviewNid = null;
+        }
+
+        function _triggerEdnAltPreview(badge) {
+            if (!badge) return;
+            var nid = _getBadgeNid(badge);
+            if (!nid || nid.length < 9) return;
+
+            var box = document.getElementById("edn-preview-box");
+            if (box && box.style.display === "block" && _ednEdCurrentPreviewNid === nid) {
+                return;
+            }
+
+            _ednEdCurrentPreviewNid = nid;
+            window._edn_hover_target = badge;
+            window._edn_parent_badge = badge;
+
+            if (typeof pycmd !== 'undefined') pycmd("cards_ct_hover:" + nid);
+            else if (typeof bridgeCommand !== 'undefined') bridgeCommand("cards_ct_hover:" + nid);
+        }
+
+        window.show_edn_preview = function(html, virtualFlagColor) {
+            var box = window._ednGetOrCreateBox();
+            var anchor = window._edn_parent_badge || window._edn_hover_target;
+            if (!anchor) {
+                if (box) box.style.display = "none";
+                return;
+            }
+            var anchorRect = anchor.getBoundingClientRect();
+            if (anchorRect.width === 0 && anchorRect.height === 0) {
+                if (box) box.style.display = "none";
+                return;
+            }
+
+            var tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            var styleEl = tempDiv.querySelector('style');
+            if (styleEl) {
+                var headStyle = document.getElementById('edn-editor-preview-head-style');
+                if (headStyle) headStyle.parentNode.removeChild(headStyle);
+                headStyle = document.createElement('style');
+                headStyle.id = 'edn-editor-preview-head-style';
+                headStyle.textContent = styleEl.textContent;
+                document.head.appendChild(headStyle);
+                styleEl.parentNode.removeChild(styleEl);
+            }
+
+            box.innerHTML = tempDiv.innerHTML;
+            box.style.display = "block";
+            box.style.overflowY = "auto";
+
+            if (window._ednPositionAndSizeBox) {
+                window._ednPositionAndSizeBox(anchorRect);
+            }
+            requestAnimationFrame(function() {
+                if (anchor) {
+                    var r = anchor.getBoundingClientRect();
+                    if (window._ednPositionAndSizeBox) window._ednPositionAndSizeBox(r);
+                }
+            });
+        };
+
+        // 1. Gestion Mouse In (avec Alt pré-activé ou activé sur le badge)
+        function _handleBadgeMouseIn(badge, e) {
+            _ednEdCurrentHoverBadge = badge;
+
+            // Annuler tout hide timer si on survole un badge
+            if (window._ednHideTimer) {
+                clearTimeout(window._ednHideTimer);
+                window._ednHideTimer = null;
+            }
+
+            // Alt pré-activé (tenu enfoncé en survolant le badge, sans Ctrl ni Meta)
+            if (badge && e.altKey && !e.ctrlKey && !e.metaKey) {
+                var nid = _getBadgeNid(badge);
+                if (!nid) return;
+
+                var box = document.getElementById("edn-preview-box");
+                if (box && box.style.display === "block" && _ednEdCurrentPreviewNid === nid) {
+                    return;
+                }
+
+                if (window._ednHoverTimer) clearTimeout(window._ednHoverTimer);
+                window._ednHoverTimer = setTimeout(function() {
+                    _triggerEdnAltPreview(badge);
+                }, 100); // 100ms conforme à la preview basique
+            }
+        }
+
+        document.addEventListener('mouseover', function(e) {
+            var badge = _findCardBadge(e);
+            if (badge) {
+                _handleBadgeMouseIn(badge, e);
+            }
+        }, true);
+
+        document.addEventListener('mousemove', function(e) {
+            var badge = _findCardBadge(e);
+            if (badge) {
+                _handleBadgeMouseIn(badge, e);
+            } else {
+                _ednEdCurrentHoverBadge = null;
+            }
+        }, true);
+
+        // 2. Gestion Mouse Out (conforme à la preview basique avec 300ms de tolérance)
+        document.addEventListener('mouseout', function(e) {
+            var target = _findCardBadge(e);
+            if (!target) return;
+
+            // Si la souris se déplace vers un élément encore à l'intérieur du même badge
+            var related = e.relatedTarget;
+            if (related) {
+                if (target === related || target.contains(related)) return;
+                try {
+                    if (related.closest && related.closest('.clickable_cards') === target) return;
+                } catch(errRel) {}
+            }
+
+            var box = document.getElementById("edn-preview-box");
+            var isMouseInside = false;
+            if (box && box.style.display !== "none") {
+                if (related && (box === related || box.contains(related))) {
+                    isMouseInside = true;
+                } else {
+                    try {
+                        if (box.matches(':hover') || document.querySelector('#edn-preview-box:hover')) {
+                            isMouseInside = true;
+                        }
+                    } catch(err) {}
+                }
+            }
+            if (isMouseInside) {
+                return;
+            }
+
+            if (window._ednHoverTimer) {
+                clearTimeout(window._ednHoverTimer);
+                window._ednHoverTimer = null;
+            }
+
+            if (window._ednHideTimer) clearTimeout(window._ednHideTimer);
+            window._ednHideTimer = setTimeout(function() {
+                var b = document.getElementById("edn-preview-box");
+                if (b && b.style.display !== "none") {
+                    try {
+                        if (b.matches(':hover')) return;
+                    } catch(err) {}
+                    _hideEdnEditorPreview();
+                }
+            }, 300); // 300ms conforme à la preview basique
+        }, true);
+
+        // 3. Alt activé : appui sur Alt alors que le curseur est déjà posé sur un badge (sans Ctrl)
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Alt') {
+                if (e.ctrlKey || e.metaKey) return;
+                if (_ednEdCurrentHoverBadge) {
+                    e.preventDefault(); // Bloquer l'activation du menu Windows
+                    if (window._ednHideTimer) {
+                        clearTimeout(window._ednHideTimer);
+                        window._ednHideTimer = null;
+                    }
+                    if (window._ednHoverTimer) clearTimeout(window._ednHoverTimer);
+                    _triggerEdnAltPreview(_ednEdCurrentHoverBadge);
+                }
+            } else if (e.key === 'Escape') {
+                var box = document.getElementById("edn-preview-box");
+                if (box && box.style.display !== "none") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _hideEdnEditorPreview();
+                }
+            }
+        }, true);
+
+        // 4. Fermeture instantanée sur simple clic en dehors
+        document.addEventListener('pointerdown', function(e) {
+            var box = document.getElementById("edn-preview-box");
+            if (!box || box.style.display === "none") return;
+
+            // Si le clic est dans la bulle d'aperçu, ne pas fermer
+            if (e.composedPath) {
+                var path = e.composedPath();
+                for (var i = 0; i < path.length; i++) {
+                    if (path[i] === box) return;
+                }
+            } else if (box.contains(e.target)) {
+                return;
+            }
+
+            // Simple clic en dehors : fermeture instantanée
+            _hideEdnEditorPreview();
+        }, true);
+
 
         function _findLineBreakBefore(badge) {
             if (!badge) return null;
@@ -5291,20 +5771,52 @@ def _do_editor_init(editor: Editor):
                 if (!window._ednSetFieldsGuarded) {{
                     window._ednSetFieldsGuarded = true;
                     var _origSetFields = globalThis.setFields;
+                    if (_origSetFields && typeof _origSetFields.length === 'number') {{
+                        globalThis._ednSetFieldsArity = _origSetFields.length;
+                    }}
                     Object.defineProperty(globalThis, 'setFields', {{
                         configurable: true,
                         enumerable: true,
                         get: function() {{
-                            return function() {{
+                            return function(a, b) {{
                                 var curNid = (typeof globalThis.getNoteId === 'function') ? globalThis.getNoteId() : null;
                                 var isAddModeNote = (!curNid || String(curNid) === '0');
                                 var curIdxBefore = _resolveActiveFieldIndex();
                                 if (curIdxBefore < 0 && typeof window._ednLastActiveField === 'number') {{
                                     curIdxBefore = window._ednLastActiveField;
                                 }}
-                                var vals = (arguments.length >= 2 && Array.isArray(arguments[1]))
-                                    ? arguments[1]
-                                    : (Array.isArray(arguments[0]) ? arguments[0].map(function(x) {{ return Array.isArray(x) ? x[1] : x; }}) : []);
+                                var fNames = [];
+                                var fVals = [];
+                                var normPairs = [];
+                                var hasParsedArgs = false;
+                                if (arguments.length >= 2 && Array.isArray(arguments[0]) && Array.isArray(arguments[1])) {{
+                                    hasParsedArgs = true;
+                                    fNames = arguments[0];
+                                    fVals = arguments[1];
+                                    for (var pIdx = 0; pIdx < fNames.length; pIdx++) {{
+                                        normPairs.push([fNames[pIdx], fVals[pIdx] !== undefined ? fVals[pIdx] : '']);
+                                    }}
+                                }} else if (arguments.length === 1 && Array.isArray(arguments[0])) {{
+                                    hasParsedArgs = true;
+                                    var arg0 = arguments[0];
+                                    for (var pIdx2 = 0; pIdx2 < arg0.length; pIdx2++) {{
+                                        var item = arg0[pIdx2];
+                                        if (Array.isArray(item)) {{
+                                            var nm = item[0] !== undefined ? item[0] : ('Field ' + pIdx2);
+                                            var vl = item[1] !== undefined ? item[1] : '';
+                                            fNames.push(nm);
+                                            fVals.push(vl);
+                                            normPairs.push([nm, vl]);
+                                        }} else {{
+                                            var nm2 = 'Field ' + pIdx2;
+                                            var vl2 = item !== undefined ? item : '';
+                                            fNames.push(nm2);
+                                            fVals.push(vl2);
+                                            normPairs.push([nm2, vl2]);
+                                        }}
+                                    }}
+                                }}
+                                var vals = fVals;
                                 var isAllEmpty = (vals.length > 0 && vals.every(function(v) {{ return v === ''; }}));
                                 var isClearingActiveField = isAddModeNote && (curIdxBefore > 0 && curIdxBefore < vals.length && vals[curIdxBefore] === '');
                                 if (isClearingActiveField || isAllEmpty) {{
@@ -5316,7 +5828,21 @@ def _do_editor_init(editor: Editor):
                                     window._ednSavedFieldIndex = 0;
                                     setTimeout(function() {{ window._ednLoadingNewNote = false; }}, 800);
                                 }}
-                                var res = _origSetFields ? _origSetFields.apply(this, arguments) : undefined;
+                                // Adaptation automatique selon l'arité réelle de setFields dans Anki Svelte :
+                                // - Anki 25.09+ (B(me, Pe), length === 2) : attend 2 arguments (fieldNames, fieldValues)
+                                // - Anki 24.x (I(Pe), length === 1) : attend 1 argument (tableau de paires [[name, val], ...])
+                                var origArity = (_origSetFields && typeof _origSetFields.length === 'number')
+                                    ? _origSetFields.length
+                                    : (typeof globalThis._ednSetFieldsArity === 'number' ? globalThis._ednSetFieldsArity : 2);
+                                var callArgs = arguments;
+                                if (hasParsedArgs) {{
+                                    if (origArity === 1) {{
+                                        callArgs = [normPairs];
+                                    }} else {{
+                                        callArgs = [fNames, fVals];
+                                    }}
+                                }}
+                                var res = _origSetFields ? _origSetFields.apply(this, callArgs) : undefined;
                                 try {{
                                     var isNewLoad = window._ednLoadingNewNote || (Date.now() - (window._ednNewNoteLoadTime || 0) < 800);
                                     if (isNewLoad || window._ednForceReload) {{
@@ -5344,6 +5870,9 @@ def _do_editor_init(editor: Editor):
                         }},
                         set: function(fn) {{
                             _origSetFields = fn;
+                            if (fn && typeof fn.length === 'number') {{
+                                globalThis._ednSetFieldsArity = fn.length;
+                            }}
                         }}
                     }});
                 }}
@@ -5358,10 +5887,12 @@ def _do_editor_init(editor: Editor):
 
         function _trackSelection() {{
             try {{
-                var oldM = (typeof window._ednQueryAllRoots === 'function')
-                    ? window._ednQueryAllRoots('[id="edn-cursor-marker"]')
-                    : Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
-                oldM.forEach(function(m) {{ try {{ m.parentNode.removeChild(m); }} catch(e) {{}} }});
+                if (!window._ednMarkerPending) {{
+                    var oldM = (typeof window._ednQueryAllRoots === 'function')
+                        ? window._ednQueryAllRoots('[id="edn-cursor-marker"]')
+                        : Array.from(document.querySelectorAll('[id="edn-cursor-marker"]'));
+                    oldM.forEach(function(m) {{ try {{ m.parentNode.removeChild(m); }} catch(e) {{}} }});
+                }}
             }} catch(e) {{}}
             var sel = _getEditorSelection();
             if (sel && sel.rangeCount > 0) {{
@@ -5555,6 +6086,9 @@ def _do_editor_init(editor: Editor):
                         r.collapse(false);
                         var marker = document.createElement("span");
                         marker.id = "edn-cursor-marker";
+                        marker.className = "edn-cursor-marker";
+                        marker.style.cssText = "display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;";
+                        marker.textContent = ":::EDN_MARKER:::";
                         r.insertNode(marker);
                     }} catch(err) {{}}
                 }}
@@ -5729,6 +6263,37 @@ def on_js_message(handled, message, context):
         except Exception as e:
             log(f"Error handling edn_paste_smart_link: {e}")
         return (True, None)
+    elif message.startswith("edn_paste_titles:"):
+        try:
+            import json
+            data = json.loads(message[len("edn_paste_titles:"):])
+            token = str(data.get("token", ""))
+            from .editor_assistant import get_active_editor
+            editor = get_active_editor(context)
+            labels = {}
+            if editor:
+                source_note = _get_editor_note(editor)
+                main_assigned = _note_has_main_link(source_note) if source_note else True
+                for n in data.get("nids", []):
+                    try:
+                        t_note = mw.col.get_note(int(n))
+                        lbl = generate_smart_link_label(source_note, t_note, allow_main=not main_assigned)
+                        if not lbl:
+                            lbl = get_note_recto(t_note, 100)
+                        if lbl:
+                            labels[str(n)] = lbl
+                            if lbl.strip().lower() == "main":
+                                main_assigned = True
+                    except Exception as e_lbl:
+                        log(f"edn_paste_titles label error for {n}: {e_lbl}")
+                safe_token = re.sub(r'[^0-9_]', '', token)
+                editor.web.eval(
+                    "if (window._ednPasteResolvers && window._ednPasteResolvers['%s']) "
+                    "window._ednPasteResolvers['%s'](%s);" % (safe_token, safe_token, json.dumps(labels))
+                )
+        except Exception as e:
+            log(f"Error handling edn_paste_titles: {e}")
+        return (True, None)
     elif message.startswith("edn_pasted_nids:"):
         nids_str = message[len("edn_pasted_nids:"):]
         try:
@@ -5740,14 +6305,15 @@ def on_js_message(handled, message, context):
                 config = mw.addonManager.getConfig(__name__) or {}
                 mirror_on_paste = config.get("mirror_link_on_paste", True)
                 if mirror_on_paste:
-                    for target_nid in nids:
-                        _proposal_queue.add(lambda done, tn=target_nid: _propose_mirror_link(
-                            editor, source_note, str(tn), done
-                        ))
+                    items = [(str(tn), None) for tn in nids]
+                    # Laisser 200ms pour que l'éditeur Svelte termine son cycle d'input et de sauvegarde
+                    QTimer.singleShot(200, lambda: _proposal_queue.add(lambda done: _propose_mirror_links_group(
+                        editor, source_note, items, done
+                    )))
                     if len(nids) > 1:
-                        _proposal_queue.add(lambda done: _propose_cross_links(
+                        QTimer.singleShot(200, lambda: _proposal_queue.add(lambda done: _propose_cross_links(
                             editor, source_note, nids, done
-                        ))
+                        )))
         except Exception as e:
             log(f"Error handling pasted nids: {e}")
         return (True, None)
@@ -6177,11 +6743,11 @@ def _clean_recto_preamble(text: str) -> str:
         t_clean = t_clean[0].upper() + t_clean[1:]
     return t_clean or t
 
-def generate_smart_link_label(source_note, target_note):
+def generate_smart_link_label(source_note, target_note, allow_main=True):
     """Génère une description raccourcie intelligente pour l'insertion de lien dans une note.
     
     Pipeline intelligent :
-    1. Relation Enfant -> Parent / Carte mère -> 'Main'
+    1. Relation Enfant -> Parent / Carte mère -> 'Main' (si autorisé et aucun 'Main' déjà présent)
     2. Détection des facettes médicales canoniques et abréviations (Signes, Traitement, PeC, FdR, etc.)
     3. Extraction différentielle contextuelle (ne retient que le qualificatif résiduel exclusif)
     4. Nettoyage des tournures interrogatives et concision (1 à 3 mots).
@@ -6199,6 +6765,8 @@ def generate_smart_link_label(source_note, target_note):
     if not source_recto:
         return _clean_recto_preamble(target_recto)
         
+    can_use_main = bool(allow_main and not _note_has_main_link(source_note))
+        
     import unicodedata
     import html as _html
 
@@ -6215,11 +6783,11 @@ def generate_smart_link_label(source_note, target_note):
     s_norm = _norm(source_recto)
     t_norm = _norm(target_recto)
 
-    # 1. Relation Parent / Carte mère -> 'Main'
+    # 1. Relation Parent / Carte mère -> 'Main' (uniquement si aucun 'Main' n'est déjà présent)
     try:
         is_target_syndrome = "syndrome" in target_note.note_type()['name'].lower()
         is_source_syndrome = "syndrome" in source_note.note_type()['name'].lower()
-        if is_target_syndrome and not is_source_syndrome:
+        if is_target_syndrome and not is_source_syndrome and can_use_main:
             return "Main"
     except Exception:
         pass
@@ -6235,7 +6803,7 @@ def generate_smart_link_label(source_note, target_note):
         and not re.search(r'\b(classification|algorithme|typologie|sources)\b', s_norm)
     )
     is_type_instance = bool(re.search(r'\b(type [ivx\d]+|stade \d+|grade \d+)\b', s_norm))
-    if is_classification_parent and (is_type_instance or len(s_set & t_set) >= 1):
+    if is_classification_parent and (is_type_instance or len(s_set & t_set) >= 1) and can_use_main:
         return "Main"
 
     # Sous-ensemble strict des termes signifiants (sans aspect spécifique nouveau dans la cible)
@@ -6245,7 +6813,7 @@ def generate_smart_link_label(source_note, target_note):
             has_specific_aspect_in_target = True
             break
 
-    if t_set and s_set and t_set.issubset(s_set) and len(s_set) > len(t_set) and not has_specific_aspect_in_target:
+    if t_set and s_set and t_set.issubset(s_set) and len(s_set) > len(t_set) and not has_specific_aspect_in_target and can_use_main:
         return "Main"
 
     # 2. Détection d'aspect médical (avec prise en compte du contexte partagé)
@@ -6282,30 +6850,38 @@ def generate_smart_link_label(source_note, target_note):
                     raw_diff = re.sub(r'[\s\?\.:!—–-]+$', '', raw_diff).strip()
                     if raw_diff and len(raw_diff.split()) <= 4:
                         raw_diff = raw_diff[0].upper() + raw_diff[1:]
+                        if raw_diff.strip().lower() == "main" and not can_use_main:
+                            raw_diff = _clean_recto_preamble(target_recto)
                         return raw_diff
 
     # 4. Nettoyage préambule et concision fallback
     clean_t = _clean_recto_preamble(target_recto)
-    words = clean_t.split()
-    if len(words) <= 3:
-        return clean_t
-
+    if clean_t:
+        # Éviter tout doublon de 'Main' (ex: "Main - Main" ou "Main Main")
+        clean_t = re.sub(r'\bMain\b(?:\s*[-—–:]\s*|\s+)\bMain\b', 'Main', clean_t, flags=re.IGNORECASE).strip()
+        if clean_t.strip().lower() == "main" and not can_use_main:
+            if target_note and getattr(target_note, 'fields', None) and len(target_note.fields) > 1:
+                clean_t = strip_html(target_note.fields[1])[:100].strip() or clean_t
     return clean_t
 
 class LinkInserter:
+    is_inserting = False
+
     def __init__(self, editor):
         self.editor = editor
         
-    def insert_link(self, items, override_html=None, mirror_requested=False, target_fidx=None):
+    def insert_link(self, items, override_html=None, mirror_requested=False, target_fidx=None, is_first_line=False):
         """Insère les liens de cartes directement dans la note courante.
         Persistance garantie à 100% dans la collection SQLite via col_note.fields[fidx].
         100% rétro-compatible avec Svelte ON (NewEditor) et Svelte OFF (Legacy Editor).
         """
         caller = "LinkInserter:insert_link"
-        _profiler_log("LINK_INSERTER", f"insert_link() CALLED: items_count={len(items)}, target_fidx={target_fidx}, mirror={mirror_requested}, override_html={'yes' if override_html else 'no'}", caller=caller)
+        _profiler_log("LINK_INSERTER", f"insert_link() CALLED: items_count={len(items)}, target_fidx={target_fidx}, mirror={mirror_requested}, is_first_line={is_first_line}, override_html={'yes' if override_html else 'no'}", caller=caller)
         if not self.editor:
             _profiler_log("LINK_INSERTER", "editor is None -> aborted", caller=caller)
             return
+
+        LinkInserter.is_inserting = True
 
         def _do_commit():
             commit_caller = "LinkInserter:_do_commit"
@@ -6376,7 +6952,23 @@ class LinkInserter:
 
                 # Mise à jour directe du contenu du champ
                 cur_val = col_note.fields[fidx].strip()
-                marker_pattern = r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>'
+
+                # Dissoudre les anciens wrappers <kbd> (onclick / sans data-nid) qui entourent le NID brut,
+                # sinon le titre inséré se retrouve imbriqué dans la box cliquable.
+                _snid = str(items[0][0]) if (items and len(items) == 1) else None
+                if _snid:
+                    def _unwrap_legacy_kbd(m):
+                        whole_tag = m.group(1)
+                        inner = m.group(2)
+                        inner_text = re.sub(r'<[^>]+>|&nbsp;|:::EDN_MARKER:::', '', inner)
+                        if _snid in whole_tag or _snid in inner_text:
+                            return inner
+                        return m.group(0)
+                    cur_val = re.sub(
+                        r'(<kbd\b(?![^>]*data-nid)[^>]*>)((?:(?!<kbd|</kbd>).)*)</kbd>',
+                        _unwrap_legacy_kbd, cur_val, flags=re.IGNORECASE | re.DOTALL
+                    )
+                marker_pattern = r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::'
                 has_marker = bool(re.search(marker_pattern, cur_val, flags=re.IGNORECASE))
 
                 is_inline = all(recto is None or recto == "" for _, recto in items) if override_html is None else False
@@ -6396,21 +6988,29 @@ class LinkInserter:
                     if single_nid_str:
                         # 1) NID brut juste avant le marker (avec éventuel espace/&nbsp;)
                         cur_val = re.sub(
-                            rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*' + marker_pattern,
-                            '<span id="edn-cursor-marker"></span>',
+                            rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:{marker_pattern})',
+                            ':::EDN_MARKER:::',
                             cur_val,
                             count=1,
                             flags=re.IGNORECASE
                         )
                         # 2) NID brut à l'intérieur du marker
                         cur_val = re.sub(
-                            rf'<span\s+id=["\']edn-cursor-marker["\'][^>]*>(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*</span>',
-                            '<span id="edn-cursor-marker"></span>',
+                            rf'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*</span>',
+                            ':::EDN_MARKER:::',
                             cur_val,
                             count=1,
                             flags=re.IGNORECASE
                         )
-                    new_val = re.sub(marker_pattern, html, cur_val, count=1, flags=re.IGNORECASE)
+                        # 3) Badge nu adjacent au marker
+                        cur_val = re.sub(
+                            rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*(?:{marker_pattern})',
+                            ':::EDN_MARKER:::',
+                            cur_val,
+                            count=1,
+                            flags=re.IGNORECASE
+                        )
+                    new_val = re.sub(marker_pattern, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
                 elif is_inline:
                     # Si le champ se termine par le NID brut (ex. l'utilisateur a sélectionné le NID en bout de ligne)
                     if single_nid_str:
@@ -6434,17 +7034,38 @@ class LinkInserter:
                     if not prefix.endswith('&nbsp;') and not prefix.endswith(' '):
                         prefix += '&nbsp;'
                     new_val = prefix + badge_html + '&nbsp;'
-                else:
-                    # Si le champ se termine par le NID brut, le remplacer au lieu d'ajouter après
-                    if single_nid_str:
-                        trailing_nid_pat = rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$'
-                        if re.search(trailing_nid_pat, cur_val, flags=re.IGNORECASE):
-                            cur_val = re.sub(trailing_nid_pat, '', cur_val, count=1, flags=re.IGNORECASE).rstrip()
+                elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*', cur_val, flags=re.IGNORECASE):
+                    # Remplacement en place d'un badge nu (sans titre) déjà présent sur cette ligne :
+                    # on intègre directement le titre et le badge sur cette même ligne sans sauter de ligne
+                    naked_badge_pat = rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*'
+                    new_val = re.sub(naked_badge_pat, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
+                elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$', cur_val, flags=re.IGNORECASE):
+                    # Remplacement en place d'un NID brut en fin de ligne : pas de saut de ligne
+                    trailing_nid_pat = rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$'
+                    new_val = re.sub(trailing_nid_pat, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
+                elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*\[?{re.escape(single_nid_str)}\]?(?:&nbsp;|\s)*(?!\d)', cur_val, flags=re.IGNORECASE):
+                    # Remplacement en place d'un NID brut dans le champ : pas de saut de ligne
+                    raw_nid_pat = rf'(?:&nbsp;|\s)*\[?{re.escape(single_nid_str)}\]?(?:&nbsp;|\s)*(?!\d)'
+                    new_val = re.sub(raw_nid_pat, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
+                elif is_first_line:
+                    # Le curseur était sur la première ligne mais le marker n'a pas persisté :
+                    # insertion en début de champ au lieu de téléporter en fin de champ
                     if not cur_val or cur_val == '<br>':
                         new_val = html
+                    elif cur_val.startswith('<br>') or cur_val.startswith('<div>'):
+                        new_val = html + cur_val
+                    else:
+                        new_val = html + '<br>' + cur_val
+                else:
+                    if not cur_val or cur_val == '<br>':
+                        new_val = html
+                    elif cur_val.endswith('<br>') or cur_val.endswith('<br/>') or cur_val.endswith('</div>') or cur_val.endswith('</p>'):
+                        new_val = cur_val + html
                     else:
                         new_val = cur_val + '<br>' + html
 
+                # Nettoyer tout marqueur de curseur résiduel dans le HTML final
+                new_val = re.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', new_val, flags=re.IGNORECASE)
                 new_val = _clean_kbd_html(new_val)
 
                 _profiler_log("LINK_INSERTER:_do_commit", f"FIELD PREVIEW: cur_val len={len(cur_val)}: {cur_val[:60]!r}", caller=commit_caller)
@@ -6470,11 +7091,25 @@ class LinkInserter:
                 try:
                     if hasattr(self.editor, "_note_compat_cache"):
                         self.editor._note_compat_cache = col_note
-                    if hasattr(self.editor, "note") and not isinstance(type(self.editor).note, property):
+                    note_prop = getattr(type(self.editor), "note", None)
+                    if hasattr(self.editor, "note") and not isinstance(note_prop, property):
                         self.editor.note = col_note
                     elif hasattr(self.editor, "note"):
                         try:
                             self.editor.note = col_note
+                        except Exception:
+                            pass
+                    # Invalidation immediate du cache memoire card._note pour eviter la reutilisation de note perimee
+                    ed_card = getattr(self.editor, "card", None)
+                    if ed_card:
+                        try:
+                            ed_card._note = None
+                        except Exception:
+                            pass
+                    rev_card = getattr(getattr(mw, "reviewer", None), "card", None)
+                    if rev_card and getattr(rev_card, "nid", None) == col_note.id:
+                        try:
+                            rev_card._note = None
                         except Exception:
                             pass
                 except Exception as e:
@@ -6484,6 +7119,7 @@ class LinkInserter:
                 try:
                     self.editor.web.eval("""(function() {
                         try {
+                            window._ednMarkerPending = false;
                             var markers = (typeof window._ednQueryAllRoots === 'function')
                                 ? window._ednQueryAllRoots('[id*="edn-cursor-marker"]')
                                 : Array.from(document.querySelectorAll('[id*="edn-cursor-marker"]'));
@@ -6540,6 +7176,8 @@ class LinkInserter:
             except Exception as e:
                 _profiler_log("LINK_INSERTER:ERROR", f"CRITICAL Exception in _do_commit: {e}\n{traceback.format_exc()}", caller=commit_caller)
                 log(f"LinkInserter error: {e}")
+            finally:
+                LinkInserter.is_inserting = False
 
         # Bloquer preventativement les updateNotes intempestifs declenches par le blur
         if hasattr(self.editor, "web") and self.editor.web:
@@ -6552,7 +7190,7 @@ class LinkInserter:
         _profiler_log("LINK_INSERTER", "calling editor_save_now before _do_commit", caller=caller)
         editor_save_now(self.editor, _do_commit, keep_focus=True)
 
-    def insert_link_with_text(self, nid, display_text, mirror_requested=False, target_fidx=None):
+    def insert_link_with_text(self, nid, display_text, mirror_requested=False, target_fidx=None, is_first_line=False):
         """Insère un lien hyperlien : le texte affiché est display_text mais le NID est stocké dans data-nid
         ET dans un <span class="edn-nid"> invisible. Ce double stockage garantit que le NID
         survive au sanitizer HTML d'Anki qui supprime parfois data-* et onclick.
@@ -6560,7 +7198,7 @@ class LinkInserter:
         safe_nid = str(nid)
         badge = make_clickable_card_badge(safe_nid, custom_text=display_text)
         html = f'{badge}&nbsp;'
-        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested, target_fidx=target_fidx)
+        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested, target_fidx=target_fidx, is_first_line=is_first_line)
         tooltip(f"Lien '{display_text}' -> carte {nid}")
 
 
@@ -6634,6 +7272,17 @@ def _add_badge_to_note(target_nid, fidx, source_nid, source_recto):
         return
     if not target_note.fields or fidx < 0 or fidx >= len(target_note.fields):
         return
+
+    # Vérifier que la note cible ne contient pas déjà un lien vers source_nid pour éviter tout doublon
+    try:
+        source_note = mw.col.get_note(int(source_nid))
+        if source_note and _is_note_linked_in_target(source_note, target_note):
+            return
+    except Exception:
+        pass
+    if any(str(source_nid) in fld for fld in target_note.fields):
+        return
+
     source_recto_badge = strip_html(source_recto)[:240] if source_recto else "[Vide]"
     source_recto_badge = source_recto_badge or "[Vide]"
     link_html = make_card_link(source_nid, source_recto_badge)
@@ -6689,9 +7338,9 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
         parent = (
             getattr(editor, 'parentWindow', None)
             or (editor.widget.window() if getattr(editor, 'widget', None) else None)
-            or (mw.app.activeWindow() if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow') else None)
-            or mw
         )
+        if not parent or (hasattr(parent, '__class__') and 'Progress' in parent.__class__.__name__):
+            parent = mw
         _profiler_log("MIRROR_LINKS", f"opening MirrorSelectionDialog with {len(valid_targets)} targets (parent={type(parent).__name__})", caller="_propose_mirror_links_group")
         
         dialog = MirrorSelectionDialog(parent, valid_targets, source_note=source_note)
@@ -6710,13 +7359,23 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
                     # Add mirror badge to the target note
                     # Utiliser le label validé dans la dialog (custom_recto) pour le badge miroir dans la cible
                     _add_badge_to_note(int(nid_str), fidx, source_nid, custom_recto)
+                    try:
+                        from .editor_assistant import clear_assistant_preview_cache
+                        clear_assistant_preview_cache(nid_str)
+                    except Exception:
+                        pass
                     
+                try:
+                    from .editor_assistant import clear_assistant_preview_cache
+                    clear_assistant_preview_cache(source_nid)
+                except Exception:
+                    pass
                 tooltip(f"Liens miroirs créés dans {len(selected_targets)} cartes.")
                 
                 # Refresh assistant side panel
                 from .editor_assistant import update_assistant
                 if editor:
-                    update_assistant(editor)
+                    update_assistant(editor, immediate=True)
     except Exception as e:
         log_error(f"Error in _propose_mirror_links_group: {e}\n{traceback.format_exc()}")
         _profiler_log("MIRROR_LINKS:ERROR", f"Exception in _propose_mirror_links_group: {e}", caller="_propose_mirror_links_group")
@@ -6903,9 +7562,9 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                 parent = (
                     getattr(editor, 'parentWindow', None)
                     or (editor.widget.window() if getattr(editor, 'widget', None) else None)
-                    or (mw.app.activeWindow() if hasattr(mw, 'app') and hasattr(mw.app, 'activeWindow') else None)
-                    or mw
                 )
+                if not parent or (hasattr(parent, '__class__') and 'Progress' in parent.__class__.__name__):
+                    parent = mw
                 dialog = CrossLinksSelectionDialog(parent, links_to_create)
                 dialog.raise_()
                 dialog.activateWindow()
@@ -7458,6 +8117,7 @@ class LinkedCardsDialog(QDialog):
         return super().event(event)
 
     def _cleanup_on_close(self):
+        self._is_closed = True
         global _active_dialog, _last_gui_close_time
         _active_dialog = None
         import time
@@ -7533,6 +8193,7 @@ class LinkedCardsDialog(QDialog):
                         return res;
                     }
 
+                    window._ednMarkerPending = false;
                     var markers = _queryAll('[id="edn-cursor-marker"]');
                     var changedEditables = new Set();
                     markers.forEach(function(m) { 
@@ -7563,7 +8224,7 @@ class LinkedCardsDialog(QDialog):
         try:
             import re as _re
             _MARKER_RE = _re.compile(
-                r'<span\s+id=["\']edn-cursor-marker["\']\s*>.*?</span>',
+                r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::',
                 _re.IGNORECASE | _re.DOTALL
             )
             note = _get_editor_note(self.editor)
@@ -8919,10 +9580,35 @@ class LinkedCardsDialog(QDialog):
             } catch(e) {}
         }
 
+        function _centerSoloMathjaxPreview(root) {
+            try {
+                var items = root.querySelectorAll('.items');
+                for (var i = 0; i < items.length; i++) {
+                    var item = items[i];
+                    if (!item.querySelector('anki-mathjax, mjx-container')) continue;
+                    if (item.querySelector('img, table, ul, ol, iframe, canvas, audio, video')) continue;
+
+                    var clone = item.cloneNode(true);
+                    var mathEls = clone.querySelectorAll('anki-mathjax, mjx-container, script, style');
+                    for (var j = 0; j < mathEls.length; j++) {
+                        if (mathEls[j].parentNode) mathEls[j].parentNode.removeChild(mathEls[j]);
+                    }
+
+                    var remaining = (clone.textContent || '')
+                        .replace(/[\s\u00a0\u200b\u200c\u200d\ufeff\r\n\t]+/g, '');
+
+                    if (remaining === '') {
+                        item.classList.add('edn-solo-mathjax');
+                    }
+                }
+            } catch(e) {}
+        }
+
         function _cleanAll() {
             _hideFsrsInfo();
             _hideEmptySections();
             _capitalizePreview(document);
+            _centerSoloMathjaxPreview(document);
         }
 
         window.toggle = window.toggle || function(id) {
@@ -9708,10 +10394,11 @@ class LinkedCardsDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def check_hide_preview(self):
-        if not self.isVisible():
-            self.hide_preview_popup()
-            return
         try:
+            self.objectName()
+            if getattr(self, '_is_closed', False) or not self.isVisible():
+                self.hide_preview_popup()
+                return
             if getattr(self, '_context_menu_active', False):
                 from aqt.qt import QTimer
                 QTimer.singleShot(400, lambda: self.check_hide_preview())
@@ -9725,22 +10412,27 @@ class LinkedCardsDialog(QDialog):
                     return
             except Exception:
                 pass
-            if hasattr(self, '_preview_dlg') and self._preview_dlg and self._preview_dlg.isVisible():
-                pos = QCursor.pos()
-                is_in_dlg = self._preview_dlg.geometry().adjusted(-6, -6, 6, 6).contains(pos)
-                is_in_btn = False
-                if hasattr(self, '_preview_current_widget') and self._preview_current_widget:
-                    try:
-                        self._preview_current_widget.objectName()
-                        btn_global = self._preview_current_widget.mapToGlobal(QPoint(0, 0))
-                        btn_rect = QRect(btn_global, self._preview_current_widget.size())
-                        is_in_btn = btn_rect.adjusted(-6, -6, 6, 6).contains(pos)
-                    except (RuntimeError, Exception):
-                        self._preview_current_widget = None
-                if is_in_dlg or is_in_btn:
-                    return
-                self.hide_preview_popup()
-        except RuntimeError:
+            if hasattr(self, '_preview_dlg') and self._preview_dlg:
+                try:
+                    self._preview_dlg.objectName()
+                    if self._preview_dlg.isVisible():
+                        pos = QCursor.pos()
+                        is_in_dlg = self._preview_dlg.geometry().adjusted(-6, -6, 6, 6).contains(pos)
+                        is_in_btn = False
+                        if hasattr(self, '_preview_current_widget') and self._preview_current_widget:
+                            try:
+                                self._preview_current_widget.objectName()
+                                btn_global = self._preview_current_widget.mapToGlobal(QPoint(0, 0))
+                                btn_rect = QRect(btn_global, self._preview_current_widget.size())
+                                is_in_btn = btn_rect.adjusted(-6, -6, 6, 6).contains(pos)
+                            except (RuntimeError, Exception):
+                                self._preview_current_widget = None
+                        if is_in_dlg or is_in_btn:
+                            return
+                        self.hide_preview_popup()
+                except (RuntimeError, Exception):
+                    pass
+        except (RuntimeError, Exception):
             pass
 
     def show_nested_preview(self, nid):
@@ -9772,8 +10464,15 @@ class LinkedCardsDialog(QDialog):
         self.close()
 
     def hide_preview_popup(self):
-        if hasattr(self, '_preview_dlg') and self._preview_dlg:
-            self._preview_dlg.hide()
+        try:
+            if hasattr(self, '_preview_dlg') and self._preview_dlg:
+                try:
+                    self._preview_dlg.objectName()
+                    self._preview_dlg.hide()
+                except (RuntimeError, Exception):
+                    pass
+        except (RuntimeError, Exception):
+            pass
 
     def on_selection_changed(self):
         rows = self.results_table.selectionModel().selectedRows()
@@ -9879,7 +10578,15 @@ class LinkedCardsDialog(QDialog):
                             r.collapse(false);
                             marker = document.createElement("span");
                             marker.id = "edn-cursor-marker";
+                            marker.className = "edn-cursor-marker";
+                            marker.style.cssText = "display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;";
+                            marker.textContent = ":::EDN_MARKER:::";
+                            window._ednMarkerPending = true;
                             r.insertNode(marker);
+                            var ed = (typeof _findEditableAncestor === 'function') ? _findEditableAncestor(marker) : (marker.closest ? marker.closest('anki-editable') : null);
+                            if (ed) {
+                                ed.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                            }
                         } catch(e) {
                             marker = null;
                         }
@@ -9938,8 +10645,26 @@ class LinkedCardsDialog(QDialog):
                     if (curFieldIdx < 0 && typeof window._ednLastActiveField === 'number') {
                         curFieldIdx = window._ednLastActiveField;
                     }
-                    return JSON.stringify({ hasDash: hasDash, textBefore: trimmedBefore, fieldIndex: curFieldIdx });
-                } catch(e) { return JSON.stringify({ hasDash: false, textBefore: "", fieldIndex: -1 }); }
+                    var isFirstLine = false;
+                    try {
+                        var edContainer = (typeof _findEditableAncestor === 'function')
+                            ? _findEditableAncestor(marker)
+                            : (marker.closest ? marker.closest('anki-editable') : null);
+                        if (edContainer) {
+                            var preRange = document.createRange();
+                            preRange.selectNodeContents(edContainer);
+                            preRange.setEndBefore(marker);
+                            var tDiv = document.createElement('div');
+                            tDiv.appendChild(preRange.cloneContents());
+                            var htmlPre = tDiv.innerHTML;
+                            isFirstLine = !(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/i.test(htmlPre));
+                        }
+                    } catch(eFL) {
+                        isFirstLine = false;
+                    }
+
+                    return JSON.stringify({ hasDash: hasDash, textBefore: trimmedBefore, fieldIndex: curFieldIdx, isFirstLine: isFirstLine });
+                } catch(e) { return JSON.stringify({ hasDash: false, textBefore: "", fieldIndex: -1, isFirstLine: false }); }
             })();
             """
             
@@ -9960,6 +10685,7 @@ class LinkedCardsDialog(QDialog):
 
                 has_dash = bool(data.get("hasDash", False))
                 text_before = str(data.get("textBefore", ""))
+                is_first_line = bool(data.get("isFirstLine", False))
 
                 # Candidats pour la détection du mode (basé sur le premier élément ou le contexte)
                 cands = []
@@ -9986,15 +10712,18 @@ class LinkedCardsDialog(QDialog):
                 mode = _detect_link_insertion_mode(text_before, has_dash, cands)
 
                 items = []
+                s_note = _get_editor_note(self.editor)
+                main_assigned = _note_has_main_link(s_note)
                 for idx, (nid, recto) in enumerate(items_raw):
                     smart_desc = recto
                     t_note = None
                     try:
                         t_note = mw.col.get_note(int(nid))
-                        s_note = _get_editor_note(self.editor)
-                        computed = generate_smart_link_label(s_note, t_note)
+                        computed = generate_smart_link_label(s_note, t_note, allow_main=not main_assigned)
                         if computed:
                             smart_desc = computed
+                            if smart_desc.strip().lower() == "main":
+                                main_assigned = True
                     except Exception:
                         pass
 
@@ -10025,8 +10754,8 @@ class LinkedCardsDialog(QDialog):
                                 self.editor.web.eval("window._ednBlockUpdateNotes = true;")
                             except Exception:
                                 pass
-                        _profiler_log("GUI:EXEC_INSERT", f"calling inserter.insert_link: items={items}, target_fidx={final_fidx}", caller="LinkedCardsDialog:_exec_insert")
-                        self.inserter.insert_link(items, mirror_requested=mirror_req, target_fidx=final_fidx)
+                        _profiler_log("GUI:EXEC_INSERT", f"calling inserter.insert_link: items={items}, target_fidx={final_fidx}, is_first_line={is_first_line}", caller="LinkedCardsDialog:_exec_insert")
+                        self.inserter.insert_link(items, mirror_requested=mirror_req, target_fidx=final_fidx, is_first_line=is_first_line)
                     finally:
                         self.close()
                 QTimer.singleShot(0, _exec_insert)
@@ -10134,10 +10863,21 @@ def open_search_dialog(editor, selected_text=""):
             if (window._ednSavedRange) {
                 try {
                     let r = window._ednSavedRange.cloneRange();
-                    r.deleteContents();
+                    r.collapse(false);
                     let marker = document.createElement("span");
                     marker.id = "edn-cursor-marker";
+                    marker.className = "edn-cursor-marker";
+                    marker.style.cssText = "display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;";
+                    marker.textContent = ":::EDN_MARKER:::";
+                    window._ednMarkerPending = true;
                     r.insertNode(marker);
+                    let ed = marker.closest ? marker.closest('anki-editable') : null;
+                    if (!ed && marker.getRootNode && marker.getRootNode().host) {
+                        ed = marker.getRootNode().host;
+                    }
+                    if (ed) {
+                        ed.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    }
                 } catch(e) {}
             }
 
@@ -10634,14 +11374,50 @@ def learn_now_nid(nid: str) -> None:
     try:
         import importlib
         from aqt.operations import CollectionOp
-        learn_now = importlib.import_module("1021636467.learn_now")
-        
+
         def run_op(col):
-            res = learn_now.put_cards_in_learning(col, new_cards)
-            if res is not None:
-                return res
+            # 1. Tenter via BrowserMenus (implémentation de 1021636467)
+            try:
+                bm_mod = importlib.import_module("1021636467.browser_menus")
+                cfg_mod = importlib.import_module("1021636467.config")
+                cfg = cfg_mod.get_global_config() if hasattr(cfg_mod, "get_global_config") else None
+                bm = bm_mod.BrowserMenus(cfg=cfg)
+                res = bm._put_cards_in_learning(col, new_cards)
+                if res is not None:
+                    return res
+            except Exception:
+                pass
+
+            # 2. Tenter via learn_now.put_cards_in_learning
+            try:
+                learn_now = importlib.import_module("1021636467.learn_now")
+                if hasattr(learn_now, "put_cards_in_learning"):
+                    res = learn_now.put_cards_in_learning(col, new_cards)
+                    if res is not None:
+                        return res
+            except Exception:
+                pass
+
+            # 3. Repli natif robuste si 1021636467 est manquant ou incompatible
+            import time
             from anki.collection import OpChanges
-            return OpChanges()
+            pos = col.add_custom_undo_entry("Mettre les cartes en apprentissage")
+            for card in new_cards:
+                card.type = 1
+                card.queue = 1
+                card.ivl = 0
+                card.original_position = card.odue if card.odid else card.due
+                card.due = int(time.time())
+                deck_id = card.odid if card.odid > 0 else card.did
+                conf = col.decks.config_dict_for_deck_id(deck_id)
+                delays = conf.get("new", {}).get("delays", [1, 10])
+                reps_left = len(delays)
+                card.left = reps_left * 1000 + reps_left
+                card.reps = 0
+                card.lapses = 0
+                card.factor = conf.get("new", {}).get("initialFactor", 2500)
+            col.update_cards(new_cards)
+            return col.merge_undo_entries(pos)
             
         is_reviewing = bool(
             getattr(mw, "state", None) == "review"
@@ -10716,7 +11492,8 @@ def _get_recto_for_nid(nid_str: str) -> str:
         from .editor_assistant import get_active_editor
         editor = get_active_editor()
         source_note = _get_editor_note(editor)
-        return generate_smart_link_label(source_note, note) or get_note_recto(note, 100)
+        can_main = not _note_has_main_link(source_note)
+        return generate_smart_link_label(source_note, note, allow_main=can_main) or get_note_recto(note, 100)
     except Exception:
         return "[Erreur]"
 
@@ -10840,7 +11617,14 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
                     r.collapse(false);
                     marker = document.createElement("span");
                     marker.id = "edn-cursor-marker";
+                    marker.className = "edn-cursor-marker";
+                    marker.style.cssText = "display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;";
+                    marker.textContent = ":::EDN_MARKER:::";
+                    window._ednMarkerPending = true;
                     r.insertNode(marker);
+                    if (editableParent) {
+                        editableParent.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    }
                 } catch(e) {
                     marker = null;
                 }
@@ -10863,7 +11647,12 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
                     try {
                         marker = document.createElement("span");
                         marker.id = "edn-cursor-marker";
+                        marker.className = "edn-cursor-marker";
+                        marker.style.cssText = "display:none !important; visibility:hidden !important; font-size:0 !important; width:0 !important; height:0 !important; opacity:0 !important; pointer-events:none !important; user-select:none !important;";
+                        marker.textContent = ":::EDN_MARKER:::";
+                        window._ednMarkerPending = true;
                         editableParent.appendChild(marker);
+                        editableParent.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
                     } catch(e) {
                         marker = null;
                     }
@@ -10871,7 +11660,7 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
             }
 
             if (!marker) {
-                return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "" });
+                return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "", isFirstLine: false });
             }
 
             // Mettre à jour l'index du champ actif
@@ -10925,14 +11714,30 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
             var textBefore = _textBeforeMarkerInLine(blockParent, marker).trim();
             var hasDash = /[-—–\u2014\u2013]\s*$/.test(textBefore);
 
+            var isFirstLine = false;
+            try {
+                if (editableParent && marker) {
+                    var preRange = document.createRange();
+                    preRange.selectNodeContents(editableParent);
+                    preRange.setEndBefore(marker);
+                    var tDiv = document.createElement('div');
+                    tDiv.appendChild(preRange.cloneContents());
+                    var htmlPre = tDiv.innerHTML;
+                    isFirstLine = !(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/i.test(htmlPre));
+                }
+            } catch(eFL) {
+                isFirstLine = false;
+            }
+
             return JSON.stringify({
                 markerInserted: true,
                 hasDash: hasDash,
                 textBefore: textBefore,
-                fieldIndex: fieldIndex
+                fieldIndex: fieldIndex,
+                isFirstLine: isFirstLine
             });
         } catch(err) {
-            return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "", error: String(err) });
+            return JSON.stringify({ markerInserted: false, hasDash: false, textBefore: "", isFirstLine: false, error: String(err) });
         }
     })();
     """
@@ -10952,6 +11757,7 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
 
         has_dash = bool(data.get("hasDash", False))
         text_before = str(data.get("textBefore", ""))
+        is_first_line = bool(data.get("isFirstLine", False))
 
         mode = _detect_link_insertion_mode(text_before, has_dash, candidate_names)
         if mode == "bare":
@@ -10963,7 +11769,7 @@ def link_card_to_active_editor(target_nid: str, webview=None) -> None:
 
         fidx = data.get("fieldIndex", -1)
         try:
-            inserter.insert_link([(target_nid, recto_to_insert)], mirror_requested=mirror_req, target_fidx=fidx)
+            inserter.insert_link([(target_nid, recto_to_insert)], mirror_requested=mirror_req, target_fidx=fidx, is_first_line=is_first_line)
             try:
                 from .editor_assistant import _hide_card_preview_popup
                 _hide_card_preview_popup()

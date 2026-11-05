@@ -638,6 +638,14 @@ def refocus_editor_field(editor, field_idx=None, only_if_unfocused=False, activa
         parent_win = getattr(editor, 'parentWindow', None) or (ed_widget.window() if ed_widget else None)
         if sip and parent_win and sip.isdeleted(parent_win):
             return
+
+        is_browser = bool(parent_win and getattr(parent_win, '__class__', None) and parent_win.__class__.__name__ == "Browser")
+        if is_browser:
+            # Dans le Navigateur (Browser), ne JAMAIS voler le focus a la barre de recherche ou a la table
+            web = getattr(editor, 'web', None)
+            if not web or not hasattr(web, 'hasFocus') or not web.hasFocus():
+                return
+
         if parent_win and hasattr(parent_win, 'activateWindow') and (activate_window or (hasattr(parent_win, 'isActiveWindow') and parent_win.isActiveWindow())):
             parent_win.activateWindow()
             if hasattr(parent_win, 'raise_'):
@@ -1122,12 +1130,12 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                 r'\1display: flex !important;', isolated, flags=re2.IGNORECASE)
 
             # Nettoyer les marqueurs de curseur résiduels
-            isolated = re2.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', isolated, flags=re2.IGNORECASE | re2.DOTALL)
+            isolated = re2.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', isolated, flags=re2.IGNORECASE | re2.DOTALL)
 
             # Compresser et nettoyer les <br> orphelins ou inutiles dans cartesLiees
             def _clean_cartes_liees(match):
                 inner = match.group(2)
-                inner = re2.sub(r'<span\s+id=["\']edn-cursor-marker["\'][^>]*>.*?</span>', '', inner, flags=re2.IGNORECASE | re2.DOTALL)
+                inner = re2.sub(r'<span\s+[^>]*id=["\']edn-cursor-marker["\'][^>]*>.*?</span>|:::EDN_MARKER:::', '', inner, flags=re2.IGNORECASE | re2.DOTALL)
                 try:
                     from .linked_cards import _move_br_outside_edn_desc
                     inner = _move_br_outside_edn_desc(inner)
@@ -1444,10 +1452,34 @@ def _show_card_preview_popup(nid_str, parent_widget=None, is_nested=False, y_off
                     });
                 } catch(e) {}
             }
+            function _centerSoloMathjaxPreview(root) {
+                try {
+                    var items = root.querySelectorAll('.items');
+                    for (var i = 0; i < items.length; i++) {
+                        var item = items[i];
+                        if (!item.querySelector('anki-mathjax, mjx-container')) continue;
+                        if (item.querySelector('img, table, ul, ol, iframe, canvas, audio, video')) continue;
+
+                        var clone = item.cloneNode(true);
+                        var mathEls = clone.querySelectorAll('anki-mathjax, mjx-container, script, style');
+                        for (var j = 0; j < mathEls.length; j++) {
+                            if (mathEls[j].parentNode) mathEls[j].parentNode.removeChild(mathEls[j]);
+                        }
+
+                        var remaining = (clone.textContent || '')
+                            .replace(/[\s\u00a0\u200b\u200c\u200d\ufeff\r\n\t]+/g, '');
+
+                        if (remaining === '') {
+                            item.classList.add('edn-solo-mathjax');
+                        }
+                    }
+                } catch(e) {}
+            }
             function _cleanAll() {
                 _hideFsrsInfo();
                 _hideEmptySections();
                 _capitalizePreview(document);
+                _centerSoloMathjaxPreview(document);
             }
             _cleanAll();
             setTimeout(_cleanAll, 100);
@@ -2990,6 +3022,12 @@ def update_assistant(editor, immediate: bool = False):
                     sendPycmd('add_mirror:' + nid + '|||' + recto);
                 } else if (action === 'make_reciprocal') {
                     sendPycmd('make_reciprocal:' + nid);
+                    btn.disabled = true;
+                    btn.textContent = 'Liaison en cours...';
+                    var card = btn.closest('.card-item');
+                    if (card) { card.style.opacity = '0.5'; card.style.pointerEvents = 'none'; }
+                    e.stopPropagation();
+                    return;
                 } else if (action === 'preview_card') {
                     sendPycmd('preview_card:' + nid);
                 } else if (action === 'open_browser') {
@@ -3089,7 +3127,7 @@ def update_assistant(editor, immediate: bool = False):
                 currentHoveredNid = null;
                 hoverTimer = setTimeout(function() {
                     sendPycmd('hover_leave');
-                }, 80);
+                }, 350);
             }
         });
         var _sbLongPressTimer = null;
@@ -3418,17 +3456,18 @@ def handle_assistant_message(handled, message, context):
             target_fidx = _find_field_by_name_or_default(note, source_field_name)
                 
             def on_saved():
-                current_val = note.fields[target_fidx].strip()
+                col_note = mw.col.get_note(note.id) if (getattr(note, 'id', None) and note.id != 0) else note
+                current_val = col_note.fields[target_fidx].strip()
                 if not current_val or current_val == "<br>":
                     new_val = badge_html
                 else:
                     new_val = current_val + "<br>" + badge_html
                 
-                note.fields[target_fidx] = new_val
-                mw.col.update_note(note)
+                col_note.fields[target_fidx] = new_val
+                mw.col.update_note(col_note)
                 
-                clear_assistant_preview_cache(note.id)
-                editor_reload_note(editor)
+                clear_assistant_preview_cache(col_note.id)
+                editor_reload_note(editor, note=col_note, target_fidx=target_fidx)
                 update_assistant(editor, immediate=True)
             
             editor_save_now(editor, on_saved, keep_focus=True)
@@ -3452,24 +3491,33 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label, make_card_link
-            smart_desc = generate_smart_link_label(target_note, current_note) if target_note else get_note_recto(current_note)
-            final_desc = smart_desc if smart_desc else get_note_recto(current_note)
-            badge_html = make_card_link(current_nid, final_desc)
-            
-            # Recherche intelligente du champ correspondant
-            source_field_name = None
-            try:
-                for fld in current_note.note_type()['flds']:
-                    if target_nid in current_note[fld['name']]:
-                        source_field_name = fld['name']
-                        break
-            except Exception as fe:
-                print("Error finding source field name:", fe)
-                
-            target_fidx = _find_field_by_name_or_default(target_note, source_field_name) if target_note else len(target_note.fields) - 1
+            from .linked_cards import generate_smart_link_label, make_card_link, _is_note_linked_in_target, _note_has_main_link
             
             if target_note:
+                # Vérifier si la carte B a déjà un lien vers la carte A pour éviter tout doublon
+                if _is_note_linked_in_target(current_note, target_note) or any(current_nid in f for f in target_note.fields):
+                    clear_assistant_preview_cache(current_nid)
+                    clear_assistant_preview_cache(target_nid)
+                    update_assistant(editor, immediate=True)
+                    return (True, None)
+
+                can_main = not _note_has_main_link(target_note)
+                smart_desc = generate_smart_link_label(target_note, current_note, allow_main=can_main) if target_note else get_note_recto(current_note)
+                final_desc = smart_desc if smart_desc else get_note_recto(current_note)
+                badge_html = make_card_link(current_nid, final_desc)
+                
+                # Recherche intelligente du champ correspondant
+                source_field_name = None
+                try:
+                    for fld in current_note.note_type()['flds']:
+                        if target_nid in current_note[fld['name']]:
+                            source_field_name = fld['name']
+                            break
+                except Exception as fe:
+                    print("Error finding source field name:", fe)
+                    
+                target_fidx = _find_field_by_name_or_default(target_note, source_field_name) if target_note else len(target_note.fields) - 1
+                
                 current_val = target_note.fields[target_fidx].strip()
                 if not current_val or current_val == "<br>":
                     new_val = badge_html
@@ -3480,6 +3528,7 @@ def handle_assistant_message(handled, message, context):
                 mw.col.update_note(target_note)
             
             clear_assistant_preview_cache(current_nid)
+            clear_assistant_preview_cache(target_nid)
             update_assistant(editor, immediate=True)
             
         except Exception as e:
@@ -3513,23 +3562,24 @@ def handle_assistant_message(handled, message, context):
             
             def _on_suggested_saved():
                 try:
-                    current_val = current_note_ref.fields[target_fidx].strip()
+                    col_note = mw.col.get_note(current_note_ref.id) if (getattr(current_note_ref, 'id', None) and current_note_ref.id != 0) else current_note_ref
+                    current_val = col_note.fields[target_fidx].strip()
                     if not current_val or current_val == "<br>":
                         new_val = badge_html
                     else:
                         new_val = current_val + "<br>" + badge_html
                     
-                    current_note_ref.fields[target_fidx] = new_val
-                    mw.col.update_note(current_note_ref)
+                    col_note.fields[target_fidx] = new_val
+                    mw.col.update_note(col_note)
                     
-                    clear_assistant_preview_cache(current_note_ref.id)
-                    editor_reload_note(editor)
+                    clear_assistant_preview_cache(col_note.id)
+                    editor_reload_note(editor, note=col_note, target_fidx=target_fidx)
                     update_assistant(editor, immediate=True)
                     
                     # Proposer la création du miroir uniquement pour le lien suggéré qui vient d'être ajouté
                     try:
                         from .linked_cards import _proposal_queue, _propose_mirror_links_group
-                        updated_note = mw.col.get_note(current_note_ref.id)
+                        updated_note = mw.col.get_note(col_note.id)
                         _proposal_queue.add(lambda done: _propose_mirror_links_group(
                             editor, updated_note, [(nid, final_desc)], done
                         ))
@@ -3747,7 +3797,9 @@ def _setup_assistant_ui(editor):
         editor._editor_assistant_web = assistant
 
         # Restaurer le focus sur le webview principal de l'editeur apres reparentage dans QSplitter sans forcer le champ 0
-        QTimer.singleShot(60, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
+        parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+        if not (parent_win and getattr(parent_win, '__class__', None) and parent_win.__class__.__name__ == "Browser"):
+            QTimer.singleShot(60, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
         
     except Exception as e:
         print("Failed to setup editor assistant:", e)
@@ -3836,7 +3888,9 @@ def _show_assistant(editor):
     # Declencher la mise a jour une seule fois apres un court delai
     QTimer.singleShot(60, lambda: update_assistant(editor, immediate=True))
     # Ne pas laisser l'affichage de l'assistant voler le focus au champ de l'editeur
-    QTimer.singleShot(100, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
+    parent_win = getattr(editor, 'parentWindow', None) or (editor.widget.window() if getattr(editor, 'widget', None) else None)
+    if not (parent_win and getattr(parent_win, '__class__', None) and parent_win.__class__.__name__ == "Browser"):
+        QTimer.singleShot(100, lambda: refocus_editor_field(editor, None, only_if_unfocused=True, activate_window=False))
 
 def on_editor_did_load_note(editor):
     # Si le panneau doit etre ouvert mais n'a pas encore ete configure

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Ficello/Anki-Customize-Keyboard-Shortcuts/main/schemas/shortcuts-v1.json",
+  "schema_version": 1,
+  "addon_name": "Anki EDN - Lier les cartes",
+  "shortcuts": [
+    {
+      "id": "linked_cards.search",
+      "label": "Ouvrir le gestionnaire de cartes liees",
+      "scope": "main",
+      "default": "Ctrl+Alt+L",
+      "fallbacks": ["Ctrl+Shift+L", "F7"],
+      "config_key": "linked_cards_search"
+    },
+    {
+      "id": "linked_cards.copy_nid",
+      "label": "Copier le NID de la note courante",
+      "scope": "browser",
+      "default": "Ctrl+Alt+C",
+      "fallbacks": ["Ctrl+Shift+C", "Ctrl+Alt+N"],
+      "config_key": "linked_cards_copy"
+    },
+    {
+      "id": "linked_cards.liens_assistant",
+      "label": "Afficher l'assistant des cartes liees",
+      "scope": "reviewer",
+      "default": "Ctrl+Alt+B",
+      "fallbacks": ["Ctrl+Shift+B", "F9"],
+      "config_key": "linked_cards_liens"
+    },
+    {
+      "id": "linked_cards.next_card",
+      "label": "Naviguer vers la carte liee suivante",
+      "scope": "reviewer",
+      "default": "n",
+      "fallbacks": ["Alt+N", "Right"],
+      "config_key": "linked_cards_kbd_open"
+    },
+    {
+      "id": "linked_cards.preview_card",
+      "label": "Apercu rapide de la carte liee",
+      "scope": "reviewer",
+      "default": "p",
+      "fallbacks": ["Alt+P", "Left"],
+      "config_key": "linked_cards_kbd_preview"
+    },
+    {
+      "id": "linked_cards.open_browser",
+      "label": "Ouvrir la carte liee dans le navigateur",
+      "scope": "reviewer",
+      "default": "r",
+      "fallbacks": ["Alt+R", "Ctrl+O"],
+      "config_key": "linked_cards_kbd_navigate"
+    },
+    {
+      "id": "linked_cards.back_source",
+      "label": "Retour a la carte source initiale",
+      "scope": "reviewer",
+      "default": "z",
+      "fallbacks": ["Alt+Z", "Escape"],
+      "config_key": "linked_cards_kbd_back"
+    }
+  ]
+}

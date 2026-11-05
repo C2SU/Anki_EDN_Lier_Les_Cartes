@@ -54,6 +54,9 @@ class ShortcutsDialog(QDialog):
         sep_color = "#373b44" if dark else "#e2e8f0"
         scrollbar_thumb = "#4b5563" if dark else "#cbd5e1"
         scrollbar_thumb_hover = "#6b7280" if dark else "#94a3b8"
+        tooltip_bg = "#0f172a" if dark else "#feffc4"
+        tooltip_text = "#f8fafc" if dark else "#000000"
+        tooltip_border = "#334155" if dark else "#cbd5e1"
 
         self.setStyleSheet(f"""
             QDialog {{
@@ -84,6 +87,14 @@ class ShortcutsDialog(QDialog):
             }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
                 background: none;
+            }}
+            QToolTip, CustomLabel, QLabel[customTooltip="true"] {{
+                background-color: {tooltip_bg};
+                color: {tooltip_text};
+                border: 1px solid {tooltip_border};
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 12px;
             }}
         """)
 

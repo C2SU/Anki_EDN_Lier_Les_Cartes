@@ -6,11 +6,11 @@
             kbd.clickable_cards {
                 font-family: "Lucida console", Monaco, monospace !important;
                 font-weight: 600 !important;
-                color: #FFA630 !important;
-                background-color: #f9f9f9 !important;
-                background: linear-gradient(to bottom, #f9f9f9, #e9e9e9) !important;
+                color: #b45309 !important;
+                background: #fffbf5 !important;
+                background-color: #fffbf5 !important;
                 border-radius: 4px !important;
-                border: 1px solid gainsboro !important;
+                border: 1px solid #e5c98e !important;
                 display: inline-block !important;
                 font-size: 13px !important;
                 line-height: 16px !important;
@@ -23,10 +23,12 @@
                 box-sizing: border-box !important;
                 vertical-align: middle !important;
                 white-space: nowrap !important;
+                box-shadow: none !important;
             }
             kbd.clickable_cards:hover {
-                color: #BD93BD !important;
-                border-color: #BD93BD !important;
+                color: #2c7bb6 !important;
+                border-color: #93c5fd !important;
+                background: #f0f7ff !important;
             }
             kbd.clickable_cards:focus,
             kbd.clickable_cards:focus-visible {
@@ -50,8 +52,8 @@
             body.nightMode kbd.clickable_cards:hover,
             body.night_mode kbd.clickable_cards:hover,
             body.night-mode kbd.clickable_cards:hover {
-                color: #BD93BD !important;
-                border-color: #BD93BD !important;
+                color: #64b5f6 !important;
+                border-color: #1976d2 !important;
             }
             kbd.clickable_cards .edn-nid {
                 color: inherit !important;
@@ -65,8 +67,15 @@
                 display: block !important;
                 content: "" !important;
             }
-            [id*="edn-cursor-marker"], #edn-cursor-marker {
+            [id*="edn-cursor-marker"], #edn-cursor-marker, .edn-cursor-marker {
                 display: none !important;
+                visibility: hidden !important;
+                font-size: 0 !important;
+                width: 0 !important;
+                height: 0 !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+                user-select: none !important;
             }
         `;
 

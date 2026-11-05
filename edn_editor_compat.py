@@ -184,10 +184,8 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
             _profiler_log("EDITOR:RELOAD", f"fresh_note loaded: id={fresh_note.id}, num_fields={len(fresh_note.fields)}, previews={f_preview}", caller=caller)
             if hasattr(editor, "_note_compat_cache"):
                 editor._note_compat_cache = fresh_note
-            try:
-                is_property = isinstance(type(editor).note, property)
-            except AttributeError:
-                is_property = False
+            note_prop = getattr(type(editor), "note", None)
+            is_property = isinstance(note_prop, property)
             if hasattr(editor, "note") and not is_property:
                 editor.note = fresh_note
             elif hasattr(editor, "note"):
@@ -195,6 +193,19 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                     editor.note = fresh_note
                 except Exception as e:
                     _profiler_log("EDITOR:RELOAD", f"could not assign editor.note property: {e}", caller=caller)
+            # Invalidation immediate du cache memoire card._note
+            ed_card = getattr(editor, "card", None)
+            if ed_card:
+                try:
+                    ed_card._note = None
+                except Exception:
+                    pass
+            rev_card = getattr(getattr(mw, "reviewer", None), "card", None)
+            if rev_card and getattr(rev_card, "nid", None) == getattr(fresh_note, "id", None):
+                try:
+                    rev_card._note = None
+                except Exception:
+                    pass
     except Exception as e:
         _profiler_log("EDITOR:RELOAD", f"Error updating fresh note in memory: {e}", caller=caller)
 
@@ -203,7 +214,8 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
         _profiler_log("EDITOR:RELOAD", "evaluating reload in webview with store sync and guard bypass", caller=caller)
 
         field_names = []
-        field_vals = []
+        escaped_vals = []
+        pairs = []
         if fresh_note and hasattr(fresh_note, "fields"):
             field_vals = list(fresh_note.fields)
             try:
@@ -212,6 +224,17 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                     field_names = [f['name'] for f in nt['flds']]
             except Exception:
                 pass
+
+            col_media = getattr(getattr(editor, "mw", mw), "col", None)
+            media = getattr(col_media, "media", None) if col_media else None
+            norm_names = []
+            for idx, val in enumerate(field_vals):
+                name = field_names[idx] if idx < len(field_names) else f"Field {idx}"
+                escaped_val = media.escape_media_filenames(val) if (media and hasattr(media, "escape_media_filenames")) else val
+                norm_names.append(name)
+                escaped_vals.append(escaped_val)
+                pairs.append([name, escaped_val])
+            field_names = norm_names
 
         target_idx = -1
         if target_fidx is not None and isinstance(target_fidx, int) and target_fidx >= 0:
@@ -223,7 +246,8 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
 
         import json
         names_js = json.dumps(field_names)
-        vals_js = json.dumps(field_vals)
+        vals_js = json.dumps(escaped_vals)
+        pairs_js = json.dumps(pairs)
         target_idx_js = str(target_idx)
         keep_focus_js = "true" if keep_focus else "false"
 
@@ -243,13 +267,22 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
 
                 var fldNames = {names_js};
                 var fldVals = {vals_js};
+                var fldPairs = {pairs_js};
                 var targetIdx = {target_idx_js};
                 var keepFocus = {keep_focus_js};
 
                 // 1. Mise a jour immediate des stores Svelte et ProseMirror
-                if (typeof globalThis.setFields === 'function' && Array.isArray(fldNames) && Array.isArray(fldVals) && fldVals.length > 0) {{
+                // Anki 25.09+ attend (fldNames, fldVals) [arity 2], Anki 24.x attend (fldPairs) [arity 1].
+                if (typeof globalThis.setFields === 'function' && Array.isArray(fldVals) && fldVals.length > 0) {{
                     try {{
-                        globalThis.setFields(fldNames, fldVals);
+                        var sfArity = (typeof globalThis._ednSetFieldsArity === 'number')
+                            ? globalThis._ednSetFieldsArity
+                            : globalThis.setFields.length;
+                        if (sfArity === 1) {{
+                            globalThis.setFields(fldPairs);
+                        }} else {{
+                            globalThis.setFields(fldNames, fldVals);
+                        }}
                         result.setFields = true;
                     }} catch(e) {{
                         result.error = 'setFields error: ' + String(e);

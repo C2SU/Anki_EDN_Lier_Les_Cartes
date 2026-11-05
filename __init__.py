@@ -239,6 +239,32 @@ try:
             pass
 
     for ec_cls in ec_classes:
+        orig_ec_init = getattr(ec_cls, "__init__", None)
+        if orig_ec_init:
+            def make_safe_ec_init(orig):
+                def safe_ec_init(self, mw_arg, *args, **kwargs):
+                    try:
+                        if hasattr(mw_arg, "reviewer") and hasattr(mw_arg.reviewer, "card") and mw_arg.reviewer.card:
+                            mw_arg.reviewer.card._note = None
+                    except Exception:
+                        pass
+                    orig(self, mw_arg, *args, **kwargs)
+                return safe_ec_init
+            ec_cls.__init__ = make_safe_ec_init(orig_ec_init)
+
+        orig_ec_reopen = getattr(ec_cls, "reopen", None)
+        if orig_ec_reopen:
+            def make_safe_ec_reopen(orig):
+                def safe_ec_reopen(self, mw_arg, *args, **kwargs):
+                    try:
+                        if hasattr(mw_arg, "reviewer") and hasattr(mw_arg.reviewer, "card") and mw_arg.reviewer.card:
+                            mw_arg.reviewer.card._note = None
+                    except Exception:
+                        pass
+                    return orig(self, mw_arg, *args, **kwargs)
+                return safe_ec_reopen
+            ec_cls.reopen = make_safe_ec_reopen(orig_ec_reopen)
+
         orig_ec_cleanup = ec_cls.cleanup
         def make_safe_ec_cleanup(orig):
             def safe_ec_cleanup(self):
@@ -259,6 +285,13 @@ try:
                         pass
                     else:
                         raise
+                finally:
+                    try:
+                        from aqt import mw
+                        if hasattr(mw, "reviewer") and hasattr(mw.reviewer, "card") and mw.reviewer.card:
+                            mw.reviewer.card._note = None
+                    except Exception:
+                        pass
             return safe_ec_cleanup
         ec_cls.cleanup = make_safe_ec_cleanup(orig_ec_cleanup)
 

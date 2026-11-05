@@ -49,8 +49,16 @@ hr {
 }
 
 [id*="edn-cursor-marker"],
-#edn-cursor-marker {
+#edn-cursor-marker,
+.edn-cursor-marker {
     display: none !important;
+    visibility: hidden !important;
+    font-size: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    user-select: none !important;
 }
 
 /* --- Mise en page de la carte d'aperçu --- */
@@ -90,6 +98,21 @@ hr {
 
 .answer, .answer *, .tags, .tags * {
     text-align: left !important;
+}
+
+/* --- Centrage des formules MathJax isolées --- */
+.items.edn-solo-mathjax,
+.items.edn-solo-mathjax *,
+.preview-verso.edn-solo-mathjax,
+.preview-verso.edn-solo-mathjax * {
+    text-align: center !important;
+}
+
+.items.edn-solo-mathjax mjx-container,
+.preview-verso.edn-solo-mathjax mjx-container {
+    display: inline-block !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
 }
 
 a {
@@ -201,8 +224,15 @@ ul:has(+ li), ol:has(+ li) {
     display: inline !important;
 }
 
-[id*="edn-cursor-marker"], .items > span[id*="edn-cursor-marker"] {
+[id*="edn-cursor-marker"], .items > span[id*="edn-cursor-marker"], .edn-cursor-marker {
     display: none !important;
+    visibility: hidden !important;
+    font-size: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    user-select: none !important;
 }
 
 .items.answer {
