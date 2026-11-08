@@ -2393,10 +2393,10 @@ def _get_specialty_norm():
 
 
 def _extract_item_numbers_from_tags(tags_iterable) -> set:
-    """Extrait tous les numéros d'items EDN présents dans les tags (ex: item-328 -> 328)."""
+    """Extrait tous les numéros d'items EDN présents dans les tags (ex: item-328 ou item::328 -> 328)."""
     item_nums = set()
     for t in tags_iterable:
-        for m in re.finditer(r'item-(\d+)', t, re.IGNORECASE):
+        for m in re.finditer(r'item(?:-|::)(\d+)', t, re.IGNORECASE):
             try:
                 item_nums.add(int(m.group(1)))
             except ValueError:
@@ -2409,7 +2409,7 @@ def _extract_subspecialties_from_tags(tags_iterable) -> set:
     subspecs = set()
     for t in tags_iterable:
         tl = t.lower()
-        if '::' in t and not any(tl.startswith(p) for p in ('ann', 'edn::item', 'source::', 'maj::', 'rang::', 'new::')):
+        if '::' in t and not any(tl.startswith(p) for p in ('ann', 'edn::', 'source::', 'maj::', 'rang::', 'new::')):
             subspecs.add(t)
     return subspecs
 
@@ -2431,10 +2431,12 @@ def _extract_specialties_from_tags(tags_iterable) -> set:
 
 def _get_item_tag(tags_set: set) -> str:
     for t in tags_set:
-        if 'edn::item-' in t:
+        tl = t.lower()
+        if 'edn::item-' in tl or 'edn::item::' in tl:
             return t
     for t in tags_set:
-        if '::item-' in t:
+        tl = t.lower()
+        if '::item-' in tl or '::item::' in tl:
             return t
     return ''
 
@@ -2508,20 +2510,28 @@ def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids
                 old = raw_candidates[cnid]
                 raw_candidates[cnid] = (old[0], old[1], old[2], old[3], max(old[4], boost), old[5] or is_fof)
 
-    # 1. Candidats du même item EDN (insensible aux accents et au préfixe)
+    # 1. Candidats du même item EDN (insensible aux accents et au préfixe, formats - et ::)
     for item_num in source_item_nums:
         item_patterns = [
             f'%item-{item_num}-%',
             f'%item-{item_num}:%',
             f'%item-{item_num} %',
-            f'%item-{item_num}'
+            f'%item-{item_num}',
+            f'%item::{item_num}-%',
+            f'%item::{item_num}:%',
+            f'%item::{item_num} %',
+            f'%item::{item_num}',
         ]
         if item_num < 100:
             item_patterns.extend([
                 f'%item-0{item_num}-%',
                 f'%item-0{item_num}:%',
                 f'%item-0{item_num} %',
-                f'%item-0{item_num}'
+                f'%item-0{item_num}',
+                f'%item::0{item_num}-%',
+                f'%item::0{item_num}:%',
+                f'%item::0{item_num} %',
+                f'%item::0{item_num}',
             ])
         where_clauses = " OR ".join(["tags LIKE ?"] * len(item_patterns))
         try:
@@ -3437,10 +3447,9 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label, make_card_link
+            from .linked_cards import generate_smart_link_label, LinkInserter
             smart_desc = generate_smart_link_label(note, other_note) if other_note else recto
             final_desc = smart_desc if smart_desc else recto
-            badge_html = make_card_link(nid, final_desc)
             
             # Recherche intelligente du champ correspondant
             source_field_name = None
@@ -3454,23 +3463,14 @@ def handle_assistant_message(handled, message, context):
                 print("Error finding source field name:", fe)
                 
             target_fidx = _find_field_by_name_or_default(note, source_field_name)
-                
-            def on_saved():
-                col_note = mw.col.get_note(note.id) if (getattr(note, 'id', None) and note.id != 0) else note
-                current_val = col_note.fields[target_fidx].strip()
-                if not current_val or current_val == "<br>":
-                    new_val = badge_html
-                else:
-                    new_val = current_val + "<br>" + badge_html
-                
-                col_note.fields[target_fidx] = new_val
-                mw.col.update_note(col_note)
-                
-                clear_assistant_preview_cache(col_note.id)
-                editor_reload_note(editor, note=col_note, target_fidx=target_fidx)
-                update_assistant(editor, immediate=True)
             
-            editor_save_now(editor, on_saved, keep_focus=True)
+            # Utilisation de LinkInserter pour un enregistrement atomique et un rechargement protégé
+            inserter = LinkInserter(editor)
+            inserter.insert_link(
+                items=[(nid, final_desc)],
+                mirror_requested=False,
+                target_fidx=target_fidx
+            )
             
         except Exception as e:
             print("Erreur add_mirror:", e)
@@ -3552,43 +3552,19 @@ def handle_assistant_message(handled, message, context):
             except Exception:
                 pass
                 
-            from .linked_cards import generate_smart_link_label, make_card_link
+            from .linked_cards import generate_smart_link_label, LinkInserter
             smart_desc = generate_smart_link_label(note, target_note) if target_note else recto
             final_desc = smart_desc if smart_desc else recto
-            badge_html = make_card_link(nid, final_desc)
             
             target_fidx = _find_field_by_name_or_default(note, None)
-            current_note_ref = note
             
-            def _on_suggested_saved():
-                try:
-                    col_note = mw.col.get_note(current_note_ref.id) if (getattr(current_note_ref, 'id', None) and current_note_ref.id != 0) else current_note_ref
-                    current_val = col_note.fields[target_fidx].strip()
-                    if not current_val or current_val == "<br>":
-                        new_val = badge_html
-                    else:
-                        new_val = current_val + "<br>" + badge_html
-                    
-                    col_note.fields[target_fidx] = new_val
-                    mw.col.update_note(col_note)
-                    
-                    clear_assistant_preview_cache(col_note.id)
-                    editor_reload_note(editor, note=col_note, target_fidx=target_fidx)
-                    update_assistant(editor, immediate=True)
-                    
-                    # Proposer la création du miroir uniquement pour le lien suggéré qui vient d'être ajouté
-                    try:
-                        from .linked_cards import _proposal_queue, _propose_mirror_links_group
-                        updated_note = mw.col.get_note(col_note.id)
-                        _proposal_queue.add(lambda done: _propose_mirror_links_group(
-                            editor, updated_note, [(nid, final_desc)], done
-                        ))
-                    except Exception as mirror_err:
-                        print("Erreur mirror pour suggestion:", mirror_err)
-                except Exception as save_err:
-                    print("Erreur _on_suggested_saved:", save_err)
-            
-            editor_save_now(editor, _on_suggested_saved, keep_focus=True)
+            # Utilisation de LinkInserter pour un enregistrement atomique, un rechargement protégé et proposition miroir synchronisée
+            inserter = LinkInserter(editor)
+            inserter.insert_link(
+                items=[(nid, final_desc)],
+                mirror_requested=True,
+                target_fidx=target_fidx
+            )
             
         except Exception as e:
             print("Erreur add_suggested:", e)
@@ -3926,7 +3902,16 @@ def on_editor_did_load_note(editor):
     if parent_win and parent_win.__class__.__name__ in ("EditCurrent", "NewEditCurrent"):
         install_editcurrent_escape_shortcut(parent_win)
 
+_assistant_initialized = False
+
 def init_assistant():
+    global _assistant_initialized
+    import sys
+    if _assistant_initialized or getattr(sys, "_edn_editor_assistant_initialized", False):
+        return
+    _assistant_initialized = True
+    sys._edn_editor_assistant_initialized = True
+
     gui_hooks.editor_did_init.append(on_editor_did_init)
     gui_hooks.editor_did_load_note.append(on_editor_did_load_note)
     gui_hooks.webview_did_receive_js_message.append(handle_assistant_message)

@@ -8,11 +8,12 @@ Intègre les fonctionnalités de :
 - Menu partagé EDN (edn_menu)
 """
 from aqt import gui_hooks, utils
-from aqt.qt import QWebEngineSettings, QWebEngineProfile
+from aqt.qt import QWebEngineSettings, QWebEngineProfile, QApplication
 
-# Activer l'inspecteur d'élément (DevTools)
+# Activer l'inspecteur d'élément (DevTools) si Qt est initialisé
 try:
-    QWebEngineProfile.defaultProfile().settings().setAttribute(QWebEngineSettings.WebAttribute.DeveloperExtrasEnabled, True)
+    if QApplication.instance():
+        QWebEngineProfile.defaultProfile().settings().setAttribute(QWebEngineSettings.WebAttribute.DeveloperExtrasEnabled, True)
 except Exception:
     pass
 
@@ -129,6 +130,37 @@ try:
 except Exception as e:
     print(f"EDN Lier les cartes: Failed to patch AnkiWebView.on_body_classes_need_update: {e}")
 
+def _editor_has_focus(editor) -> bool:
+    try:
+        from aqt import mw
+        if not hasattr(mw, "app") or not mw.app:
+            return False
+        focus_w = mw.app.focusWidget()
+        if not focus_w:
+            return False
+        p_win = getattr(editor, "parentWindow", None)
+        if p_win and (p_win.__class__.__name__ == "Browser" or hasattr(p_win, "table")):
+            table = getattr(p_win, "table", None)
+            table_view = getattr(table, "_view", None) or getattr(getattr(p_win, "form", None), "tableView", None)
+            if table_view and (focus_w == table_view or (hasattr(table_view, "viewport") and focus_w == table_view.viewport()) or table_view.isAncestorOf(focus_w)):
+                return False
+            search_edit = getattr(getattr(p_win, "form", None), "searchEdit", None)
+            if search_edit and (focus_w == search_edit or search_edit.isAncestorOf(focus_w)):
+                return False
+            sidebar = getattr(p_win, "sidebar", None) or getattr(getattr(p_win, "form", None), "treeView", None)
+            if sidebar and (focus_w == sidebar or (hasattr(sidebar, "isAncestorOf") and sidebar.isAncestorOf(focus_w))):
+                return False
+        web = getattr(editor, "web", None)
+        if web and (focus_w == web or web.hasFocus() or web.isAncestorOf(focus_w)):
+            return True
+        widget = getattr(editor, "widget", None)
+        if widget and (focus_w == widget or widget.hasFocus() or widget.isAncestorOf(focus_w)):
+            return True
+        return False
+    except Exception:
+        return False
+
+
 try:
     # 3. Crash protection for Editor & NewEditor cleanup and set_note
     import aqt.editor as editor_mod
@@ -188,9 +220,10 @@ try:
                         prev_nid = getattr(prev_note, "id", 0) if prev_note is not None else 0
                         new_nid = getattr(note, "id", 0) if note is not None else 0
                         if prev_nid and new_nid and prev_nid == new_nid and focusTo is None:
-                            cur_fld = getattr(self, "currentField", None)
-                            if cur_fld is not None:
-                                focusTo = cur_fld
+                            if _editor_has_focus(self):
+                                cur_fld = getattr(self, "currentField", None)
+                                if cur_fld is not None:
+                                    focusTo = cur_fld
                     except Exception:
                         pass
                     try:

@@ -216,23 +216,84 @@ def _install_reviewer_guard() -> None:
 
             refresh_needed = getattr(self, "_refresh_needed", None)
 
+            # If user explicitly navigated (bury, suspend, delete, undo),
+            # wait until a refresh event actually arrives before consuming the flag.
             user_nav = getattr(self, "_user_nav_refresh", False)
-            if user_nav:
+            if user_nav and refresh_needed is not None:
                 self._user_nav_refresh = False
                 try:
                     return Reviewer._cr_orig_refresh_if_needed(self)
                 except TypeError:
                     return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
 
-            # 4. Defer background RefreshNeeded.QUEUES nextCard() triggers
-            # ONLY while actively viewing a card (card is not None and user is in review)
+            # If non-QUEUES refresh (NOTE_TEXT, FLAG), always delegate to native Anki
+            if (
+                RefreshNeeded is not None
+                and refresh_needed is not None
+                and refresh_needed is not getattr(RefreshNeeded, "QUEUES", None)
+            ):
+                try:
+                    return Reviewer._cr_orig_refresh_if_needed(self)
+                except TypeError:
+                    return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
+
+            # Handle RefreshNeeded.QUEUES:
             if (
                 RefreshNeeded is not None
                 and not _in_next_card
                 and refresh_needed is getattr(RefreshNeeded, "QUEUES", None)
             ):
+                card_invalid = False
+                try:
+                    from anki.consts import (
+                        QUEUE_TYPE_MANUALLY_BURIED,
+                        QUEUE_TYPE_SIBLING_BURIED,
+                        QUEUE_TYPE_SUSPENDED,
+                    )
+                    if mw and getattr(mw, "col", None) and card:
+                        fresh_card = mw.col.get_card(card.id)
+                        if (
+                            fresh_card.queue in (
+                                QUEUE_TYPE_MANUALLY_BURIED,
+                                QUEUE_TYPE_SIBLING_BURIED,
+                                QUEUE_TYPE_SUSPENDED,
+                            )
+                            or fresh_card.queue < 0
+                        ):
+                            card_invalid = True
+                except Exception:
+                    # Card was deleted from DB or invalid
+                    card_invalid = True
+
+                if card_invalid:
+                    self._user_nav_refresh = False
+                    try:
+                        return Reviewer._cr_orig_refresh_if_needed(self)
+                    except TypeError:
+                        return Reviewer._cr_orig_refresh_if_needed(self, *args, **kwargs)
+
+                # Card is still valid: keep current card in review without disruption,
+                # but ALWAYS clear _refresh_needed and restore webview opacity
+                # (which Anki's fade_out_webview dims to 0.3 when focus was lost).
                 self._refresh_needed = None
+                try:
+                    if mw and hasattr(mw, "fade_in_webview"):
+                        mw.fade_in_webview()
+                    if hasattr(self, "web") and self.web:
+                        self.web.eval("if (document.body) { document.body.style.opacity = '1'; }")
+                except Exception:
+                    pass
                 return
+
+            # For any other call (including focus change when _refresh_needed is None),
+            # ensure webview opacity is restored to 1 if faded out
+            try:
+                if mw and hasattr(mw, "fade_in_webview"):
+                    mw.fade_in_webview()
+                if hasattr(self, "web") and self.web:
+                    self.web.eval("if (document.body && document.body.style.opacity && document.body.style.opacity !== '1') { document.body.style.opacity = '1'; }")
+            except Exception:
+                pass
 
             try:
                 return Reviewer._cr_orig_refresh_if_needed(self)

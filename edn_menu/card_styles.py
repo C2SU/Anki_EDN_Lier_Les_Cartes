@@ -188,8 +188,12 @@ def save_prefs(prefs: dict):
 #  Injection localStorage dans le reviewer
 # ─────────────────────────────────────────────
 
+_LAST_PUSHED_PREFS_JSON = None
+
+
 def _push_prefs_to_webview(card=None):
     """Écrit les préférences dans localStorage via eval JS et injecte isNewCard / isDifficultCard."""
+    global _LAST_PUSHED_PREFS_JSON
     try:
         prefs = load_prefs()
         is_new_js = "false"
@@ -213,11 +217,17 @@ def _push_prefs_to_webview(card=None):
             is_diff = (prefs.get("flagAgainEnabled", False) and lapses >= again_threshold)
             is_diff_js = "true" if is_diff else "false"
 
+        prefs_json = json.dumps(prefs)
+        storage_js = ""
+        if prefs_json != _LAST_PUSHED_PREFS_JSON:
+            _LAST_PUSHED_PREFS_JSON = prefs_json
+            storage_js = f"localStorage.setItem('edn_card_prefs', JSON.stringify({prefs_json}));"
+
         js = (
             f"window._ednIsNewCard = {is_new_js}; "
             f"window._ednIsDifficultCard = {is_diff_js}; "
             f"window._ednCardLapses = {lapses_val}; "
-            f"localStorage.setItem('edn_card_prefs', JSON.stringify({json.dumps(prefs)}));"
+            f"{storage_js}"
         )
         if mw and mw.reviewer and mw.reviewer.web:
             mw.reviewer.web.eval(js)

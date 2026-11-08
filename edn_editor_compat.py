@@ -244,12 +244,15 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
         elif last_fld is not None and isinstance(last_fld, int) and last_fld >= 0:
             target_idx = last_fld
 
+        is_existing_note = bool(fresh_note and getattr(fresh_note, "id", None) and int(fresh_note.id) != 0)
+
         import json
         names_js = json.dumps(field_names)
         vals_js = json.dumps(escaped_vals)
         pairs_js = json.dumps(pairs)
         target_idx_js = str(target_idx)
         keep_focus_js = "true" if keep_focus else "false"
+        is_existing_js = "true" if is_existing_note else "false"
 
         def _after_js_reload(res):
             _profiler_log("EDITOR:RELOAD", f"JS reload callback response: {res!r}", caller=caller)
@@ -264,12 +267,14 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
             try {{
                 window._ednBlockUpdateNotes = true;
                 window._ednForceReload = true;
+                window._ednReloadInProgress = true;
 
                 var fldNames = {names_js};
                 var fldVals = {vals_js};
                 var fldPairs = {pairs_js};
                 var targetIdx = {target_idx_js};
                 var keepFocus = {keep_focus_js};
+                var isExisting = {is_existing_js};
 
                 // 1. Mise a jour immediate des stores Svelte et ProseMirror
                 // Anki 25.09+ attend (fldNames, fldVals) [arity 2], Anki 24.x attend (fldPairs) [arity 1].
@@ -289,24 +294,45 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                     }}
                 }}
 
-                // 2. Declencher le rechargement Svelte uniquement si setFields n'est pas disponible.
-                // Si setFields a reussi, les stores Svelte sont deja corrects. Appeler reloadNote()
-                // en parallele provoquerait un conflit avec le reload interne declenche par
-                // onOperationDidExecute (via col.update_note), causant un DOMException AbortError
-                // qui fait recharger Svelte depuis l'etat reseau obsolete, ecrasant le lien insere.
+                // 2. Pour les notes existantes (dans SQLite), declencher systematiquement le rechargement Svelte natif.
+                // Indispensable car setFields ne met a jour que les stores reactifs superficiels (O)
+                // et PAS l'objet note interne de Svelte (bt) ni le DOM <anki-editable> si le champ etait actif.
+                // Au moindre blur, Svelte renvoie bt stale via updateNotes, ce qui ecrasait et supprimait le lien insere.
                 var reloadPromise = null;
-                if (!result.setFields) {{
-                    // setFields absent ou echoue : on doit recharger explicitement
-                    if (typeof globalThis._ednRealReloadNote === 'function') {{
-                        reloadPromise = globalThis._ednRealReloadNote();
-                        result.ran = true;
-                    }} else if (typeof window.reloadNote === 'function') {{
-                        reloadPromise = window.reloadNote();
-                        result.ran = true;
+                if (isExisting) {{
+                    var reloadFn = (typeof globalThis._ednRealReloadNote === 'function')
+                        ? globalThis._ednRealReloadNote
+                        : ((typeof globalThis.reloadNote === 'function') ? globalThis.reloadNote : (typeof window.reloadNote === 'function' ? window.reloadNote : null));
+                    if (reloadFn) {{
+                        try {{
+                            reloadPromise = reloadFn();
+                            result.ran = true;
+                        }} catch(eRel) {{
+                            result.error = 'reloadNote error: ' + String(eRel);
+                        }}
                     }}
                 }} else {{
-                    // setFields a reussi : pas besoin de reloadNote, juste restaurer le focus
+                    // Note AddCards (non encore enregistree dans SQLite) : setFields suffit
                     result.ran = true;
+                }}
+
+                var guardSafetyTimeout = setTimeout(function() {{
+                    window._ednReloadInProgress = false;
+                    if (!window._ednBlockUpdateNotesLocked) {{
+                        window._ednBlockUpdateNotes = false;
+                        window._ednForceReload = false;
+                    }}
+                }}, 3000);
+
+                function _finishGuards() {{
+                    window._ednReloadInProgress = false;
+                    clearTimeout(guardSafetyTimeout);
+                    setTimeout(function() {{
+                        if (!window._ednBlockUpdateNotesLocked) {{
+                            window._ednBlockUpdateNotes = false;
+                            window._ednForceReload = false;
+                        }}
+                    }}, 400);
                 }}
 
                 if (reloadPromise && typeof reloadPromise.then === 'function') {{
@@ -314,21 +340,51 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                         if (keepFocus && targetIdx >= 0 && typeof globalThis.focusField === 'function') {{
                             try {{ globalThis.focusField(targetIdx); }} catch(e) {{}}
                         }}
+                        _finishGuards();
                     }}).catch(function(e) {{
-                        console.error('[EDN] reloadPromise error:', e);
+                        console.warn('[EDN] reloadPromise warning/aborted:', e);
+                        // Si la requete a ete avortee (ex: DOMException), tenter un rechargement de secours
+                        if (isExisting && String(e).includes('DOMException') && !window._ednReloadRetry) {{
+                            window._ednReloadRetry = true;
+                            setTimeout(function() {{
+                                try {{
+                                    var retryFn = (typeof globalThis._ednRealReloadNote === 'function')
+                                        ? globalThis._ednRealReloadNote
+                                        : ((typeof globalThis.reloadNote === 'function') ? globalThis.reloadNote : null);
+                                    if (retryFn) {{
+                                        var p2 = retryFn();
+                                        if (p2 && typeof p2.then === 'function') {{
+                                            p2.then(function() {{
+                                                window._ednReloadRetry = false;
+                                                _finishGuards();
+                                            }}).catch(function() {{
+                                                window._ednReloadRetry = false;
+                                                _finishGuards();
+                                            }});
+                                            return;
+                                        }}
+                                    }}
+                                }} catch(e2) {{}}
+                                window._ednReloadRetry = false;
+                                _finishGuards();
+                            }}, 50);
+                            return;
+                        }}
+                        _finishGuards();
                     }});
                 }} else {{
                     if (keepFocus && targetIdx >= 0 && typeof globalThis.focusField === 'function') {{
                         try {{ globalThis.focusField(targetIdx); }} catch(e) {{}}
                     }}
+                    _finishGuards();
                 }}
             }} catch(e) {{
                 result.error = String(e);
-            }} finally {{
-                setTimeout(function() {{
+                window._ednReloadInProgress = false;
+                if (!window._ednBlockUpdateNotesLocked) {{
                     window._ednBlockUpdateNotes = false;
                     window._ednForceReload = false;
-                }}, 500);
+                }}
             }}
             return result;
         }})();"""

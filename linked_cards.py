@@ -718,8 +718,16 @@ def on_add_cards_did_add_note(note: Any) -> None:
     except Exception as e:
         log(f"Error in on_add_cards_did_add_note: {e}")
 
+_linked_cards_initialized = False
+
 def init_linked_cards():
     """Initializes the Linked Cards hooks."""
+    global _linked_cards_initialized
+    import sys
+    if _linked_cards_initialized or getattr(sys, "_edn_init_linked_cards_done", False):
+        return
+    _linked_cards_initialized = True
+    sys._edn_init_linked_cards_done = True
     # Enregistrer le module EN PREMIER pour que register_action_shortcut_only
     # trouve bien le module dans le registre (ordre critique)
     register_module("linked_cards", "Lier les cartes", "Lier des cartes entre elles")
@@ -883,8 +891,19 @@ def add_css(web_content: aqt.webview.WebContent, context: Optional[Any]) -> None
     base_url_js = f'/_addons/{addon_package}/user_files/clickable_cards.js'
     web_content.js.append(base_url_js)
 
+_cached_card_script = None
+_cached_card_shortcuts = None
+
+def invalidate_card_script_cache():
+    global _cached_card_script, _cached_card_shortcuts
+    _cached_card_script = None
+    _cached_card_shortcuts = None
+
 def build_add_to_card_script():
     """Génère le script JS injecté dans chaque carte avec les raccourcis configurés."""
+    global _cached_card_script, _cached_card_shortcuts
+    if _cached_card_script is not None:
+        return _cached_card_script
     from .edn_menu import get_shortcut
     kbd_open = get_shortcut("linked_cards_kbd_open", "n")
     kbd_preview = get_shortcut("linked_cards_kbd_preview", "p")
@@ -900,7 +919,8 @@ def build_add_to_card_script():
         "window._ednKbdCopyCfg = '" + kbd_copy + "';"  
         "</script>"
     )
-    return vars_js + _add_to_card_script_body
+    _cached_card_script = vars_js + _add_to_card_script_body
+    return _cached_card_script
 
 # Alias pour compatibilité (utilisé dans on_card_render)
 add_to_card_script = None  # will be built dynamically
@@ -2551,6 +2571,9 @@ def _clean_kbd_html(html_text):
     
     return html_text
 
+_RE_CSP_ONCLICK = re.compile(r'(?<!data-)onclick=(["\'])(.*?)\1', re.IGNORECASE)
+_RE_CSP_ONDBLCLICK = re.compile(r'(?<!data-)ondblclick=(["\'])(.*?)\1', re.IGNORECASE)
+
 def on_card_render(output, context):
     script = build_add_to_card_script()
     # Nettoyer les badges <kbd> vides et imbriqués UNIQUEMENT si des liens sont présents dans le contenu
@@ -2560,16 +2583,22 @@ def on_card_render(output, context):
         output.answer_text = _clean_kbd_html(output.answer_text)
     
     # Remplacer onclick/ondblclick par data-onclick/data-ondblclick pour éviter les violations de Content Security Policy (CSP)
-    import re as re2
     if output.question_text:
-        output.question_text = re2.sub(r'(?<!data-)onclick=(["\'])(.*?)\1', r'data-onclick=\1\2\1', output.question_text, flags=re2.IGNORECASE)
-        output.question_text = re2.sub(r'(?<!data-)ondblclick=(["\'])(.*?)\1', r'data-ondblclick=\1\2\1', output.question_text, flags=re2.IGNORECASE)
+        q_low = output.question_text.lower()
+        if 'onclick=' in q_low:
+            output.question_text = _RE_CSP_ONCLICK.sub(r'data-onclick=\1\2\1', output.question_text)
+        if 'ondblclick=' in q_low:
+            output.question_text = _RE_CSP_ONDBLCLICK.sub(r'data-ondblclick=\1\2\1', output.question_text)
+        if "window._ednKbdOpenCfg" not in output.question_text:
+            output.question_text += script
     if output.answer_text:
-        output.answer_text = re2.sub(r'(?<!data-)onclick=(["\'])(.*?)\1', r'data-onclick=\1\2\1', output.answer_text, flags=re2.IGNORECASE)
-        output.answer_text = re2.sub(r'(?<!data-)ondblclick=(["\'])(.*?)\1', r'data-ondblclick=\1\2\1', output.answer_text, flags=re2.IGNORECASE)
-
-    output.question_text += script
-    output.answer_text += script
+        a_low = output.answer_text.lower()
+        if 'onclick=' in a_low:
+            output.answer_text = _RE_CSP_ONCLICK.sub(r'data-onclick=\1\2\1', output.answer_text)
+        if 'ondblclick=' in a_low:
+            output.answer_text = _RE_CSP_ONDBLCLICK.sub(r'data-ondblclick=\1\2\1', output.answer_text)
+        if "window._ednKbdOpenCfg" not in output.answer_text:
+            output.answer_text += script
 
 
 def _on_state_shortcuts_will_change(state: str, shortcuts: list):
@@ -5581,8 +5610,8 @@ def _do_editor_init(editor: Editor):
                     window._ednOrigFetch = window.fetch;
                     window.fetch = async function(url, options) {{
                         if (typeof url === 'string') {{
-                            if (window._ednBlockUpdateNotes && url.includes('/_anki/updateNotes')) {{
-                                console.log('[EDN] Suppressed stale updateNotes during EDN programmatic reload');
+                            if ((window._ednBlockUpdateNotes || window._ednBlockUpdateNotesLocked) && url.includes('/_anki/updateNotes')) {{
+                                console.log('[EDN] Suppressed stale updateNotes during EDN programmatic reload or modal');
                                 return new Response(new Uint8Array(0), {{
                                     status: 200,
                                     headers: {{ 'Content-Type': 'application/binary' }}
@@ -5616,6 +5645,9 @@ def _do_editor_init(editor: Editor):
                         get: function() {{
                             return function(op) {{
                                 if (op && op.noteText) {{
+                                    if (window._ednReloadInProgress) {{
+                                        return;
+                                    }}
                                     if (window._ednForceReload) {{
                                         return _realOp ? _realOp.apply(this, arguments) : undefined;
                                     }}
@@ -5845,23 +5877,17 @@ def _do_editor_init(editor: Editor):
                                 var res = _origSetFields ? _origSetFields.apply(this, callArgs) : undefined;
                                 try {{
                                     var isNewLoad = window._ednLoadingNewNote || (Date.now() - (window._ednNewNoteLoadTime || 0) < 800);
-                                    if (isNewLoad || window._ednForceReload) {{
+                                    if (isNewLoad) {{
                                         var sRoots = _getAllShadowRoots(document.body);
                                         for (var i = 0; i < sRoots.length; i++) {{
                                             var act = sRoots[i].activeElement;
                                             if (act && (act.tagName === 'ANKI-EDITABLE' || act.isContentEditable)) {{
                                                 act.blur();
-                                                if (!isNewLoad) {{
-                                                    act.focus();
-                                                }}
                                             }}
                                         }}
                                         var docAct = document.activeElement;
                                         if (docAct && (docAct.tagName === 'ANKI-EDITABLE' || docAct.isContentEditable)) {{
                                             docAct.blur();
-                                            if (!isNewLoad) {{
-                                                docAct.focus();
-                                            }}
                                         }}
                                     }}
                                 }} catch(eBlur) {{}}
@@ -7158,7 +7184,8 @@ class LinkInserter:
 
                 # Notification utilisateur
                 if len(items) == 1:
-                    tooltip(f"Lien créé vers {items[0][0]}")
+                    lbl = items[0][1] if (len(items[0]) > 1 and items[0][1]) else items[0][0]
+                    tooltip(f"Lien créé : {lbl}")
                 else:
                     tooltip(f"{len(items)} liens créés")
 
@@ -7250,8 +7277,9 @@ class ProposalQueue:
             
         # Watchdog: force release apres 30 secondes en cas de blocage inattendu
         QTimer.singleShot(30000, lambda: on_done() if not done_called else None)
-        # Latence minimale (40ms) : permet a Qt de traiter la fermeture du dialogue precedent sans attente perceptible
-        QTimer.singleShot(40, lambda: self._run_task(task_fn, on_done))
+        # Laisser 350ms a l editeur Svelte pour terminer son cycle de rechargement (setFields / reloadNote)
+        # et stabiliser les stores avant d ouvrir la boite modale
+        QTimer.singleShot(350, lambda: self._run_task(task_fn, on_done))
         
     def _run_task(self, task_fn, on_done):
         try:
@@ -7343,6 +7371,13 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
             parent = mw
         _profiler_log("MIRROR_LINKS", f"opening MirrorSelectionDialog with {len(valid_targets)} targets (parent={type(parent).__name__})", caller="_propose_mirror_links_group")
         
+        # Verrouiller le blocage des updateNotes pendant toute la duree de la modale
+        if hasattr(editor, "web") and editor.web:
+            try:
+                editor.web.eval("window._ednBlockUpdateNotes = true; window._ednBlockUpdateNotesLocked = true;")
+            except Exception:
+                pass
+
         dialog = MirrorSelectionDialog(parent, valid_targets, source_note=source_note)
         dialog.raise_()
         dialog.activateWindow()
@@ -7380,6 +7415,15 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
         log_error(f"Error in _propose_mirror_links_group: {e}\n{traceback.format_exc()}")
         _profiler_log("MIRROR_LINKS:ERROR", f"Exception in _propose_mirror_links_group: {e}", caller="_propose_mirror_links_group")
     finally:
+        if hasattr(editor, "web") and editor.web:
+            from aqt.qt import QTimer
+            def _release_mirror_lock(ed=editor):
+                try:
+                    if hasattr(ed, "web") and ed.web:
+                        ed.web.eval("window._ednBlockUpdateNotesLocked = false; window._ednBlockUpdateNotes = false;")
+                except Exception:
+                    pass
+            QTimer.singleShot(800, _release_mirror_lock)
         on_done()
 
 
@@ -7565,6 +7609,11 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                 )
                 if not parent or (hasattr(parent, '__class__') and 'Progress' in parent.__class__.__name__):
                     parent = mw
+                if hasattr(editor, "web") and editor.web:
+                    try:
+                        editor.web.eval("window._ednBlockUpdateNotes = true; window._ednBlockUpdateNotesLocked = true;")
+                    except Exception:
+                        pass
                 dialog = CrossLinksSelectionDialog(parent, links_to_create)
                 dialog.raise_()
                 dialog.activateWindow()
@@ -7600,6 +7649,15 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                     if editor:
                         update_assistant(editor)
             finally:
+                if hasattr(editor, "web") and editor.web:
+                    from aqt.qt import QTimer
+                    def _release_cross_lock(ed=editor):
+                        try:
+                            if hasattr(ed, "web") and ed.web:
+                                ed.web.eval("window._ednBlockUpdateNotesLocked = false; window._ednBlockUpdateNotes = false;")
+                        except Exception:
+                            pass
+                    QTimer.singleShot(800, _release_cross_lock)
                 on_done()
                         
         called = False
@@ -11183,8 +11241,40 @@ class LinkedCardsConfigWidget(QWidget):
                 config["description_intelligente"] = self.desc_intelligent_cb.isChecked()
         
         config["mirror_link_on_paste"] = self.mirror_link_on_paste_cb.isChecked()
+        invalidate_card_script_cache()
         
         mw.addonManager.writeConfig(__name__, config) 
+
+def _editor_has_focus(editor) -> bool:
+    try:
+        from aqt import mw
+        if not hasattr(mw, "app") or not mw.app:
+            return False
+        focus_w = mw.app.focusWidget()
+        if not focus_w:
+            return False
+        p_win = getattr(editor, "parentWindow", None)
+        if p_win and (p_win.__class__.__name__ == "Browser" or hasattr(p_win, "table")):
+            table = getattr(p_win, "table", None)
+            table_view = getattr(table, "_view", None) or getattr(getattr(p_win, "form", None), "tableView", None)
+            if table_view and (focus_w == table_view or (hasattr(table_view, "viewport") and focus_w == table_view.viewport()) or table_view.isAncestorOf(focus_w)):
+                return False
+            search_edit = getattr(getattr(p_win, "form", None), "searchEdit", None)
+            if search_edit and (focus_w == search_edit or search_edit.isAncestorOf(focus_w)):
+                return False
+            sidebar = getattr(p_win, "sidebar", None) or getattr(getattr(p_win, "form", None), "treeView", None)
+            if sidebar and (focus_w == sidebar or (hasattr(sidebar, "isAncestorOf") and sidebar.isAncestorOf(focus_w))):
+                return False
+        web = getattr(editor, "web", None)
+        if web and (focus_w == web or web.hasFocus() or web.isAncestorOf(focus_w)):
+            return True
+        widget = getattr(editor, "widget", None)
+        if widget and (focus_w == widget or widget.hasFocus() or widget.isAncestorOf(focus_w)):
+            return True
+        return False
+    except Exception:
+        return False
+
 
 def _patch_editor_save_now():
     """Patches Editor.call_after_note_saved (saveNow) to be robust against undefined JS saveNow.
@@ -11199,8 +11289,9 @@ def _patch_editor_save_now():
     editor_classes = [getattr(editor_mod, "Editor", None), getattr(editor_mod, "NewEditor", None)]
 
     for cls in editor_classes:
-        if not cls:
+        if not cls or getattr(cls, "_edn_save_now_patched", False):
             continue
+        cls._edn_save_now_patched = True
         orig_fn = getattr(cls, "call_after_note_saved", None) or getattr(cls, "saveNow", None)
         if not orig_fn:
             continue
@@ -11278,7 +11369,7 @@ def _patch_editor_save_now():
                     cur_fld = getattr(self, "currentField", None)
                     if cur_fld is None:
                         last_fld = getattr(self, "last_field_index", None)
-                        if last_fld is not None:
+                        if last_fld is not None and _editor_has_focus(self):
                             if hasattr(self, "load_note"):
                                 return self.load_note(focus_to=last_fld)
                             elif hasattr(self, "loadNote"):
@@ -11293,7 +11384,14 @@ def _patch_editor_save_now():
             def _make_patched_load(orig_l):
                 def patched_loadNote(self, focusTo=None, *args, **kwargs):
                     note_obj = getattr(self, "note", None)
-                    new_key = (getattr(note_obj, "id", 0) or id(note_obj)) if note_obj is not None else None
+                    card_obj = getattr(self, "card", None)
+                    card_id = getattr(card_obj, "id", 0) if card_obj is not None else 0
+                    p_win = getattr(self, "parentWindow", None)
+                    if p_win and (p_win.__class__.__name__ == "Browser" or hasattr(p_win, "table")):
+                        win_card = getattr(p_win, "card", None)
+                        if win_card and getattr(win_card, "id", 0):
+                            card_id = win_card.id
+                    new_key = ((getattr(note_obj, "id", 0) or id(note_obj)), card_id) if note_obj is not None else None
                     prev_key = getattr(self, "_edn_last_loaded_note_key", None)
                     is_new_note_instance = (new_key != prev_key)
                     if is_new_note_instance or (focusTo == 0 and getattr(self, "addMode", False) and not getattr(note_obj, "id", 0)):
@@ -11305,13 +11403,12 @@ def _patch_editor_save_now():
                         QTimer.singleShot(750, lambda: setattr(self, "_edn_loading_new_note", False))
                     else:
                         self._edn_loading_new_note = False
-                        if focusTo is None:
+                        if focusTo is None and _editor_has_focus(self):
                             cur_fld = getattr(self, "currentField", None)
                             if cur_fld is not None:
                                 focusTo = cur_fld
                             else:
                                 last_fld = getattr(self, "last_field_index", None)
-                                p_win = getattr(self, "parentWindow", None)
                                 if last_fld is not None and p_win and hasattr(p_win, "isActiveWindow") and p_win.isActiveWindow():
                                     focusTo = last_fld
                     self._edn_last_loaded_note_key = new_key
@@ -11335,7 +11432,17 @@ def _patch_editor_save_now():
                                 self.currentField = fld_idx
                             except Exception:
                                 pass
-                        elif cmd.startswith("key:") and not getattr(self, "addMode", False):
+                        elif cmd.startswith("saveTags:") and not getattr(self, "addMode", False):
+                            try:
+                                import json as _json
+                                tags_json = cmd.split(":", 1)[1]
+                                new_tags = _json.loads(tags_json)
+                                note = getattr(self, "note", None)
+                                if note is not None and list(getattr(note, "tags", [])) == list(new_tags):
+                                    return None
+                            except Exception:
+                                pass
+                        elif (cmd.startswith("key:") or cmd.startswith("blur:")) and not getattr(self, "addMode", False):
                             try:
                                 parts = cmd.split(":", 3)
                                 if len(parts) >= 4:
@@ -11346,6 +11453,13 @@ def _patch_editor_save_now():
                                     if note and getattr(note, "id", 0) == nid_val and 0 <= ord_idx < len(note.fields):
                                         munged = self.mungeHTML(raw_txt) if hasattr(self, "mungeHTML") else raw_txt
                                         if munged == note.fields[ord_idx]:
+                                            if cmd.startswith("blur:"):
+                                                self.currentField = None
+                                                if gui_hooks.editor_did_unfocus_field(False, note, ord_idx):
+                                                    self._save_current_note()
+                                                    self.mw.progress.timer(
+                                                        100, self.loadNoteKeepingFocus, False, parent=self.widget
+                                                    )
                                             return None
                             except Exception:
                                 pass
