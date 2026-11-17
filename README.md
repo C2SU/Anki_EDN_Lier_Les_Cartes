@@ -27,6 +27,7 @@ Cet add-on permet d'inserer des liens bidirectionnels intelligents entre vos car
 - **Recherche filtree & multi-fenetres** : Module de recherche rapide integre et ouverture des cartes liees dans des fenetres navigatrices independantes.
 - **Action Learn Now integree** : Clic droit sur une miniature de lien pour declencher l'apprentissage immediat de la carte associee sans perturber la file d'attente courante.
 - **Personnalisation visuelle EDN** : Reglage des barres verticales de rang (Rang A, Rang B, Rang C) et encadrements discrets par drapeau.
+- **Ajout d'étiquette à la volée (`T`)** : Dialogue modal rapide en cours de révision permettant de consulter, ajouter ou retirer des tags instantanément. Comprend l'autocomplétion sur l'ensemble des tags de la collection et des suggestions intelligentes prédictives adaptées au contenu (co-occurrence avec le même item EDN, sous-spécialités et recoupement lexical).
 
 ---
 
@@ -37,6 +38,7 @@ Cet add-on permet d'inserer des liens bidirectionnels intelligents entre vos car
 | `Ctrl + Alt + L` | Editeur de note | Ouvrir la fenetre de recherche et d'insertion de lien |
 | `Ctrl + Alt + C` | Navigateur (Browser) | Copier l'identifiant unique (NID) de la note selectionnee |
 | `nid:` | Champ texte | Declenchement textuel direct de la recherche |
+| `T` | Révision | Ouvrir la boîte d'ajout d'étiquette à la volée avec suggestions prédictives |
 
 ---
 
@@ -61,3 +63,11 @@ Cet add-on permet d'inserer des liens bidirectionnels intelligents entre vos car
 - Communaute d'entraide : [Serveur Discord EDN](https://discord.gg/2A7zHAEBYt)
 - Code source : [Depot GitHub C2SU/Anki_EDN_Lier_Les_Cartes](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)
 - Licence : Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+
+---
+
+## Credits
+
+- **Original Author :** Léo Picat
+- **Author & Maintainer :** Angelo Marcis ([GitHub](https://github.com/Ficello))
+- **Source Code Repository :** [github.com/C2SU/Anki_EDN_Lier_Les_Cartes](https://github.com/C2SU/Anki_EDN_Lier_Les_Cartes)

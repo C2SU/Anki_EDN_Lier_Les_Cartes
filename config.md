@@ -12,3 +12,9 @@ Ce module gère le maillage transversal entre cartes de révision (relations dia
 - `gui_trigger` (chaîne) : préfixe textuel déclencheur permettant de cibler ou insérer un lien vers un identifiant de note (par défaut `"nid:"`).
 - `hidden_preview_sections` (liste de chaînes) : conteneurs HTML et sections masqués dans la fenêtre de prévisualisation rapide afin de conserver une vue concise (ex: `sourcesMegaContainer`, `commentsMegaContainer`, `tagsMegaContainer`).
 - `mirror_link_on_paste` (booléen) : crée automatiquement la liaison bidirectionnelle symétrique lors du collage direct d'un identifiant ou lien de carte dans l'éditeur.
+
+## Raccourcis et Étiquetage à la volée
+
+- `quick_tagger_reviewer` (raccourci, par défaut `"T"`) : déclenche la boîte modale d'ajout d'étiquette à la volée pendant la révision d'une carte.
+  - Les suggestions sont calculées dynamiquement et proviennent **exclusivement** des tags déjà présents dans votre collection (`col.tags.all()`).
+  - L'algorithme prend en compte la co-occurrence au sein du même item EDN, les sous-spécialités médicales et les mots-clés extraits du titre (recto) et du corps (verso) de la carte.

@@ -672,12 +672,12 @@ def refocus_editor_field(editor, field_idx=None, only_if_unfocused=False, activa
                 try {{
                     var onlyUnfocused = {only_unfocused_js};
                     var hasFocus = (typeof _hasActiveFieldFocus === 'function') ? _hasActiveFieldFocus() : false;
-                    if (onlyUnfocused && hasFocus) {{
-                        return;
-                    }}
                     var actIdx = (typeof _resolveActiveFieldIndex === 'function') ? _resolveActiveFieldIndex() : -1;
                     if (actIdx < 0 && typeof window._ednLastActiveField === 'number' && window._ednLastActiveField >= 0) {{
                         actIdx = window._ednLastActiveField;
+                    }}
+                    if (onlyUnfocused && (hasFocus || actIdx > 0)) {{
+                        return;
                     }}
                     var target = {target_js};
                     if (target === null || typeof target === 'undefined') {{
@@ -2312,15 +2312,16 @@ _SHORT_MEDICAL_TERMS = frozenset([
     "choc", "coma", "dos", "os", "fdr", "pec", "nfs", "aomi", "bav", "fa"
 ])
 
-# Tags de spécialité EDN (pour le scoring par tag)
+# Tags de spécialité EDN (référence : preset "Actu")
 _SPECIALTY_TAGS = frozenset([
-    "Neurologie", "Endocrinologie", "Ophtalmologie", "Cardiologie", "Pneumologie",
-    "Gastroenterologie", "Gastro-enterologie", "Nephrologie", "Urologie", "Gynecologie",
-    "Pediatrie", "Rhumatologie", "Orthopedie", "Dermatologie", "Hematologie",
-    "Oncologie", "Infectiologie", "Psychiatrie", "Geriatrie", "Anesthesie",
-    "Reanimation", "Urgences", "Sante-publique", "Medecine-legale", "Pharmacologie",
-    "Hepato-gastro-enterologie", "Chirurgie", "ORL", "LCA", "Immunologie",
-    "Douleur", "Soins-palliatifs", "MPR", "Locomoteur", "Nutrition", "CMF", "Epidemiologie"
+    "Anatomie", "Anesthésie", "Antibiothérapie", "CMF", "Cardiologie",
+    "Dermatologie", "Douleur", "Endocrinologie", "Gastro-entérologie",
+    "Gynécologie", "Gériatrie", "Hématologie", "Imagerie", "Immunologie",
+    "Infectiologie", "Locomoteur", "MPR", "Neurochirurgie", "Neurologie",
+    "Nutrition", "Néphrologie", "ORL", "Oncologie", "Ophtalmologie",
+    "Orthopédie", "Pharmacologie", "Physiologie", "Pneumologie",
+    "Psychiatrie", "Pédiatrie", "Rhumatologie", "Réanimation",
+    "Santé-publique", "Urgences", "Urologie",
 ])
 
 def _normalize_for_keywords(text: str) -> str:
@@ -3928,8 +3929,8 @@ def init_assistant():
                     def _patched_ec_init(self, mw):
                         orig_init(self, mw)
                         install_editcurrent_escape_shortcut(self)
-                        QTimer.singleShot(120, lambda: refocus_editor_field(getattr(self, 'editor', None), 0, only_if_unfocused=True, activate_window=True))
-                        QTimer.singleShot(350, lambda: refocus_editor_field(getattr(self, 'editor', None), 0, only_if_unfocused=True, activate_window=False))
+                        QTimer.singleShot(120, lambda: refocus_editor_field(getattr(self, 'editor', None), None, only_if_unfocused=True, activate_window=True))
+                        QTimer.singleShot(350, lambda: refocus_editor_field(getattr(self, 'editor', None), None, only_if_unfocused=True, activate_window=False))
                     return _patched_ec_init
                 ec_cls.__init__ = make_ec_init(orig_ec_init)
 

@@ -138,8 +138,8 @@ if not getattr(DialogManager, "_multi_window_patched", False):
                 install_editcurrent_escape_shortcut(instance)
                 if hasattr(instance, "editor"):
                     from aqt.qt import QTimer
-                    QTimer.singleShot(150, lambda: refocus_editor_field(instance.editor, 0))
-                    QTimer.singleShot(350, lambda: refocus_editor_field(instance.editor, 0))
+                    QTimer.singleShot(150, lambda: refocus_editor_field(instance.editor, None, only_if_unfocused=True))
+                    QTimer.singleShot(350, lambda: refocus_editor_field(instance.editor, None, only_if_unfocused=True))
             except Exception:
                 pass
         return instance

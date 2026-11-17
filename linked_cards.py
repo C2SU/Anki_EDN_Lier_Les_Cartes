@@ -743,6 +743,7 @@ def init_linked_cards():
     shortcut_kbd_p   = get_shortcut("linked_cards_kbd_preview", "p")
     shortcut_kbd_r   = get_shortcut("linked_cards_kbd_navigate", "r")
     shortcut_kbd_z   = get_shortcut("linked_cards_kbd_back",    "z")
+    shortcut_quick_tag = get_shortcut("quick_tagger_reviewer", "T")
     
     try:
         from .edn_menu import register_action_shortcut_only
@@ -765,6 +766,9 @@ def init_linked_cards():
         register_action_shortcut_only("linked_cards", "Retour", lambda: None,
                                       shortcut=shortcut_kbd_z,
                                       shortcut_key="linked_cards_kbd_back")
+        register_action_shortcut_only("linked_cards", "Ajout d'étiquette", lambda: None,
+                                      shortcut=shortcut_quick_tag,
+                                      shortcut_key="quick_tagger_reviewer")
     except Exception as e:
         log(f"Linked Cards : register_action_shortcut_only non disponible ({e})")
     
@@ -785,6 +789,13 @@ def init_linked_cards():
     gui_hooks.browser_menus_did_init.append(setup_browser_menu)
     gui_hooks.browser_will_show_context_menu.append(add_to_browser_context_menu)
     
+    # Quick Tagger avec suggestions prédictives
+    try:
+        from .quick_tagger import init_quick_tagger
+        init_quick_tagger()
+    except Exception as e:
+        log(f"Linked Cards : erreur init quick_tagger ({e})")
+
     # Menu & Options Hooks
     try:
         from .edn_menu import register_interface
@@ -4037,47 +4048,48 @@ def _do_editor_init(editor: Editor):
         function _injectEdnShadowStyles() {
             var css = `
                 kbd.clickable_cards {
-                    font-family: "Lucida console", Monaco, monospace !important;
-                    font-weight: 600 !important;
-                    color: #b45309 !important;
-                    background: #fffbf5 !important;
-                    background-color: #fffbf5 !important;
-                    border-radius: 4px !important;
-                    border: 1px solid #e5c98e !important;
-                    display: inline-block !important;
-                    font-size: 13px !important;
-                    line-height: 16px !important;
-                    padding: 2px 6px !important;
-                    margin: 1px 3px !important;
-                    text-align: center !important;
-                    cursor: pointer !important;
-                    width: auto !important;
-                    max-width: fit-content !important;
-                    box-sizing: border-box !important;
-                    vertical-align: middle !important;
-                    white-space: nowrap !important;
-                    box-shadow: none !important;
+                  font-family: "Lucida console", Monaco, monospace !important;
+                  font-weight: 600 !important;
+                  color: #b45309 !important;
+                  background: #fffbf5 !important;
+                  background-color: #fffbf5 !important;
+                  border-radius: 4px !important;
+                  border: 1px solid #e5c98e !important;
+                  display: inline-block !important;
+                  font-size: 13px !important;
+                  line-height: 16px !important;
+                  padding: 2px 6px !important;
+                  margin: 1px 3px !important;
+                  text-align: center !important;
+                  cursor: pointer !important;
+                  width: auto !important;
+                  max-width: fit-content !important;
+                  box-sizing: border-box !important;
+                  vertical-align: middle !important;
+                  white-space: nowrap !important;
+                  box-shadow: none !important;
                 }
                 kbd.clickable_cards:hover {
-                    color: #2c7bb6 !important;
-                    border-color: #93c5fd !important;
-                    background: #f0f7ff !important;
+                  color: #2c7bb6 !important;
+                  border-color: #93c5fd !important;
+                  background: #f0f7ff !important;
                 }
                 kbd.clickable_cards:focus,
                 kbd.clickable_cards:focus-visible {
-                    outline: none !important;
-                    box-shadow: none !important;
+                  outline: none !important;
+                  box-shadow: none !important;
                 }
+
                 .nightMode kbd.clickable_cards,
                 .night_mode kbd.clickable_cards,
                 .night-mode kbd.clickable_cards,
                 body.nightMode kbd.clickable_cards,
                 body.night_mode kbd.clickable_cards,
                 body.night-mode kbd.clickable_cards {
-                    background: #2e3238 !important;
-                    background-color: #2e3238 !important;
-                    border: 1px solid #4a4d52 !important;
-                    color: #FFA630 !important;
+                  background: #2e3238 !important;
+                  background-color: #2e3238 !important;
+                  border: 1px solid #4a4d52 !important;
+                  color: #FFA630 !important;
                 }
                 .nightMode kbd.clickable_cards:hover,
                 .night_mode kbd.clickable_cards:hover,
@@ -4085,13 +4097,117 @@ def _do_editor_init(editor: Editor):
                 body.nightMode kbd.clickable_cards:hover,
                 body.night_mode kbd.clickable_cards:hover,
                 body.night-mode kbd.clickable_cards:hover {
-                    color: #64b5f6 !important;
-                    border-color: #1976d2 !important;
+                  color: #64b5f6 !important;
+                  border-color: #1976d2 !important;
                 }
+
+                /* Hyperliens textuels (hors NID numeriques) : style lien inline sans encadrement, lisible sur desktop et mobile */
+                kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                kbd.clickable_cards.edn-link-text {
+                  display: inline !important;
+                  font-family: inherit !important;
+                  font-weight: 500 !important;
+                  font-size: inherit !important;
+                  line-height: inherit !important;
+                  letter-spacing: normal !important;
+                  color: #1d4ed8 !important;
+                  background: transparent !important;
+                  background-color: transparent !important;
+                  border: none !important;
+                  border-radius: 0 !important;
+                  box-shadow: none !important;
+                  padding: 0 1px !important;
+                  margin: 0 !important;
+                  text-decoration: underline !important;
+                  text-decoration-color: rgba(29, 78, 216, 0.45) !important;
+                  text-underline-offset: 3px !important;
+                  text-decoration-thickness: 1.5px !important;
+                  vertical-align: baseline !important;
+                  text-align: left !important;
+                  max-width: 100% !important;
+                  white-space: normal !important;
+                  overflow-wrap: break-word !important;
+                  -webkit-box-decoration-break: clone;
+                  box-decoration-break: clone;
+                  -webkit-tap-highlight-color: transparent;
+                  touch-action: manipulation;
+                }
+                kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                kbd.clickable_cards.edn-link-text:hover {
+                  color: #1e40af !important;
+                  background: rgba(37, 99, 235, 0.08) !important;
+                  background-color: rgba(37, 99, 235, 0.08) !important;
+                  border-radius: 3px !important;
+                  text-decoration-color: #1e40af !important;
+                }
+                .nightMode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                .night_mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                .night-mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                body.nightMode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                body.night_mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                body.night-mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                .nightMode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                .night_mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                .night-mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                body.nightMode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                body.night_mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                body.night-mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                .nightMode kbd.clickable_cards.edn-link-text,
+                .night_mode kbd.clickable_cards.edn-link-text,
+                .night-mode kbd.clickable_cards.edn-link-text {
+                  color: #93c5fd !important;
+                  background: transparent !important;
+                  background-color: transparent !important;
+                  border: none !important;
+                  text-decoration-color: rgba(147, 197, 253, 0.45) !important;
+                }
+                .nightMode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                .night_mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                .night-mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                body.nightMode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                body.night_mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                body.night-mode kbd.clickable_cards:has(.edn-nid[style*="display:none"]):hover,
+                .nightMode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                .night_mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                .night-mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                body.nightMode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                body.night_mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                body.night-mode kbd.clickable_cards:has(.edn-nid[style*="display: none"]):hover,
+                .nightMode kbd.clickable_cards.edn-link-text:hover,
+                .night_mode kbd.clickable_cards.edn-link-text:hover,
+                .night-mode kbd.clickable_cards.edn-link-text:hover {
+                  color: #bfdbfe !important;
+                  background: rgba(59, 130, 246, 0.14) !important;
+                  background-color: rgba(59, 130, 246, 0.14) !important;
+                  border-radius: 3px !important;
+                  text-decoration-color: #bfdbfe !important;
+                }
+
+                @media (pointer: coarse), (max-width: 600px) {
+                  kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                  kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                  kbd.clickable_cards.edn-link-text {
+                    padding: 2px 2px !important;
+                    text-underline-offset: 3px !important;
+                  }
+                }
+                .mobile kbd.clickable_cards:has(.edn-nid[style*="display:none"]),
+                .mobile kbd.clickable_cards:has(.edn-nid[style*="display: none"]),
+                .mobile kbd.clickable_cards.edn-link-text {
+                  padding: 2px 2px !important;
+                  text-underline-offset: 3px !important;
+                }
+
                 kbd.clickable_cards .edn-nid {
-                    color: inherit !important;
-                    font-family: inherit !important;
-                    font-weight: inherit !important;
+                  color: inherit !important;
+                  font-family: inherit !important;
+                  font-weight: inherit !important;
+                }
+
+                .cartesLiees, .items.cartesLiees {
+                  line-height: 1.45 !important;
                 }
                 .edn-desc, span.edn-desc {
                     display: inline !important;
@@ -5648,10 +5764,14 @@ def _do_editor_init(editor: Editor):
                                     if (window._ednReloadInProgress) {{
                                         return;
                                     }}
-                                    if (window._ednForceReload) {{
+                                    if (window._ednProgrammaticReloadActive) {{
                                         return _realOp ? _realOp.apply(this, arguments) : undefined;
                                     }}
-                                    if (_isUserEditingNow() || _hasActiveFieldFocus()) {{
+                                    var lastAct = (typeof window._ednLastActiveField === 'number') ? window._ednLastActiveField : -1;
+                                    var isEditing = _isUserEditingNow() || _hasActiveFieldFocus() || lastAct > 0 ||
+                                                    (Date.now() - (window._ednLastInputTime || 0) < 5000) ||
+                                                    (Date.now() - (window._ednLastKeyTime || 0) < 5000);
+                                    if (isEditing) {{
                                         var safeOp = Object.assign({{}}, op, {{ noteText: false }});
                                         return _realOp ? _realOp.call(this, safeOp) : undefined;
                                     }}
@@ -5671,6 +5791,7 @@ def _do_editor_init(editor: Editor):
                 if (!window._ednReloadNoteGuarded) {{
                     window._ednReloadNoteGuarded = true;
                     var _realReload = globalThis.reloadNote;
+                    globalThis._ednHasRealReloadNote = Boolean(_realReload);
                     // Exposer la fonction réelle pour permettre un bypass intentionnel depuis Python
                     globalThis._ednRealReloadNote = function() {{
                         return _realReload ? _realReload.apply(this, arguments) : undefined;
@@ -5691,6 +5812,7 @@ def _do_editor_init(editor: Editor):
                         }},
                         set: function(fn) {{
                             _realReload = fn;
+                            globalThis._ednHasRealReloadNote = Boolean(_realReload);
                             // Mettre à jour aussi le bypass direct
                             globalThis._ednRealReloadNote = function() {{
                                 return _realReload ? _realReload.apply(this, arguments) : undefined;
@@ -5759,7 +5881,7 @@ def _do_editor_init(editor: Editor):
                         get: function() {{
                             return function(idx) {{
                                 var isNewLoad = window._ednLoadingNewNote || (Date.now() - (window._ednNewNoteLoadTime || 0) < 800);
-                                if (!isNewLoad && !window._ednForceReload) {{
+                                if (!isNewLoad && !window._ednProgrammaticReloadActive) {{
                                     var isExplicitNav = (Date.now() - (window._ednLastPointerTime || 0) < 400) ||
                                                         (Date.now() - (window._ednLastTabTime || 0) < 400);
                                     if (!isExplicitNav) {{
@@ -6332,14 +6454,19 @@ def on_js_message(handled, message, context):
                 mirror_on_paste = config.get("mirror_link_on_paste", True)
                 if mirror_on_paste:
                     items = [(str(tn), None) for tn in nids]
-                    # Laisser 200ms pour que l'éditeur Svelte termine son cycle d'input et de sauvegarde
-                    QTimer.singleShot(200, lambda: _proposal_queue.add(lambda done: _propose_mirror_links_group(
-                        editor, source_note, items, done
-                    )))
-                    if len(nids) > 1:
-                        QTimer.singleShot(200, lambda: _proposal_queue.add(lambda done: _propose_cross_links(
-                            editor, source_note, nids, done
-                        )))
+                    def _queue_after_paste_save(ed=editor, sn=source_note, its=items, nlist=nids):
+                        def _on_saved():
+                            _proposal_queue.add(lambda done: _propose_mirror_links_group(
+                                ed, sn, its, done
+                            ))
+                            if len(nlist) > 1:
+                                _proposal_queue.add(lambda done: _propose_cross_links(
+                                    ed, sn, nlist, done
+                                ))
+                        # Sauvegarder explicitement la saisie collée dans SQLite avant que MirrorSelectionDialog
+                        # ne prenne le focus et ne bloque updateNotes lors du blur.
+                        editor_save_now(ed, _on_saved, keep_focus=True)
+                    QTimer.singleShot(150, _queue_after_paste_save)
         except Exception as e:
             log(f"Error handling pasted nids: {e}")
         return (True, None)
@@ -6626,6 +6753,12 @@ def detect_smart_label(source_note, target_note):
         is_child = True
         
     if is_child:
+        if "bilan d'extension" in t_target or "bilan d’extension" in t_target:
+            return "Bilan d'extension"
+        if "incidence" in t_target:
+            return "Incidence"
+        if "prevalence" in t_target or "prévalence" in t_target:
+            return "Prévalence"
         if any(w in t_target for w in ["traitement", "chirurgie", "thérapeutique", "médical", "infiltration", "corticoïde", "prise en charge"]):
             return "Traitements"
         if any(w in t_target for w in ["enmg", "irm", "scanner", "radio", "biologie", "examen", "complémentaire", "diagnostic", "imagerie", "échographie", "radiographie", "ponction"]):
@@ -6695,60 +6828,166 @@ _EDN_STOPWORDS = {
 }
 
 _EDN_QUESTION_PREFIXES = [
-    re.compile(r"^(?:quels?|quelles?)\s+(?:sont\s+)?(?:les\s+)?(?:\d+\s+)?(?:principales?\s+)?(?:types?\s+d['’]|causes?\s+d['’]|signes?\s+d['’]|facteurs?\s+d['’]|criteres?\s+d['’])?", re.IGNORECASE),
-    re.compile(r"^qu['’]est[- ]ce\s+qu[e']\s*", re.IGNORECASE),
-    re.compile(r"^(?:comment|pourquoi)\s+", re.IGNORECASE),
+    re.compile(r"^(?:quel|quelle)\s+est\s+(?:l[ae']\s*|l['’]|un[e]?\s+|votre\s+)?(?:\d+\s+)?(?:principale?\s+)?", re.IGNORECASE),
+    re.compile(r"^(?:quels|quelles)\s+sont\s+(?:les\s+|des\s+)?(?:\d+\s+)?(?:principales?\s+)?", re.IGNORECASE),
+    re.compile(r"^(?:quels?|quelles?)\s+(?:sont\s+)?(?:les\s+)?(?:\d+\s+)?(?:principales?\s+)?(?:types?\s+d['’e]|causes?\s+d['’e]|signes?\s+d['’e]|facteurs?\s+d['’e]|criteres?\s+d['’e]|examens?\s+d['’e]|modalites?\s+d['’e])?\s*", re.IGNORECASE),
+    re.compile(r"^qu['’]est[- ]ce\s+qu[e']\s*(?:l[ae']\s*|l['’]|les\s+|un[e]?\s+)?", re.IGNORECASE),
+    re.compile(r"^que\s+(?:faire|rechercher?|prescrire|retrouve[- ]t[- ]on)\s+(?:devant\s+|en\s+cas\s+de\s+|face\s+[aà]\s+)?", re.IGNORECASE),
+    re.compile(r"^comment\s+(?:faire\s+le\s+diagnostic\s+d['’e]|diagnostiquer|traiter|prendre\s+en\s+charge|reconnaitre|surveiller)?\s*", re.IGNORECASE),
+    re.compile(r"^pourquoi\s+", re.IGNORECASE),
+    re.compile(r"^en\s+quoi\s+consiste(?:nt)?\s+(?:l[ae']\s*|l['’]|les\s+)?", re.IGNORECASE),
+    re.compile(r"^(?:citer?|donner?|d[eé]crire|pr[eé]ciser?|indiquer?|rappeler?)\s+(?:les\s+|le\s+|la\s+|l['’]|des\s+)?(?:\d+\s+)?(?:principales?\s+)?", re.IGNORECASE),
     re.compile(r"^d[eé]finition\s+d['’e]\s*", re.IGNORECASE),
     re.compile(r"^types?\s+d['’e]\s*", re.IGNORECASE),
-    re.compile(r"^quelles?\s+sont\s+les\s+", re.IGNORECASE),
-    re.compile(r"^quels?\s+sont\s+les\s+", re.IGNORECASE),
-    re.compile(r"^(?:3|2|4|5|6)\s+(?:situations?|types?|causes?|signes?)\s+(?:de\s+|d['’])?", re.IGNORECASE),
     re.compile(r"^diff[eé]rence\s+entre\s+.*?\s+et\s+", re.IGNORECASE),
+    re.compile(r"^(?:\d+|trois|deux|quatre|cinq|six)\s+(?:principales?\s+)?(?:situations?|types?|causes?|signes?|criteres?|facteurs?|stades?|formes?)\s+(?:de\s+|d['’])?", re.IGNORECASE),
 ]
 
 _EDN_ASPECT_PATTERNS = [
+    # Formes cliniques
     (re.compile(r'\b(forme pure|pur)\b', re.IGNORECASE), 'Pur'),
     (re.compile(r'\b(forme impure|impur)\b', re.IGNORECASE), 'Impur'),
+    (re.compile(r'\b(forme grave)\b', re.IGNORECASE), 'Forme grave'),
+    (re.compile(r'\b(forme atypique)\b', re.IGNORECASE), 'Forme atypique'),
+    (re.compile(r'\b(forme typique)\b', re.IGNORECASE), 'Forme typique'),
+
+    # Signes cardinaux neurologiques
     (re.compile(r'\b(tremblement)\b', re.IGNORECASE), 'Tremblement'),
     (re.compile(r'\b(akinesie)\b', re.IGNORECASE), 'Akinésie'),
     (re.compile(r'\b(rigidite)\b', re.IGNORECASE), 'Rigidité'),
+
+    # Terrains / Populations
+    (re.compile(r'\b(grossesse|femme enceinte)\b', re.IGNORECASE), 'Grossesse'),
+    (re.compile(r'\b(sujet age|personne agee|geriatrie)\b', re.IGNORECASE), 'Sujet âgé'),
+    (re.compile(r'\b(nourrisson)\b', re.IGNORECASE), 'Nourrisson'),
     (re.compile(r'\b(enfant|pediatrie|pediatrique)\b', re.IGNORECASE), 'Enfant'),
     (re.compile(r'\b(adulte)\b', re.IGNORECASE), 'Adulte'),
+    (re.compile(r'\b(immunodeprime|immunodepression|\bvih\b)\b', re.IGNORECASE), 'Immunodéprimé'),
+
+    # Épidémiologie / Statistiques distinctes (Ne jamais fusionner !)
+    (re.compile(r'\b(incidence)\b', re.IGNORECASE), 'Incidence'),
+    (re.compile(r'\b(prevalence)\b', re.IGNORECASE), 'Prévalence'),
+    (re.compile(r'\b(mortalite|letalite)\b', re.IGNORECASE), 'Mortalité'),
+    (re.compile(r'\b(survie)\b', re.IGNORECASE), 'Survie'),
+    (re.compile(r'\b(frequence)\b', re.IGNORECASE), 'Fréquence'),
+    (re.compile(r'\b(epidemiologie)\b', re.IGNORECASE), 'Épidémiologie'),
+
+    # Imagerie & Explorations paracliniques spécifiques
     (re.compile(r'\b(ecg|electrocardiogramme)\b', re.IGNORECASE), 'ECG'),
     (re.compile(r'\b(enmg|electromyogramme)\b', re.IGNORECASE), 'ENMG'),
+    (re.compile(r'\b(eeg|electroencephalogramme)\b', re.IGNORECASE), 'EEG'),
+    (re.compile(r'\b(efr|explorations? fonctionnelles? respiratoires?)\b', re.IGNORECASE), 'EFR'),
     (re.compile(r'\b(irm)\b', re.IGNORECASE), 'IRM'),
     (re.compile(r'\b(tdm|scanner)\b', re.IGNORECASE), 'Scanner'),
-    (re.compile(r'\b(radiographie|radio|echographie|imagerie)\b', re.IGNORECASE), 'Imagerie'),
-    (re.compile(r'\b(biologie|bilan biologique|bilan|examens? complementaires?)\b', re.IGNORECASE), 'Examens complémentaires'),
+    (re.compile(r'\b(echographie|echo)\b', re.IGNORECASE), 'Échographie'),
+    (re.compile(r'\b(radiographie|radio|rx)\b', re.IGNORECASE), 'Radiographie'),
+    (re.compile(r'\b(scintigraphie)\b', re.IGNORECASE), 'Scintigraphie'),
+    (re.compile(r'\b(pet[- ]?scan|tep[- ]?scan|tep)\b', re.IGNORECASE), 'TEP-scan'),
+    (re.compile(r'\b(coronarographie)\b', re.IGNORECASE), 'Coronarographie'),
+    (re.compile(r'\b(endoscopie|fibroscopie|coloscopie|gastroscopie)\b', re.IGNORECASE), 'Endoscopie'),
+    (re.compile(r'\b(ponction lombaire|\bpl\b)\b', re.IGNORECASE), 'Ponction lombaire'),
+    (re.compile(r'\b(biopsie)\b', re.IGNORECASE), 'Biopsie'),
+    (re.compile(r'\b(anapath|anatomopathologie|histologie|histopathologie)\b', re.IGNORECASE), 'Anapath'),
+    (re.compile(r'\b(imagerie)\b', re.IGNORECASE), 'Imagerie'),
+
+    # Bilans spécifiques (Ne jamais réduire à "Examens complémentaires" !)
+    (re.compile(r'\b(bilan d[\'’]extension)\b', re.IGNORECASE), "Bilan d'extension"),
+    (re.compile(r'\b(bilan pre[- ]?therapeutique)\b', re.IGNORECASE), "Bilan pré-thérapeutique"),
+    (re.compile(r'\b(bilan pre[- ]?operatoire|bilan preoperatoire)\b', re.IGNORECASE), "Bilan préopératoire"),
+    (re.compile(r'\b(bilan pre[- ]?chimio(?:therapie)?)\b', re.IGNORECASE), "Bilan pré-chimio"),
+    (re.compile(r'\b(bilan etiologique)\b', re.IGNORECASE), "Bilan étiologique"),
+    (re.compile(r'\b(bilan initial)\b', re.IGNORECASE), "Bilan initial"),
+    (re.compile(r'\b(bilan biologique)\b', re.IGNORECASE), "Bilan biologique"),
+    (re.compile(r'\b(bilan paraclinique)\b', re.IGNORECASE), "Bilan paraclinique"),
+    (re.compile(r'\b(bilan sanguin)\b', re.IGNORECASE), "Bilan sanguin"),
+    (re.compile(r'\b(biologie)\b', re.IGNORECASE), "Biologie"),
+    (re.compile(r'\b(examens? complementaires?|paraclinique)\b', re.IGNORECASE), 'Examens complémentaires'),
+    (re.compile(r'\b(bilan)\b', re.IGNORECASE), 'Bilan'),
+
+    # Facteurs de risque & Causes
     (re.compile(r'\b(facteurs? de risque cardio[- ]vasculaire|fdrcv)\b', re.IGNORECASE), 'FdRCV'),
-    (re.compile(r'\b(facteurs? de risque|fdr)\b', re.IGNORECASE), 'FdR'),
+    (re.compile(r'\b(facteurs? de risque|\bfdr\b)\b', re.IGNORECASE), 'FdR'),
+    (re.compile(r'\b(facteurs? favorisants?|facteurs? declenchants?)\b', re.IGNORECASE), 'Facteurs favorisants'),
     (re.compile(r'\b(mecanisme d[\'’]action)\b', re.IGNORECASE), "Mécanisme d'action"),
     (re.compile(r'\b(mecanisme|physiopathologie|physiopath)\b', re.IGNORECASE), 'Physiopathologie'),
-    (re.compile(r'\b(prevention|vaccination|vaccin)\b', re.IGNORECASE), 'Prévention'),
+    (re.compile(r'\b(etiologies?)\b', re.IGNORECASE), 'Étiologies'),
+    (re.compile(r'\b(causes?)\b', re.IGNORECASE), 'Causes'),
+
+    # Prévention, Dépistage & Suivi
+    (re.compile(r'\b(depistage)\b', re.IGNORECASE), 'Dépistage'),
+    (re.compile(r'\b(vaccination|vaccin)\b', re.IGNORECASE), 'Vaccination'),
+    (re.compile(r'\b(prevention)\b', re.IGNORECASE), 'Prévention'),
     (re.compile(r'\b(surveillance|suivi)\b', re.IGNORECASE), 'Surveillance'),
-    (re.compile(r'\b(posologie|modalites)\b', re.IGNORECASE), 'Posologie'),
-    (re.compile(r'\b(contre[- ]indications?|ci)\b', re.IGNORECASE), 'Contre-indications'),
+
+    # Posologie & Modalités
+    (re.compile(r'\b(posologie)\b', re.IGNORECASE), 'Posologie'),
+    (re.compile(r'\b(modalites)\b', re.IGNORECASE), 'Modalités'),
+    (re.compile(r'\b(contre[- ]indications?|\bci\b)\b', re.IGNORECASE), 'Contre-indications'),
     (re.compile(r'\b(indications?)\b', re.IGNORECASE), 'Indications'),
-    (re.compile(r'\b(duree d[\'’]evolution|duree|timing|incubation)\b', re.IGNORECASE), 'Durée'),
-    (re.compile(r'\b(critere?s? de gravite|gravite)\b', re.IGNORECASE), 'Critères de gravité'),
-    (re.compile(r'\b(complications?|evolution|pronostic)\b', re.IGNORECASE), 'Complications'),
-    (re.compile(r'\b(causes?|etiologies?|facteurs? favorisants?)\b', re.IGNORECASE), 'Causes'),
+    (re.compile(r'\b(incubation)\b', re.IGNORECASE), 'Incubation'),
+    (re.compile(r'\b(duree d[\'’]evolution|duree|timing)\b', re.IGNORECASE), 'Durée'),
+
+    # Gravité, Complications, Pronostic
+    (re.compile(r'\b(critere?s? de gravite|signes? de gravite)\b', re.IGNORECASE), 'Critères de gravité'),
+    (re.compile(r'\b(gravite)\b', re.IGNORECASE), 'Gravité'),
+    (re.compile(r'\b(pronostic)\b', re.IGNORECASE), 'Pronostic'),
+    (re.compile(r'\b(histoire naturelle)\b', re.IGNORECASE), 'Histoire naturelle'),
+    (re.compile(r'\b(evolution)\b', re.IGNORECASE), 'Évolution'),
+    (re.compile(r'\b(complications?)\b', re.IGNORECASE), 'Complications'),
+    (re.compile(r'\b(recidive|rechute)\b', re.IGNORECASE), 'Récidive'),
+
+    # Utilité & Aspects
     (re.compile(r'\b(que permettent|permettent|utilite|a quoi sert)\b', re.IGNORECASE), 'Utilité'),
     (re.compile(r'\b(aspect au tdm|aspect a l[\'’]irm|aspect)\b', re.IGNORECASE), 'Aspect'),
     (re.compile(r'\b(localisation|site)\b', re.IGNORECASE), 'Localisation'),
-    (re.compile(r'\b(frequence|prevalence|incidence)\b', re.IGNORECASE), 'Fréquence'),
     (re.compile(r'\b(exemples?)\b', re.IGNORECASE), 'Exemples'),
     (re.compile(r'\b(iatrogene|iatrogenie)\b', re.IGNORECASE), 'Iatrogène'),
-    (re.compile(r'\b(antibiotherapie|antibiotiques?|atb)\b', re.IGNORECASE), 'ATB'),
+
+    # Traitements
+    (re.compile(r'\b(antibiotherapie|antibiotiques?|\batb\b)\b', re.IGNORECASE), 'ATB'),
+    (re.compile(r'\b(chimiotherapie|chimio)\b', re.IGNORECASE), 'Chimiothérapie'),
+    (re.compile(r'\b(radiotherapie)\b', re.IGNORECASE), 'Radiothérapie'),
+    (re.compile(r'\b(immunotherapie)\b', re.IGNORECASE), 'Immunothérapie'),
+    (re.compile(r'\b(corticotherapie|cortico(?:ides?|ïdes?))\b', re.IGNORECASE), 'Corticoïdes'),
     (re.compile(r'\b(effets? secondaires?|effets? indesirables?)\b', re.IGNORECASE), 'Effets secondaires'),
     (re.compile(r'\b(chirurgie|chirurgical)\b', re.IGNORECASE), 'Chirurgie'),
+    (re.compile(r'\b(mesures associees|mesures hygieno[- ]dietetiques|\bmhd\b)\b', re.IGNORECASE), 'MHD'),
+    (re.compile(r'\b(traitement de premiere intention|traitement de 1ere intention)\b', re.IGNORECASE), 'Traitement 1ère intention'),
+    (re.compile(r'\b(traitement curatif)\b', re.IGNORECASE), 'Traitement curatif'),
+    (re.compile(r'\b(traitement symptomatique)\b', re.IGNORECASE), 'Traitement symptomatique'),
+    (re.compile(r'\b(traitement preventif)\b', re.IGNORECASE), 'Traitement préventif'),
+    (re.compile(r'\b(traitement d[\'’]attaque)\b', re.IGNORECASE), "Traitement d'attaque"),
+    (re.compile(r'\b(traitement d[\'’]entretien)\b', re.IGNORECASE), "Traitement d'entretien"),
     (re.compile(r'\b(avantages?)\b', re.IGNORECASE), 'Avantages'),
     (re.compile(r'\b(inconvenients?)\b', re.IGNORECASE), 'Inconvénients'),
+
+    # Clinique & Signes
+    (re.compile(r'\b(signes? fonctionnels?)\b', re.IGNORECASE), 'Signes fonctionnels'),
+    (re.compile(r'\b(signes? physiques?)\b', re.IGNORECASE), 'Signes physiques'),
+    (re.compile(r'\b(signes? generaux)\b', re.IGNORECASE), 'Signes généraux'),
+    (re.compile(r'\b(signes? d[\'’]appel)\b', re.IGNORECASE), "Signes d'appel"),
+    (re.compile(r'\b(triade|tetrade|pentade)\b', re.IGNORECASE), 'Triade'),
+    (re.compile(r'\b(examen clinique)\b', re.IGNORECASE), 'Examen clinique'),
     (re.compile(r'\b(signes? cliniques?|signes?|clinique|symptomes?|semiologie|manifestations?)\b', re.IGNORECASE), 'Signes'),
-    (re.compile(r'\b(diagnostic|diag|criteres diagnostiques|criteres)\b', re.IGNORECASE), 'Diagnostic'),
-    (re.compile(r'\b(prise en charge|pec)\b', re.IGNORECASE), 'PeC'),
+
+    # Diagnostic
+    (re.compile(r'\b(diagnostic differentiel|diag differentiel)\b', re.IGNORECASE), 'Diagnostic différentiel'),
+    (re.compile(r'\b(diagnostic positif|diag positif)\b', re.IGNORECASE), 'Diagnostic positif'),
+    (re.compile(r'\b(diagnostic etiologique|diag etiologique)\b', re.IGNORECASE), 'Diagnostic étiologique'),
+    (re.compile(r'\b(criteres diagnostiques?)\b', re.IGNORECASE), 'Critères diagnostiques'),
+    (re.compile(r'\b(criteres)\b', re.IGNORECASE), 'Critères'),
+    (re.compile(r'\b(diagnostic|\bdiag\b)\b', re.IGNORECASE), 'Diagnostic'),
+
+    # Prise en charge & Traitement global
+    (re.compile(r'\b(prise en charge|\bpec\b)\b', re.IGNORECASE), 'PeC'),
     (re.compile(r'\b(traitement|traitements|therapeutique)\b', re.IGNORECASE), 'Traitement'),
-    (re.compile(r'\b(definition|def|qu\'est-ce que|qu\'est ce que)\b', re.IGNORECASE), 'Définition'),
+
+    # Classification & Scores
+    (re.compile(r'\b(scores?|echelle)\b', re.IGNORECASE), 'Score'),
+    (re.compile(r'\b(classification|stades?|grades?|stadification)\b', re.IGNORECASE), 'Classification'),
+
+    # Définition
+    (re.compile(r'\b(definition|\bdef\b|qu\'est-ce que|qu\'est ce que)\b', re.IGNORECASE), 'Définition'),
 ]
 
 def _clean_recto_preamble(text: str) -> str:
@@ -6834,7 +7073,7 @@ def generate_smart_link_label(source_note, target_note, allow_main=True):
 
     # Sous-ensemble strict des termes signifiants (sans aspect spécifique nouveau dans la cible)
     has_specific_aspect_in_target = False
-    for pat, label in _EDN_ASPECT_PATTERNS[:20]:
+    for pat, label in _EDN_ASPECT_PATTERNS:
         if pat.search(t_norm) and not pat.search(s_norm):
             has_specific_aspect_in_target = True
             break
@@ -6867,11 +7106,12 @@ def generate_smart_link_label(source_note, target_note, allow_main=True):
                 return val if 'type' in s_norm else f"Type {val}"
 
             if len(diff_tokens) <= 3:
-                diff_words_pattern = r'\b(?:' + '|'.join(re.escape(w) for w in diff_tokens) + r')\b'
-                matches = list(re.finditer(diff_words_pattern, t_norm))
-                if matches:
-                    start_char = matches[0].start()
-                    end_char = matches[-1].end()
+                diff_tokens_set = set(diff_tokens)
+                words = list(re.finditer(r"\b[a-zA-Z\u00C0-\u00FF0-9'-]+\b", target_recto))
+                matched_words = [m for m in words if _norm(m.group(0)) in diff_tokens_set]
+                if matched_words:
+                    start_char = matched_words[0].start()
+                    end_char = matched_words[-1].end()
                     raw_diff = target_recto[start_char:end_char].strip()
                     raw_diff = re.sub(r'[\s\?\.:!—–-]+$', '', raw_diff).strip()
                     if raw_diff and len(raw_diff.split()) <= 4:
@@ -6889,6 +7129,7 @@ def generate_smart_link_label(source_note, target_note, allow_main=True):
             if target_note and getattr(target_note, 'fields', None) and len(target_note.fields) > 1:
                 clean_t = strip_html(target_note.fields[1])[:100].strip() or clean_t
     return clean_t
+
 
 class LinkInserter:
     is_inserting = False
@@ -7099,6 +7340,14 @@ class LinkInserter:
                 _profiler_log("LINK_INSERTER:_do_commit", f"NEW_VAL len={len(new_val)}: {new_val[:60]!r}", caller=commit_caller)
 
                 col_note.fields[fidx] = new_val
+                # Mettre à jour source_note et editor.note en place avant update_note pour éviter
+                # qu'une CollectionOp en vol (ex: blur:X émis 2ms plus tôt) n'écrase SQLite avec l'ancien contenu.
+                if source_note is not col_note and getattr(source_note, 'fields', None) and fidx < len(source_note.fields):
+                    source_note.fields[fidx] = new_val
+                ed_note_cur = getattr(self.editor, "note", None)
+                if ed_note_cur is not None and ed_note_cur is not col_note and ed_note_cur is not source_note:
+                    if getattr(ed_note_cur, 'fields', None) and fidx < len(ed_note_cur.fields):
+                        ed_note_cur.fields[fidx] = new_val
 
                 if is_existing:
                     _profiler_log("LINK_INSERTER:_do_commit", f"calling mw.col.update_note(nid={col_note.id})", caller=commit_caller)
@@ -7156,6 +7405,11 @@ class LinkInserter:
                     _profiler_log("LINK_INSERTER:_do_commit", f"DOM marker cleanup warning: {e}", caller=commit_caller)
 
                 # Rechargement propre de la note dans l'editeur avec synchronisation des stores et focus
+                try:
+                    import time as _time
+                    self.editor._edn_reloading_until = _time.time() + 0.50
+                except Exception:
+                    pass
                 _profiler_log("LINK_INSERTER:_do_commit", f"calling editor_reload_note(keep_focus=True, target_fidx={fidx})", caller=commit_caller)
                 editor_reload_note(self.editor, keep_focus=True, note=col_note, target_fidx=fidx)
                 _profiler_log("LINK_INSERTER:_do_commit", "editor_reload_note call dispatched", caller=commit_caller)
@@ -7206,14 +7460,9 @@ class LinkInserter:
             finally:
                 LinkInserter.is_inserting = False
 
-        # Bloquer preventativement les updateNotes intempestifs declenches par le blur
-        if hasattr(self.editor, "web") and self.editor.web:
-            try:
-                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
-            except Exception:
-                pass
-
         # Sauvegarder d'abord les saisies en cours dans l'editeur avant d'appliquer la mise a jour
+        # (ne pas bloquer updateNotes avant editor_save_now, sinon les saisies en attente sont perdues
+        # et _ednBlockUpdateNotes peut rester bloqué à true si _do_commit avorte).
         _profiler_log("LINK_INSERTER", "calling editor_save_now before _do_commit", caller=caller)
         editor_save_now(self.editor, _do_commit, keep_focus=True)
 
@@ -7423,7 +7672,7 @@ def _propose_mirror_links_group(editor, source_note, items, on_done):
                         ed.web.eval("window._ednBlockUpdateNotesLocked = false; window._ednBlockUpdateNotes = false;")
                 except Exception:
                     pass
-            QTimer.singleShot(800, _release_mirror_lock)
+            QTimer.singleShot(150, _release_mirror_lock)
         on_done()
 
 
@@ -7657,7 +7906,7 @@ def _propose_cross_links(editor, source_note, target_nids, on_done):
                                 ed.web.eval("window._ednBlockUpdateNotesLocked = false; window._ednBlockUpdateNotes = false;")
                         except Exception:
                             pass
-                    QTimer.singleShot(800, _release_cross_lock)
+                    QTimer.singleShot(150, _release_cross_lock)
                 on_done()
                         
         called = False
@@ -7816,6 +8065,9 @@ class LinkedCardsDialog(QDialog):
         self._current_results_type = None
         self._current_query = ""
         self._search_type_label = "résultats"
+        self._is_fuzzy_search = False
+        self._fuzzy_attempted_for_seq = None
+        self._fuzzy_running_seq = None
         
         from collections import OrderedDict
         self._preview_cache = OrderedDict()
@@ -8444,6 +8696,8 @@ class LinkedCardsDialog(QDialog):
                 
                 # Fetch in chunks of NIDs to find up to 50 qualified ones
                 while idx < len(nids_to_process) and len(results) < limit:
+                    if current_seq != getattr(self, '_search_seq', None):
+                        return results, idx
                     # Take a small chunk to query DB
                     chunk_nids = nids_to_process[idx:idx + 100]
                     if not chunk_nids:
@@ -8466,7 +8720,7 @@ class LinkedCardsDialog(QDialog):
                                 dummy = DummyNote(bnid, fields, mid, col)
                                 recto_clean = get_note_recto(dummy, 240)
 
-                                if recto_only and not query.startswith('tag') and ':' not in query:
+                                if recto_only and not getattr(self, '_is_fuzzy_search', False) and not query.startswith('tag') and ':' not in query:
                                     search_words = query.lower().split()
                                     recto_lower = recto_clean.lower()
                                     if not all(word in recto_lower for word in search_words):
@@ -8502,8 +8756,16 @@ class LinkedCardsDialog(QDialog):
                 
                 row_count = self.results_table.rowCount()
                 if row_count == 0 and self._search_offset >= len(self._all_target_nids):
-                    # Aucun résultat trouvé — essayer une recherche approximative (fuzzy)
-                    self._try_fuzzy_search(query, current_seq)
+                    # Aucun résultat trouvé — essayer une recherche approximative (fuzzy) UNIQUEMENT si pas déjà tenté pour cette requête
+                    if (not getattr(self, '_is_fuzzy_search', False)
+                            and getattr(self, '_fuzzy_attempted_for_seq', None) != current_seq
+                            and len(query) >= 3
+                            and not query.startswith('tag:')
+                            and not any(op in query for op in (':', 'OR', 'AND', '"', '-'))):
+                        self._fuzzy_attempted_for_seq = current_seq
+                        self._try_fuzzy_search(query, current_seq)
+                    else:
+                        self.results_label.setText("Pas de résultats")
                 else:
                     self.results_label.setText(f"{row_count} {self._search_type_label} (classés par score)")
                 
@@ -8519,6 +8781,8 @@ class LinkedCardsDialog(QDialog):
     def do_search(self, query):
         query = query.strip()
         self._current_query = query
+        self._is_fuzzy_search = False
+        self._fuzzy_attempted_for_seq = None
         
         # Incrémenter le numéro de séquence de recherche pour ignorer les résultats obsolètes
         self._search_seq += 1
@@ -8642,10 +8906,14 @@ class LinkedCardsDialog(QDialog):
                     source_item = m_item.group(0)
                     
                 specialties_list = [
-                    'cardiologie', 'pneumologie', 'neurologie', 'endocrinologie', 'gastro-enterologie',
-                    'nephrologie', 'hematologie', 'infectiologie', 'dermatologie', 'rhumatologie',
-                    'pediatrie', 'gynecologie', 'urologie', 'ophtalmologie', 'orl', 'psychiatrie',
-                    'reanimation', 'urgences', 'orthopedie', 'chirurgie', 'oncologie', 'geriatrie', 'sante-publique'
+                    'anatomie', 'anesthesie', 'antibiotherapie', 'cmf', 'cardiologie',
+                    'dermatologie', 'douleur', 'endocrinologie', 'gastro-enterologie',
+                    'gynecologie', 'geriatrie', 'hematologie', 'imagerie', 'immunologie',
+                    'infectiologie', 'locomoteur', 'mpr', 'neurochirurgie', 'neurologie',
+                    'nutrition', 'nephrologie', 'orl', 'oncologie', 'ophtalmologie',
+                    'orthopedie', 'pharmacologie', 'physiologie', 'pneumologie',
+                    'psychiatrie', 'pediatrie', 'rhumatologie', 'reanimation',
+                    'sante-publique', 'urgences', 'urologie',
                 ]
                 for sp in specialties_list:
                     if sp in src_tags_str:
@@ -8732,8 +9000,11 @@ class LinkedCardsDialog(QDialog):
                 
                 scored_candidates = []
                 chunk_size = 500
-                for i in range(0, len(candidate_nids), chunk_size):
-                    chunk = candidate_nids[i:i + chunk_size]
+                capped_candidates = candidate_nids[:1500]
+                for i in range(0, len(capped_candidates), chunk_size):
+                    if current_seq != getattr(self, '_search_seq', None):
+                        return ("cancelled", [], {})
+                    chunk = capped_candidates[i:i + chunk_size]
                     try:
                         rows = col.db.all(
                             f"SELECT id, flds, tags FROM notes WHERE id IN ({','.join(map(str, chunk))})"
@@ -8798,6 +9069,8 @@ class LinkedCardsDialog(QDialog):
                 return
 
             search_type = res[0]
+            if search_type == "cancelled":
+                return
             results_or_err = res[1]
             if search_type == "error":
                 self.results_label.setText(results_or_err)
@@ -8810,7 +9083,12 @@ class LinkedCardsDialog(QDialog):
             
             if not results_or_err:
                 # Aucun résultat — essayer une recherche approximative si c'est une recherche texte simple
-                if search_type == "text":
+                if (search_type == "text"
+                        and getattr(self, '_fuzzy_attempted_for_seq', None) != current_seq
+                        and len(query) >= 3
+                        and not query.startswith('tag:')
+                        and not any(op in query for op in (':', 'OR', 'AND', '"', '-'))):
+                    self._fuzzy_attempted_for_seq = current_seq
                     self._try_fuzzy_search(query, current_seq)
                 else:
                     self.results_label.setText("Pas de résultats")
@@ -8831,11 +9109,33 @@ class LinkedCardsDialog(QDialog):
         """Recherche approximative (fuzzy) quand la recherche exacte donne 0 résultats.
         
         Stratégie :
-        1. Décomposer la requête en mots.
+        1. Décomposer la requête en mots significatifs (>=3 car).
         2. Pour chaque mot, générer des variantes Anki (*mot*, wildcard par lettre).
         3. Si des résultats sont trouvés, les afficher avec un message spécial.
         4. Sinon, afficher 'Pas de résultats'.
         """
+        if seq != self._search_seq:
+            return
+
+        if getattr(self, '_fuzzy_running_seq', None) == seq:
+            return
+        self._fuzzy_attempted_for_seq = seq
+        self._fuzzy_running_seq = seq
+        self._is_fuzzy_search = True
+
+        original_query = original_query.strip()
+        # Éviter la recherche fuzzy pour les requêtes avancées (tags, opérateurs, NID) ou trop courtes (<3 car)
+        if (original_query.startswith('tag:') or any(op in original_query for op in (':', 'OR', 'AND', '"', '-'))
+                or len(original_query) < 3):
+            self.results_label.setText("Pas de résultats")
+            return
+
+        stopwords = {'de', 'du', 'des', 'le', 'la', 'les', 'un', 'une', 'en', 'dans', 'sur', 'pour', 'par', 'est', 'sont', 'avec', 'sans', 'quel', 'quels', 'quelle', 'quelles'}
+        words = [w for w in original_query.lower().split() if len(w) >= 3 and w not in stopwords]
+        if not words:
+            self.results_label.setText("Pas de résultats")
+            return
+
         source_note = _get_editor_note(self.editor)
         source_nid = str(source_note.id) if source_note else None
         
@@ -8859,10 +9159,14 @@ class LinkedCardsDialog(QDialog):
                 if m_item:
                     source_item = m_item.group(0)
                 specialties_list = [
-                    'cardiologie', 'pneumologie', 'neurologie', 'endocrinologie', 'gastro-enterologie',
-                    'nephrologie', 'hematologie', 'infectiologie', 'dermatologie', 'rhumatologie',
-                    'pediatrie', 'gynecologie', 'urologie', 'ophtalmologie', 'orl', 'psychiatrie',
-                    'reanimation', 'urgences', 'orthopedie', 'chirurgie', 'oncologie', 'geriatrie', 'sante-publique'
+                    'anatomie', 'anesthesie', 'antibiotherapie', 'cmf', 'cardiologie',
+                    'dermatologie', 'douleur', 'endocrinologie', 'gastro-enterologie',
+                    'gynecologie', 'geriatrie', 'hematologie', 'imagerie', 'immunologie',
+                    'infectiologie', 'locomoteur', 'mpr', 'neurochirurgie', 'neurologie',
+                    'nutrition', 'nephrologie', 'orl', 'oncologie', 'ophtalmologie',
+                    'orthopedie', 'pharmacologie', 'physiologie', 'pneumologie',
+                    'psychiatrie', 'pediatrie', 'rhumatologie', 'reanimation',
+                    'sante-publique', 'urgences', 'urologie',
                 ]
                 for sp in specialties_list:
                     if sp in src_tags_str:
@@ -8870,20 +9174,16 @@ class LinkedCardsDialog(QDialog):
                         break
                 src_recto_raw = get_note_recto(source_note, 240)
                 src_recto_norm = _norm_f_ctx(src_recto_raw)
-                stopwords = {'de', 'du', 'des', 'le', 'la', 'les', 'un', 'une', 'en', 'dans', 'sur', 'pour', 'par', 'est', 'sont', 'avec', 'sans'}
                 source_keywords = [w for w in re.findall(r'[a-z]{3,}', src_recto_norm) if w not in stopwords]
             except Exception:
                 pass
 
-        # Éviter la recherche fuzzy pour les requêtes avancées (tags, opérateurs, NID)
-        if (original_query.startswith('tag:') or any(op in original_query for op in (':', 'OR', 'AND'))
-                or len(original_query) < 2):
-            self.results_label.setText("Pas de résultats")
-            return
-
         self.results_label.setText("Recherche approx. en cours...")
 
         def bg_fuzzy(col):
+            if seq != getattr(self, '_search_seq', None):
+                return ([], {})
+
             import unicodedata
             import html as _html
             def _norm_fz(s):
@@ -8894,29 +9194,30 @@ class LinkedCardsDialog(QDialog):
                 s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
                 return s.lower().strip()
 
-            words = original_query.lower().split()
             candidate_queries = []
 
             for word in words:
-                if len(word) >= 3:
-                    candidate_queries.append(f"*{word}*")
-                    if len(word) <= 8:
-                        for i in range(len(word)):
-                            truncated = word[:i] + word[i+1:]
-                            if len(truncated) >= 3:
-                                candidate_queries.append(f"*{truncated}*")
-                        for i in range(len(word) - 1):
-                            swapped = list(word)
-                            swapped[i], swapped[i+1] = swapped[i+1], swapped[i]
-                            swapped_w = "".join(swapped)
-                            if swapped_w != word:
-                                candidate_queries.append(f"*{swapped_w}*")
+                candidate_queries.append(f"*{word}*")
+                if len(word) <= 8:
+                    for i in range(len(word)):
+                        truncated = word[:i] + word[i+1:]
+                        if len(truncated) >= 3:
+                            candidate_queries.append(f"*{truncated}*")
+                    for i in range(len(word) - 1):
+                        swapped = list(word)
+                        swapped[i], swapped[i+1] = swapped[i+1], swapped[i]
+                        swapped_w = "".join(swapped)
+                        if swapped_w != word:
+                            candidate_queries.append(f"*{swapped_w}*")
 
-            candidate_queries = candidate_queries[:15]
+            # Dédupliquer et limiter le nombre de requêtes SQL
+            candidate_queries = list(dict.fromkeys(candidate_queries))[:10]
 
             seen_nids = set()
             target_ids = []
             for fq in candidate_queries:
+                if seq != getattr(self, '_search_seq', None):
+                    return ([], {})
                 try:
                     found = col.find_notes(fq)
                     for nid in found:
@@ -8925,6 +9226,10 @@ class LinkedCardsDialog(QDialog):
                         if nid not in seen_nids:
                             seen_nids.add(nid)
                             target_ids.append(nid)
+                            if len(target_ids) >= 300:
+                                break
+                    if len(target_ids) >= 300:
+                        break
                 except Exception:
                     pass
 
@@ -8932,8 +9237,10 @@ class LinkedCardsDialog(QDialog):
             if target_ids:
                 try:
                     scored_candidates = []
-                    chunk_size = 500
+                    chunk_size = 100
                     for i in range(0, len(target_ids), chunk_size):
+                        if seq != getattr(self, '_search_seq', None):
+                            return ([], {})
                         chunk = target_ids[i:i + chunk_size]
                         rows = col.db.all(
                             f"SELECT id, flds, tags FROM notes WHERE id IN ({','.join(map(str, chunk))})"
@@ -8984,6 +9291,7 @@ class LinkedCardsDialog(QDialog):
                 self.results_label.setText("Pas de résultats")
                 return
 
+            self._is_fuzzy_search = True
             self._all_target_nids = results
             self._search_offset = 0
             self._search_type_label = "résultats approx."
@@ -10807,11 +11115,6 @@ class LinkedCardsDialog(QDialog):
                 from aqt.qt import QTimer
                 def _exec_insert():
                     try:
-                        if hasattr(self.editor, "web") and self.editor.web:
-                            try:
-                                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
-                            except Exception:
-                                pass
                         _profiler_log("GUI:EXEC_INSERT", f"calling inserter.insert_link: items={items}, target_fidx={final_fidx}, is_first_line={is_first_line}", caller="LinkedCardsDialog:_exec_insert")
                         self.inserter.insert_link(items, mirror_requested=mirror_req, target_fidx=final_fidx, is_first_line=is_first_line)
                     finally:
@@ -10830,11 +11133,6 @@ class LinkedCardsDialog(QDialog):
                 from aqt.qt import QTimer
                 def _exec_fallback():
                     try:
-                        if hasattr(self.editor, "web") and self.editor.web:
-                            try:
-                                self.editor.web.eval("window._ednBlockUpdateNotes = true;")
-                            except Exception:
-                                pass
                         _profiler_log("GUI:EXEC_FALLBACK", f"calling inserter.insert_link with fallback target_fidx={self.target_fidx}", caller="LinkedCardsDialog:_exec_fallback")
                         self.inserter.insert_link(items_raw, mirror_requested=mirror_req, target_fidx=self.target_fidx)
                     finally:
@@ -11276,6 +11574,51 @@ def _editor_has_focus(editor) -> bool:
         return False
 
 
+def _patch_anki_webview_operations():
+    """Patches AnkiWebView.on_operation_did_execute to prevent spontaneous note reload
+    and focus loss while editing.
+    In Anki's native implementation, on_operation_did_execute checks:
+        if handler is self.parentWidget(): return None
+    However, Editor._save_current_note passes `initiator=self` (an Editor instance),
+    whereas self.parentWidget() is the container QWidget (e.g. form.fieldsArea),
+    so the check always evaluates to False. Consequently, whenever the user types a character,
+    the background collection update fires operation_did_execute back into the active editor's
+    own webview with changes.note_text=True. Svelte then reloads the note with its initial
+    parameters ({focusTo: 0}), jumping focus from field >0 back to field 0.
+    """
+    try:
+        from aqt.webview import AnkiWebView
+    except ImportError:
+        return
+
+    if getattr(AnkiWebView, "_edn_on_op_patched", False):
+        return
+    AnkiWebView._edn_on_op_patched = True
+
+    orig_on_op = getattr(AnkiWebView, "on_operation_did_execute", None)
+    if not orig_on_op:
+        return
+
+    def patched_on_operation_did_execute(self, changes, handler):
+        try:
+            if handler is not None:
+                if handler is self or handler is self.parentWidget():
+                    return None
+                ed = getattr(self, "editor", None)
+                if ed is not None and handler is ed:
+                    return None
+                if getattr(handler, "web", None) is self:
+                    return None
+                parent_w = getattr(self, "parentWidget", lambda: None)()
+                if parent_w is not None and getattr(parent_w, "editor", None) is handler:
+                    return None
+        except Exception:
+            pass
+        return orig_on_op(self, changes, handler)
+
+    AnkiWebView.on_operation_did_execute = patched_on_operation_did_execute
+
+
 def _patch_editor_save_now():
     """Patches Editor.call_after_note_saved (saveNow) to be robust against undefined JS saveNow.
     This prevents 'Uncaught ReferenceError: saveNow is not defined' which can happen if the
@@ -11286,6 +11629,7 @@ def _patch_editor_save_now():
     except ImportError:
         return
 
+    _patch_anki_webview_operations()
     editor_classes = [getattr(editor_mod, "Editor", None), getattr(editor_mod, "NewEditor", None)]
 
     for cls in editor_classes:
@@ -11425,6 +11769,13 @@ def _patch_editor_save_now():
                         if getattr(self, "_edn_loading_new_note", False):
                             if cmd.startswith("blur:") or cmd.startswith("key:"):
                                 return None
+                        try:
+                            import time as _time
+                            if _time.time() < getattr(self, "_edn_reloading_until", 0.0):
+                                if cmd.startswith("blur:") or cmd.startswith("key:"):
+                                    return None
+                        except Exception:
+                            pass
                         if cmd.startswith("focus:"):
                             try:
                                 fld_idx = int(cmd.split(":", 1)[1])
@@ -11442,9 +11793,31 @@ def _patch_editor_save_now():
                                     return None
                             except Exception:
                                 pass
-                        elif (cmd.startswith("key:") or cmd.startswith("blur:")) and not getattr(self, "addMode", False):
+                        elif cmd.startswith("key:") and not getattr(self, "addMode", False):
                             try:
                                 parts = cmd.split(":", 3)
+                                if len(parts) >= 2:
+                                    ord_idx = int(parts[1])
+                                    self.last_field_index = ord_idx
+                                    self.currentField = ord_idx
+                                    import time as _time
+                                    self._edn_last_key_time = _time.time()
+                            except Exception:
+                                pass
+                        elif cmd.startswith("blur:") and not getattr(self, "addMode", False):
+                            try:
+                                parts = cmd.split(":", 3)
+                                if len(parts) >= 2:
+                                    ord_idx = int(parts[1])
+                                    import time as _time
+                                    time_since_key = _time.time() - getattr(self, "_edn_last_key_time", 0.0)
+                                    # Si le blur survient rapidement (< 400ms) apres une frappe sur le meme champ
+                                    # dans la fenetre active, c'est un artefact de synchronisation interne Svelte
+                                    if time_since_key < 0.400 and getattr(self, "last_field_index", None) == ord_idx:
+                                        p_win = getattr(self, "parentWindow", None)
+                                        if p_win and hasattr(p_win, "isActiveWindow") and p_win.isActiveWindow():
+                                            self.currentField = ord_idx
+                                            return None
                                 if len(parts) >= 4:
                                     ord_idx = int(parts[1])
                                     nid_val = int(parts[2]) if parts[2].isdigit() else 0
@@ -11453,13 +11826,9 @@ def _patch_editor_save_now():
                                     if note and getattr(note, "id", 0) == nid_val and 0 <= ord_idx < len(note.fields):
                                         munged = self.mungeHTML(raw_txt) if hasattr(self, "mungeHTML") else raw_txt
                                         if munged == note.fields[ord_idx]:
-                                            if cmd.startswith("blur:"):
-                                                self.currentField = None
-                                                if gui_hooks.editor_did_unfocus_field(False, note, ord_idx):
-                                                    self._save_current_note()
-                                                    self.mw.progress.timer(
-                                                        100, self.loadNoteKeepingFocus, False, parent=self.widget
-                                                    )
+                                            self.currentField = None
+                                            if gui_hooks.editor_did_unfocus_field(False, note, ord_idx):
+                                                self._save_current_note()
                                             return None
                             except Exception:
                                 pass

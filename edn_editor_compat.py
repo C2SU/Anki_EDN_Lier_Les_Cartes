@@ -267,6 +267,7 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
             try {{
                 window._ednBlockUpdateNotes = true;
                 window._ednForceReload = true;
+                window._ednProgrammaticReloadActive = true;
                 window._ednReloadInProgress = true;
 
                 var fldNames = {names_js};
@@ -275,6 +276,24 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                 var targetIdx = {target_idx_js};
                 var keepFocus = {keep_focus_js};
                 var isExisting = {is_existing_js};
+
+                // 0. S'assurer qu'aucun <anki-editable> n'est désabonné de son store Svelte avant setFields
+                try {{
+                    var _editablesToBlur = (typeof window._ednQueryAllRoots === 'function')
+                        ? window._ednQueryAllRoots('anki-editable, [contenteditable="true"]')
+                        : Array.from(document.querySelectorAll('anki-editable, [contenteditable="true"]'));
+                    for (var _bi = 0; _bi < _editablesToBlur.length; _bi++) {{
+                        try {{
+                            var _el = _editablesToBlur[_bi];
+                            if (_el && typeof _el.blur === 'function') {{
+                                _el.blur();
+                            }}
+                        }} catch(_be) {{}}
+                    }}
+                    if (document.activeElement && (document.activeElement.tagName === 'ANKI-EDITABLE' || document.activeElement.isContentEditable)) {{
+                        document.activeElement.blur();
+                    }}
+                }} catch(_eBlur) {{}}
 
                 // 1. Mise a jour immediate des stores Svelte et ProseMirror
                 // Anki 25.09+ attend (fldNames, fldVals) [arity 2], Anki 24.x attend (fldPairs) [arity 1].
@@ -288,21 +307,26 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                         }} else {{
                             globalThis.setFields(fldNames, fldVals);
                         }}
+                        if (typeof globalThis.triggerChanges === 'function') {{
+                            try {{ globalThis.triggerChanges(); }} catch(_eTc) {{}}
+                        }}
                         result.setFields = true;
                     }} catch(e) {{
                         result.error = 'setFields error: ' + String(e);
                     }}
                 }}
 
-                // 2. Pour les notes existantes (dans SQLite), declencher systematiquement le rechargement Svelte natif.
-                // Indispensable car setFields ne met a jour que les stores reactifs superficiels (O)
-                // et PAS l'objet note interne de Svelte (bt) ni le DOM <anki-editable> si le champ etait actif.
-                // Au moindre blur, Svelte renvoie bt stale via updateNotes, ce qui ecrasait et supprimait le lien insere.
+                // 2. Pour les notes existantes (dans SQLite), declencher le rechargement Svelte natif s'il existe.
                 var reloadPromise = null;
                 if (isExisting) {{
-                    var reloadFn = (typeof globalThis._ednRealReloadNote === 'function')
-                        ? globalThis._ednRealReloadNote
-                        : ((typeof globalThis.reloadNote === 'function') ? globalThis.reloadNote : (typeof window.reloadNote === 'function' ? window.reloadNote : null));
+                    var hasRealReload = (typeof globalThis._ednHasRealReloadNote === 'boolean')
+                        ? globalThis._ednHasRealReloadNote
+                        : (typeof globalThis.reloadNote === 'function' || typeof window.reloadNote === 'function');
+                    var reloadFn = hasRealReload
+                        ? ((typeof globalThis._ednRealReloadNote === 'function')
+                            ? globalThis._ednRealReloadNote
+                            : ((typeof globalThis.reloadNote === 'function') ? globalThis.reloadNote : window.reloadNote))
+                        : null;
                     if (reloadFn) {{
                         try {{
                             reloadPromise = reloadFn();
@@ -310,6 +334,8 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                         }} catch(eRel) {{
                             result.error = 'reloadNote error: ' + String(eRel);
                         }}
+                    }} else if (result.setFields) {{
+                        result.ran = true;
                     }}
                 }} else {{
                     // Note AddCards (non encore enregistree dans SQLite) : setFields suffit
@@ -318,9 +344,10 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
 
                 var guardSafetyTimeout = setTimeout(function() {{
                     window._ednReloadInProgress = false;
+                    window._ednProgrammaticReloadActive = false;
+                    window._ednForceReload = false;
                     if (!window._ednBlockUpdateNotesLocked) {{
                         window._ednBlockUpdateNotes = false;
-                        window._ednForceReload = false;
                     }}
                 }}, 3000);
 
@@ -328,9 +355,10 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                     window._ednReloadInProgress = false;
                     clearTimeout(guardSafetyTimeout);
                     setTimeout(function() {{
+                        window._ednProgrammaticReloadActive = false;
+                        window._ednForceReload = false;
                         if (!window._ednBlockUpdateNotesLocked) {{
                             window._ednBlockUpdateNotes = false;
-                            window._ednForceReload = false;
                         }}
                     }}, 400);
                 }}
@@ -373,17 +401,20 @@ def editor_reload_note(editor: Any, keep_focus: bool = True, note: Any = None, t
                         _finishGuards();
                     }});
                 }} else {{
-                    if (keepFocus && targetIdx >= 0 && typeof globalThis.focusField === 'function') {{
-                        try {{ globalThis.focusField(targetIdx); }} catch(e) {{}}
-                    }}
-                    _finishGuards();
+                    setTimeout(function() {{
+                        if (keepFocus && targetIdx >= 0 && typeof globalThis.focusField === 'function') {{
+                            try {{ globalThis.focusField(targetIdx); }} catch(e) {{}}
+                        }}
+                        _finishGuards();
+                    }}, 25);
                 }}
             }} catch(e) {{
                 result.error = String(e);
                 window._ednReloadInProgress = false;
+                window._ednProgrammaticReloadActive = false;
+                window._ednForceReload = false;
                 if (!window._ednBlockUpdateNotesLocked) {{
                     window._ednBlockUpdateNotes = false;
-                    window._ednForceReload = false;
                 }}
             }}
             return result;

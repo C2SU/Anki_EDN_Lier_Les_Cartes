@@ -64,6 +64,20 @@ except ImportError:
 
 
 
+try:
+    from .fsrs import get_last_fsrs_optimization_timestamp, format_timestamp, record_optimization
+    from .symbols_importer import import_edn_symbols
+except ImportError:
+    try:
+        from fsrs import get_last_fsrs_optimization_timestamp, format_timestamp, record_optimization
+        from symbols_importer import import_edn_symbols
+    except ImportError:
+        get_last_fsrs_optimization_timestamp = lambda: None
+        format_timestamp = lambda ts: "Aucune date enregistree"
+        record_optimization = lambda was_optimal=False: None
+        import_edn_symbols = lambda force=False: (True, "OK", 0)
+
+
 # ── Addon catalog definition (Sans emojis) ──
 
 RECOMMENDED_ADDONS_CATALOG = [
@@ -90,9 +104,9 @@ RECOMMENDED_ADDONS_CATALOG = [
 
     {
 
-        "id": "Anki_EDN_Stats",
+        "id": "1201122026",
 
-        "alt_ids": ["Anki_EDN_Stats"],
+        "alt_ids": ["Anki_EDN_Stats", "1201122026"],
 
         "module_id": "edn_progress",
 
@@ -100,29 +114,12 @@ RECOMMENDED_ADDONS_CATALOG = [
 
         "description": "Statistiques d'avancement, maîtrise et difficulté des items EDN.",
 
-        "url": "https://c2su.github.io/Anki_EDN/Anki_EDN.html",
+        "url": "https://ankiweb.net/shared/info/1201122026",
 
         "is_core_edn": True,
 
     },
 
-    {
-
-        "id": "2135076010",
-
-        "alt_ids": ["Anki_EDN_nid", "2135076010"],
-
-        "module_id": "anki_edn_nid",
-
-        "name": "Anki EDN NID (Réparer NID)",
-
-        "description": "Migration et synchronisation des identifiants (NID) des notes.",
-
-        "url": "https://ankiweb.net/shared/info/2135076010",
-
-        "is_core_edn": True,
-
-    },
 
     {
 
@@ -179,6 +176,24 @@ RECOMMENDED_ADDONS_CATALOG = [
     },
 
     # ── Recommandés ──
+
+    {
+
+        "id": "353547840",
+
+        "alt_ids": ["353547840", "1762336370", "Customize Keyboard Shortcuts", "Customize Keyboard Shortcuts (Enhanced Edition)"],
+
+        "module_id": None,
+
+        "name": "Customize Keyboard Shortcuts",
+
+        "description": "Personnalisation des raccourcis clavier et visualiseur interactif.",
+
+        "url": "https://ankiweb.net/shared/info/353547840",
+
+        "is_core_edn": False,
+
+    },
 
     {
 
@@ -664,6 +679,8 @@ class EDNSettingsDialog(QDialog):
 
         self.addon_rows = []
 
+        self.restart_needed = False
+
         self.module_checkboxes = {}
 
         self.preview_section_cbs = {}
@@ -725,10 +742,11 @@ class EDNSettingsDialog(QDialog):
     def setup_ui(self, initial_tab=0):
 
         T = self.T
+        self.setObjectName("ednSettingsDialog")
 
         self.setStyleSheet(f"""
 
-            QDialog {{
+            QDialog#ednSettingsDialog {{
 
                 background-color: {T["bg_dialog"]};
 
@@ -736,7 +754,7 @@ class EDNSettingsDialog(QDialog):
 
             }}
 
-            QLabel {{
+            QDialog#ednSettingsDialog QLabel {{
 
                 border: none;
 
@@ -1104,46 +1122,6 @@ class EDNSettingsDialog(QDialog):
 
         button_layout.addWidget(reset_defaults_btn)
 
-
-
-        tuto_defaults_btn = QPushButton("Rétablir les réglages du tuto")
-
-        tuto_defaults_btn.setStyleSheet(f"""
-
-            QPushButton {{
-
-                background-color: {T["btn_default_bg"]};
-
-                color: {T["btn_default_text"]};
-
-                border: 1px solid {T["btn_default_border"]};
-
-                padding: 8px 16px;
-
-                border-radius: 6px;
-
-                font-weight: 600;
-
-                font-size: 12px;
-
-            }}
-
-            QPushButton:hover {{
-
-                background-color: {T["btn_default_hover"]};
-
-                color: {T["text_main"]};
-
-            }}
-
-        """)
-
-        tuto_defaults_btn.clicked.connect(lambda: open_setup_assistant_dialog(parent=self))
-
-        button_layout.addWidget(tuto_defaults_btn)
-
-
-
         button_layout.addStretch()
 
 
@@ -1370,9 +1348,34 @@ class EDNSettingsDialog(QDialog):
 
         card_layout.addWidget(badge)
 
+        if item.get("id") == "2040501954":
+            import_btn = QPushButton("Importer symboles")
+            import_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 2px 7px;
+                    border: 1px solid {T['border_card']};
+                    border-radius: 4px;
+                    background-color: {T['btn_default_bg']};
+                    color: {T['text_main']};
+                }}
+                QPushButton:hover {{
+                    background-color: {T['btn_default_hover']};
+                }}
+            """)
+            def _quick_import():
+                ok, msg, cnt = import_edn_symbols(force=True)
+                from aqt.utils import tooltip, showInfo
+                if ok:
+                    tooltip(msg, period=3000)
+                else:
+                    showInfo(msg)
+            import_btn.clicked.connect(_quick_import)
+            card_layout.addWidget(import_btn)
 
 
-        self.addon_rows.append({
+
+        row_data = {
 
             "item": item,
 
@@ -1382,7 +1385,9 @@ class EDNSettingsDialog(QDialog):
 
             "matched_id": matched_id
 
-        })
+        }
+
+        self.addon_rows.append(row_data)
 
 
 
@@ -1396,15 +1401,267 @@ class EDNSettingsDialog(QDialog):
 
 
 
-        # Tooltip propre au survol
+        if status == "not_installed":
 
-        card_frame.setToolTip(f"{item['name']}\n{item['description']}\nURL : {item['url']}")
+            cb.setToolTip(f"Cliquer pour télécharger et installer {item['name']} depuis AnkiWeb")
 
-        cb.setToolTip(f"Activer / Désactiver {item['name']}")
+            cb.clicked.connect(lambda checked: self._on_addon_cb_clicked(checked, item, cb, badge, row_data, card_frame))
+
+            card_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            card_frame.setToolTip(
+
+                f"{item['name']}\n{item['description']}\nURL : {item['url']}\n\n"
+
+                "Statut : Non installé (cliquez pour télécharger et installer depuis AnkiWeb)"
+
+            )
+
+            def _card_mouse_press(event):
+
+                try:
+
+                    pos = event.pos() if hasattr(event, "pos") else None
+
+                    child = card_frame.childAt(pos) if pos is not None else None
+
+                except Exception:
+
+                    child = None
+
+                if child != cb and not (child and child.inherits("QCheckBox")):
+
+                    if row_data.get("status") == "not_installed" and not cb.isChecked():
+
+                        cb.setChecked(True)
+
+                        self._on_addon_cb_clicked(True, item, cb, badge, row_data, card_frame)
+
+                try:
+
+                    QFrame.mousePressEvent(card_frame, event)
+
+                except TypeError:
+
+                    pass
+
+            card_frame.mousePressEvent = _card_mouse_press
+
+        else:
+
+            card_frame.setToolTip(f"{item['name']}\n{item['description']}\nURL : {item['url']}")
+
+            cb.setToolTip(f"Activer / Désactiver {item['name']}")
 
 
 
         return card_frame
+
+
+
+    def _on_addon_cb_clicked(self, checked: bool, item: dict, cb: QCheckBox, badge: QLabel, row_data: dict, card_frame: QFrame = None):
+
+        """Déclenché lors du clic sur la case d'un add-on non installé pour lancer son téléchargement."""
+
+        if row_data.get("status") != "not_installed":
+
+            return
+
+
+
+        if not checked:
+
+            return
+
+
+
+        self._download_and_install_addon(item, cb, badge, row_data, card_frame)
+
+
+
+    def _download_and_install_addon(self, item: dict, cb: QCheckBox, badge: QLabel, row_data: dict, card_frame: QFrame = None):
+
+        """Télécharge et installe un add-on depuis AnkiWeb via download_addons."""
+
+        if not mw or not hasattr(mw, "addonManager") or not mw.addonManager:
+
+            from aqt.utils import showInfo
+
+            showInfo("Gestionnaire d'add-ons Anki indisponible.", parent=self)
+
+            cb.setChecked(False)
+
+            return
+
+
+
+        # Résolution de l'identifiant numérique AnkiWeb
+
+        aid_raw = item.get("id")
+
+        aid_int = None
+
+        if aid_raw and str(aid_raw).isdigit():
+
+            aid_int = int(aid_raw)
+
+        else:
+
+            for alt in item.get("alt_ids", []):
+
+                if alt and str(alt).isdigit():
+
+                    aid_int = int(alt)
+
+                    break
+
+
+
+        if not aid_int:
+
+            from aqt.utils import showInfo
+
+            showInfo(f"Code de téléchargement AnkiWeb introuvable pour {item['name']}.", parent=self)
+
+            cb.setChecked(False)
+
+            return
+
+
+
+        try:
+
+            from aqt.addons import download_addons, InstallOk
+
+        except ImportError:
+
+            from aqt.utils import showInfo
+
+            showInfo("Module de téléchargement d'add-ons indisponible dans cette version d'Anki.", parent=self)
+
+            cb.setChecked(False)
+
+            return
+
+
+
+        # Verrouiller temporairement pour éviter les doubles clics
+
+        cb.setEnabled(False)
+
+        if card_frame:
+
+            card_frame.setEnabled(False)
+
+
+
+        def _on_download_done(log):
+
+            cb.setEnabled(True)
+
+            if card_frame:
+
+                card_frame.setEnabled(True)
+
+
+
+            has_success = False
+
+            for entry in log:
+
+                res = entry[1] if isinstance(entry, (tuple, list)) and len(entry) > 1 else entry
+
+                if (InstallOk and isinstance(res, InstallOk)) or type(res).__name__ == "InstallOk":
+
+                    has_success = True
+
+                    break
+
+                elif not isinstance(res, Exception) and getattr(res, "name", None):
+
+                    has_success = True
+
+                    break
+
+
+
+            if has_success:
+
+                row_data["status"] = "installed_active"
+
+                row_data["matched_id"] = str(aid_int)
+
+                cb.setChecked(True)
+
+                cb.setToolTip(f"Activer / Désactiver {item['name']}")
+
+
+
+                T = self.T
+
+                badge_style = f"background: {T['badge_active_bg']}; color: {T['badge_active_text']}; border: 1px solid {T['badge_active_border']};"
+
+                badge.setText(f"<span style='padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: bold; {badge_style}'>Actif</span>")
+
+
+
+                if card_frame:
+
+                    card_frame.setCursor(Qt.CursorShape.ArrowCursor)
+
+                    card_frame.setToolTip(f"{item['name']}\n{item['description']}\nURL : {item['url']}")
+
+
+
+                if item.get("module_id") == "linked_cards":
+
+                    self._update_linked_cards_tab_visibility()
+
+
+
+                if str(aid_int) == "2040501954" or item.get("id") == "2040501954":
+                    try:
+                        import_edn_symbols(force=True)
+                    except Exception as e:
+                        print(f"[EDN Settings] Erreur import symboles post-download: {e}")
+
+                self.restart_needed = True
+
+
+
+                from aqt.utils import tooltip
+
+                tooltip(
+
+                    f"L'add-on '{item['name']}' a été téléchargé et installé avec succès.\n"
+
+                    "Il sera actif après redémarrage d'Anki.",
+
+                    period=4000,
+
+                    parent=self
+
+                )
+
+            else:
+
+                cb.setChecked(False)
+
+                try:
+
+                    from aqt.addons import show_log_to_user
+
+                    show_log_to_user(self, log, title="Téléchargement d'add-on")
+
+                except Exception:
+
+                    from aqt.utils import showWarning
+
+                    showWarning(f"Échec du téléchargement de l'add-on '{item['name']}'.", parent=self)
+
+
+
+        download_addons(self, mw.addonManager, [aid_int], _on_download_done)
 
 
 
@@ -1447,6 +1704,8 @@ class EDNSettingsDialog(QDialog):
 
 
         self.addon_rows = []
+
+        self.restart_needed = False
 
         self.module_checkboxes = {}
 
@@ -1700,7 +1959,146 @@ class EDNSettingsDialog(QDialog):
 
         container_layout.addWidget(protect_frame)
 
+        # ── Surveillance & Rappel FSRS ──
+        fsrs_header = make_selectable_label(
+            f"<b style='font-size: 13px; color: {T['text_main']};'>Surveillance et rappel d'optimisation FSRS</b>"
+        )
+        container_layout.addWidget(fsrs_header)
 
+        fsrs_frame = QFrame()
+        fsrs_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T["bg_card"]};
+                border: 1px solid {T["border_card"]};
+                border-radius: 6px;
+            }}
+        """)
+        fsrs_layout = QVBoxLayout(fsrs_frame)
+        fsrs_layout.setContentsMargins(14, 10, 14, 10)
+        fsrs_layout.setSpacing(8)
+
+        self.cb_fsrs_checker = QCheckBox("Activer le rappel périodique d'optimisation FSRS au démarrage")
+        self.cb_fsrs_checker.setChecked(is_module_enabled("fsrs_checker"))
+        fsrs_layout.addWidget(self.cb_fsrs_checker)
+
+        # Interval settings
+        cfg = get_config()
+        fsrs_timer_row = QHBoxLayout()
+        fsrs_timer_row.setSpacing(8)
+        fsrs_timer_label = QLabel("Fréquence du rappel standard (semaines) :")
+        fsrs_timer_label.setStyleSheet(f"color: {T['text_main']}; font-size: 12px;")
+        self.spin_fsrs_weeks = QSpinBox()
+        self.spin_fsrs_weeks.setRange(1, 12)
+        self.spin_fsrs_weeks.setValue(int(cfg.get("fsrs_reminder_interval_weeks", 3)))
+        self.spin_fsrs_weeks.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {T['bg_card_hover']};
+                color: {T['text_main']};
+                border: 1px solid {T['border_card']};
+                border-radius: 4px;
+                padding: 2px 6px;
+            }}
+        """)
+        fsrs_timer_row.addWidget(fsrs_timer_label)
+        fsrs_timer_row.addWidget(self.spin_fsrs_weeks)
+        fsrs_timer_row.addStretch()
+        fsrs_layout.addLayout(fsrs_timer_row)
+
+        # Last opt date and optimal checkbox
+        last_ts = get_last_fsrs_optimization_timestamp()
+        last_str = format_timestamp(last_ts)
+        self.lbl_fsrs_last_date = QLabel(f"<b>Dernière optimisation enregistrée :</b> {last_str}")
+        self.lbl_fsrs_last_date.setStyleSheet(f"color: {T['text_main']}; font-size: 12px;")
+        fsrs_layout.addWidget(self.lbl_fsrs_last_date)
+
+        self.cb_fsrs_was_optimal = QCheckBox("Dernière optimisation : réglages optimaux détectés (réduit le rappel à 1 semaine)")
+        self.cb_fsrs_was_optimal.setChecked(bool(cfg.get("fsrs_last_was_optimal", False)))
+        self.cb_fsrs_was_optimal.setToolTip(
+            "Si Anki a indiqué que vos paramètres sont déjà optimaux lors de la dernière optimisation,\n"
+            "le prochain rappel est automatiquement rapproché à 1 semaine."
+        )
+        fsrs_layout.addWidget(self.cb_fsrs_was_optimal)
+
+
+        container_layout.addWidget(fsrs_frame)
+
+        # ── Outils de Rédaction & Saisie médicale ──
+        redac_header = make_selectable_label(
+            f"<b style='font-size: 13px; color: {T['text_main']};'>Outils de Rédaction et Saisie médicale</b>"
+        )
+        container_layout.addWidget(redac_header)
+
+        redac_frame = QFrame()
+        redac_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T["bg_card"]};
+                border: 1px solid {T["border_card"]};
+                border-radius: 6px;
+            }}
+        """)
+        redac_layout = QVBoxLayout(redac_frame)
+        redac_layout.setContentsMargins(14, 10, 14, 10)
+        redac_layout.setSpacing(8)
+
+        self.cb_auto_bullet = QCheckBox("Proposer par défaut une première puce dans les champs Verso / Description pour guider le rédacteur")
+        self.cb_auto_bullet.setChecked(bool(cfg.get("auto_bullet_in_editor", True)))
+        self.cb_auto_bullet.setToolTip(
+            "Initialise automatiquement une puce (<ul><li>...</li></ul>) dans les champs de réponse vides\n"
+            "(Verso dans Basique, Description dans Syndrome et Sémiologie) conformément aux normes du deck EDN."
+        )
+        redac_layout.addWidget(self.cb_auto_bullet)
+
+
+        container_layout.addWidget(redac_frame)
+
+        # ── Maintenance et Réparation des NID ──
+        nid_header = make_selectable_label(
+            f"<b style='font-size: 13px; color: {T['text_main']};'>Maintenance et Réparation des NID</b>"
+        )
+        container_layout.addWidget(nid_header)
+
+        nid_frame = QFrame()
+        nid_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T["bg_card"]};
+                border: 1px solid {T["border_card"]};
+                border-radius: 6px;
+            }}
+        """)
+        nid_layout = QVBoxLayout(nid_frame)
+        nid_layout.setContentsMargins(14, 10, 14, 10)
+        nid_layout.setSpacing(8)
+
+        nid_desc = make_selectable_label(
+            f"<span style='font-size: 11.5px; color: {T['text_muted']};'>"
+            "Harmonise les identifiants de notes (NID) de votre collection locale avec la base officielle AnkiCollab. "
+            "Cette opération est exécutée automatiquement après le téléchargement du deck ou peut être lancée manuellement ici."
+            "</span>"
+        )
+        nid_layout.addWidget(nid_desc)
+
+        nid_btn_row = QHBoxLayout()
+        self.btn_repair_nid = QPushButton("Réparer les NID")
+        self.btn_repair_nid.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T['btn_default_bg']}; color: {T['btn_default_text']};
+                border: 1px solid {T['btn_default_border']};
+                padding: 6px 12px; border-radius: 5px; font-weight: 600; font-size: 11.5px;
+            }}
+            QPushButton:hover {{
+                background-color: {T['btn_default_hover']}; color: {T['text_main']};
+            }}
+        """)
+        self.btn_repair_nid.setToolTip(
+            "Met à jour les NID locaux de vos notes EDN conformément au mapping officiel\n"
+            "pour assurer la compatibilité des liens entre cartes et la synchronisation."
+        )
+        self.btn_repair_nid.clicked.connect(self._on_repair_nid_clicked)
+        nid_btn_row.addWidget(self.btn_repair_nid)
+        nid_btn_row.addStretch()
+        nid_layout.addLayout(nid_btn_row)
+
+        container_layout.addWidget(nid_frame)
 
         container_layout.addStretch()
 
@@ -1749,30 +2147,6 @@ class EDNSettingsDialog(QDialog):
         shortcuts_btn.clicked.connect(self.open_shortcuts_dialog)
 
         bottom_row.addWidget(shortcuts_btn)
-
-
-
-        guide_btn = QPushButton("Guide de démarrage")
-
-        guide_btn.setStyleSheet(f"""
-
-            QPushButton {{
-
-                background-color: {T['btn_default_bg']}; color: {T['btn_default_text']}; border: 1px solid {T['btn_default_border']};
-
-                padding: 7px 14px; border-radius: 5px; font-weight: 600; font-size: 12px;
-
-            }}
-
-            QPushButton:hover {{ background-color: {T['btn_default_hover']}; color: {T['text_main']}; }}
-
-        """)
-
-        guide_btn.clicked.connect(lambda: show_onboarding_guide(parent=self))
-
-        bottom_row.addWidget(guide_btn)
-
-
 
         bottom_row.addStretch()
 
@@ -1942,7 +2316,7 @@ class EDNSettingsDialog(QDialog):
 
             "Colore la barre verticale d'icône (gauche) du premier champ selon le rang officiel :\n"
 
-            "• Rang A : Essentiel (par défaut Noir)\n"
+            "• Rang A : Essentiel (par défaut Rouge)\n"
 
             "• Rang B : Important (par défaut Bleu)\n"
 
@@ -3887,9 +4261,19 @@ class EDNSettingsDialog(QDialog):
 
                     aid = item.get("id")
 
-                    if aid and aid.isdigit() and mgr and hasattr(mgr, "install"):
+                    if not aid or not str(aid).isdigit():
 
-                        addons_to_install.append((aid, item["name"]))
+                        for alt in item.get("alt_ids", []):
+
+                            if alt and str(alt).isdigit():
+
+                                aid = alt
+
+                                break
+
+                    if aid and str(aid).isdigit() and mgr:
+
+                        addons_to_install.append((int(aid), item["name"]))
 
                 elif status == "installed_disabled":
 
@@ -3937,29 +4321,28 @@ class EDNSettingsDialog(QDialog):
 
         if addons_to_install and mgr:
 
-            if hasattr(mw, "progress"):
+            try:
 
-                mw.progress.start(immediate=True, label="Installation des add-ons...")
+                from aqt.addons import download_addons
 
-            for aid, aname in addons_to_install:
+                ids_to_dl = [aid for aid, _ in addons_to_install]
 
-                try:
+                def _batch_done(log):
+                    if any(str(aid) == "2040501954" for aid, _ in addons_to_install):
+                        try:
+                            import_edn_symbols(force=True)
+                        except Exception:
+                            pass
 
-                    res = mgr.install(mw, aid)
+                download_addons(mw, mgr, ids_to_dl, _batch_done)
 
-                    if res:
+                installed_count = len(ids_to_dl)
 
-                        installed_count += 1
+                restart_needed = True
 
-                        restart_needed = True
+            except Exception as e:
 
-                except Exception as e:
-
-                    print(f"[EDN Settings] Erreur installation {aname} ({aid}): {e}")
-
-            if hasattr(mw, "progress"):
-
-                mw.progress.finish()
+                print(f"[EDN Settings] Erreur installation batch add-ons: {e}")
 
 
 
@@ -4067,6 +4450,36 @@ class EDNSettingsDialog(QDialog):
 
 
 
+        # Sauvegarde FSRS & Outils Redaction
+
+        try:
+
+            edn_cfg = get_config()
+
+            if hasattr(self, "spin_fsrs_weeks"):
+
+                edn_cfg["fsrs_reminder_interval_weeks"] = self.spin_fsrs_weeks.value()
+
+            if hasattr(self, "cb_fsrs_was_optimal"):
+
+                edn_cfg["fsrs_last_was_optimal"] = self.cb_fsrs_was_optimal.isChecked()
+
+            if hasattr(self, "cb_auto_bullet"):
+
+                edn_cfg["auto_bullet_in_editor"] = self.cb_auto_bullet.isChecked()
+
+            save_config(edn_cfg)
+
+            if hasattr(self, "cb_fsrs_checker"):
+
+                set_module_enabled("fsrs_checker", self.cb_fsrs_checker.isChecked())
+
+        except Exception as e:
+
+            print(f"[EDN Settings] Erreur sauvegarde FSRS/Redaction: {e}")
+
+
+
 
 
 
@@ -4111,7 +4524,7 @@ class EDNSettingsDialog(QDialog):
 
             msg += f"\n\n{len(addons_to_enable)} add-on(s) réactivé(s)."
 
-        if restart_needed or installed_count > 0 or addons_to_enable:
+        if restart_needed or getattr(self, "restart_needed", False) or installed_count > 0 or addons_to_enable:
 
             msg += "\n\nVeuillez redémarrer Anki pour finaliser l'application."
 
@@ -4138,4 +4551,19 @@ class EDNSettingsDialog(QDialog):
         dialog = ShortcutsDialog(self)
 
         dialog.exec()
+
+    def _on_repair_nid_clicked(self) -> None:
+        """Lance manuellement la réparation des NID depuis l'onglet des préférences."""
+        try:
+            try:
+                from .nid_repair import migrate_nids
+            except ImportError:
+                try:
+                    from nid_repair import migrate_nids
+                except ImportError:
+                    from Anki_EDN_Installer.nid_repair import migrate_nids
+            migrate_nids(silent=False)
+        except Exception as e:
+            from aqt.utils import showCritical
+            showCritical(f"Erreur lors de la réparation des NID :\n{str(e)}", parent=self)
 

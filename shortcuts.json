@@ -8,7 +8,10 @@
       "label": "Ouvrir le gestionnaire de cartes liees",
       "scope": "main",
       "default": "Ctrl+Alt+L",
-      "fallbacks": ["Ctrl+Shift+L", "F7"],
+      "fallbacks": [
+        "Ctrl+Shift+L",
+        "F7"
+      ],
       "config_key": "linked_cards_search"
     },
     {
@@ -16,7 +19,10 @@
       "label": "Copier le NID de la note courante",
       "scope": "browser",
       "default": "Ctrl+Alt+C",
-      "fallbacks": ["Ctrl+Shift+C", "Ctrl+Alt+N"],
+      "fallbacks": [
+        "Ctrl+Shift+C",
+        "Ctrl+Alt+N"
+      ],
       "config_key": "linked_cards_copy"
     },
     {
@@ -24,7 +30,10 @@
       "label": "Afficher l'assistant des cartes liees",
       "scope": "reviewer",
       "default": "Ctrl+Alt+B",
-      "fallbacks": ["Ctrl+Shift+B", "F9"],
+      "fallbacks": [
+        "Ctrl+Shift+B",
+        "F9"
+      ],
       "config_key": "linked_cards_liens"
     },
     {
@@ -32,7 +41,10 @@
       "label": "Naviguer vers la carte liee suivante",
       "scope": "reviewer",
       "default": "n",
-      "fallbacks": ["Alt+N", "Right"],
+      "fallbacks": [
+        "Alt+N",
+        "Right"
+      ],
       "config_key": "linked_cards_kbd_open"
     },
     {
@@ -40,7 +52,10 @@
       "label": "Apercu rapide de la carte liee",
       "scope": "reviewer",
       "default": "p",
-      "fallbacks": ["Alt+P", "Left"],
+      "fallbacks": [
+        "Alt+P",
+        "Left"
+      ],
       "config_key": "linked_cards_kbd_preview"
     },
     {
@@ -48,7 +63,10 @@
       "label": "Ouvrir la carte liee dans le navigateur",
       "scope": "reviewer",
       "default": "r",
-      "fallbacks": ["Alt+R", "Ctrl+O"],
+      "fallbacks": [
+        "Alt+R",
+        "Ctrl+O"
+      ],
       "config_key": "linked_cards_kbd_navigate"
     },
     {
@@ -56,8 +74,22 @@
       "label": "Retour a la carte source initiale",
       "scope": "reviewer",
       "default": "z",
-      "fallbacks": ["Alt+Z", "Escape"],
+      "fallbacks": [
+        "Alt+Z",
+        "Escape"
+      ],
       "config_key": "linked_cards_kbd_back"
+    },
+    {
+      "id": "linked_cards.quick_tagger",
+      "label": "Ajout d'étiquette à la volée",
+      "scope": "reviewer",
+      "default": "T",
+      "fallbacks": [
+        "Shift+T",
+        "Alt+T"
+      ],
+      "config_key": "quick_tagger_reviewer"
     }
   ]
 }

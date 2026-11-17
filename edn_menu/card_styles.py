@@ -23,8 +23,8 @@ ADDON_PATH = os.path.dirname(os.path.abspath(__file__))
 PREFS_KEY = "edn_card_prefs"
 
 DEFAULT_PREFS = {
-    "showRankBadge": False,
-    "rank_color_a": "#111827",
+    "showRankBadge": True,
+    "rank_color_a": "#aa0000",
     "rank_color_b": "#3182CE",
     "rank_color_c": "#38A169",
     "showSpecialtyIcon": True,
@@ -36,7 +36,7 @@ DEFAULT_PREFS = {
     "virtual_flag_color_suspended": "flag1",
     "reviewDualFlags": False,
     "previewDualFlags": False,
-    "flagAgainEnabled": False,
+    "flagAgainEnabled": True,
     "flagAgainCount": 7,
     "virtual_flag_color_leech": "flag2",
     "cleanDuplicateLineBreaks": True,
@@ -79,22 +79,33 @@ def _prefs_file() -> str:
 
 
 _CACHED_PREFS = None
+_CACHED_PREFS_PATH = None
+_CACHED_PREFS_MTIME = None
 
 
 def load_prefs() -> dict:
-    global _CACHED_PREFS
-    if _CACHED_PREFS is not None:
-        return _CACHED_PREFS
+    global _CACHED_PREFS, _CACHED_PREFS_PATH, _CACHED_PREFS_MTIME
+    has_profile = bool(mw and getattr(mw, "pm", None) and mw.pm.name)
+    if not has_profile:
+        return dict(DEFAULT_PREFS)
+    p = _prefs_file()
     try:
-        p = _prefs_file()
         if os.path.exists(p):
+            mtime = os.path.getmtime(p)
+            if (
+                _CACHED_PREFS is not None
+                and _CACHED_PREFS_PATH == p
+                and _CACHED_PREFS_MTIME == mtime
+            ):
+                return dict(_CACHED_PREFS)
             with open(p, "r", encoding="utf-8") as f:
                 _CACHED_PREFS = {**DEFAULT_PREFS, **json.load(f)}
-                return _CACHED_PREFS
+            _CACHED_PREFS_PATH = p
+            _CACHED_PREFS_MTIME = mtime
+            return dict(_CACHED_PREFS)
     except Exception:
         pass
-    _CACHED_PREFS = dict(DEFAULT_PREFS)
-    return _CACHED_PREFS
+    return dict(DEFAULT_PREFS)
 
 
 def _generate_dynamic_css(prefs: dict) -> str:
@@ -349,13 +360,13 @@ class CardStylesDialog(QDialog):
         self.cb_rank.setChecked(self.prefs.get("showRankBadge", True))
         self.cb_rank.setToolTip(
             "Colore la barre verticale d'icône du premier champ en fonction du rang de la carte.\n"
-            "Noir = Rang A   Bleu = Rang B   Vert = Rang C   Gris = non classé"
+            "Rouge = Rang A   Bleu = Rang B   Vert = Rang C   Gris = non classé"
         )
         layout.addWidget(self.cb_rank)
 
         rank_desc = QLabel(
             "  <small>La barre verticale d'icône (gauche) prend la couleur du rang.<br>"
-            "  Noir = Rang A (Essentiel) | Bleu = Rang B (Important) | Vert = Rang C.</small>"
+            "  Rouge = Rang A (Essentiel) | Bleu = Rang B (Important) | Vert = Rang C.</small>"
         )
         rank_desc.setStyleSheet(f"color: {muted_color}; margin-left: 20px;")
         layout.addWidget(rank_desc)

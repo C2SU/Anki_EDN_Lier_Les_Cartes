@@ -48,6 +48,7 @@ def _get_registry() -> dict:
 
         _local_registry.clear()
 
+    mw._edn_registered_modules.pop('anki_edn_nid', None)
     return mw._edn_registered_modules
 
 
@@ -280,6 +281,9 @@ def _ensure_standard_menu_actions(menu) -> None:
             or "Importer les symboles" in txt
             or "étiquette à la volée" in txt.lower()
             or "etiquette a la volee" in txt.lower()
+            or "réparer les nid" in txt.lower()
+            or "reparer les nid" in txt.lower()
+            or "anki_edn_nid" in obj.lower()
         ):
             menu.removeAction(act)
             try:
@@ -295,6 +299,9 @@ def _ensure_standard_menu_actions(menu) -> None:
                 obj.startswith("EDN_ShortcutOnly_quick_tagger")
                 or "étiquette à la volée" in txt.lower()
                 or "etiquette a la volee" in txt.lower()
+            or "réparer les nid" in txt.lower()
+            or "reparer les nid" in txt.lower()
+            or "anki_edn_nid" in obj.lower()
             ):
                 mw.removeAction(act)
                 try:
@@ -426,8 +433,9 @@ def get_edn_menu():
 
 
 def register_module(module_id: str, name: str, description: str = "", 
-
                    default_enabled: bool = True):
+    if module_id == "anki_edn_nid":
+        return False
 
     """
 
