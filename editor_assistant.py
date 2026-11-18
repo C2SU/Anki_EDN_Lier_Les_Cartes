@@ -2584,11 +2584,7 @@ def _compute_suggestions(col, current_nid: str, note_fields: list, existing_nids
             fof_target_ids = set()
             for frow in fof_rows:
                 rflds = frow[1].split("\x1f") if frow[1] else []
-                for f in rflds:
-                    for match in re.finditer(r'data-nid=[\"\'](\d{10,})[\"\']', f):
-                        fof_target_ids.add(match.group(1))
-                    for match in re.finditer(r'\b(1\d{12})\b', f):
-                        fof_target_ids.add(match.group(1))
+                fof_target_ids.update(extract_nids_from_fields_list(rflds))
             cand_fof_nids = [int(tid) for tid in fof_target_ids if str(tid) not in all_linked][:40]
             if cand_fof_nids:
                 cand_fof_rows = col.db.all(

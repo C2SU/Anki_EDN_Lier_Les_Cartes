@@ -470,6 +470,51 @@ class InterLinkSelectionDialog(QDialog):
     def get_selected_pairs(self):
         return [pair for cb, pair in self.checkboxes if cb.isChecked()]
 
+def _kbd_badge_start_pattern(target_nid_str: str) -> str:
+    """Regex capturant le préfixe d'un badge <kbd> ciblant target_nid_str (avec ou sans data-nid)."""
+    esc = re.escape(str(target_nid_str))
+    return (
+        rf'<kbd\b[^>]*\bdata-nid=["\']{esc}["\'][^>]*>'
+        rf'|'
+        rf'<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>(?:(?!</?kbd\b).)*?'
+        rf'(?:<span\b[^>]*\bclass=["\'][^"\']*\bedn-nid\b[^"\']*["\'][^>]*>\s*{esc}\s*</span>|(?<!\d){esc}(?!\d))'
+    )
+
+
+def _kbd_badge_full_pattern(target_nid_str: str) -> str:
+    """Regex non-imbriquée matchant un élément <kbd>...</kbd> complet pour target_nid_str (avec ou sans data-nid)."""
+    return rf'(?:{_kbd_badge_start_pattern(target_nid_str)})(?:(?!</?kbd\b).)*?</kbd>'
+
+
+def _extract_badge_nids(html_text: str) -> list:
+    """Extrait tous les NIDs présents dans des badges <kbd> (data-nid, span.edn-nid ou texte numérique clickable_cards)."""
+    if not html_text:
+        return []
+    nids = []
+    seen = set()
+
+    def _add(val: str) -> None:
+        if val and val not in seen:
+            seen.add(val)
+            nids.append(val)
+
+    for m in re.finditer(r'\bdata-nid=["\'](\d+)["\']', html_text, flags=re.IGNORECASE):
+        _add(m.group(1))
+    for m in re.finditer(
+        r'<span\b[^>]*\bclass=["\'][^"\']*\bedn-nid\b[^"\']*["\'][^>]*>\s*(\d+)\s*</span>',
+        html_text,
+        flags=re.IGNORECASE,
+    ):
+        _add(m.group(1))
+    for m in re.finditer(
+        r'<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>\s*(\d{10,})\s*</kbd>',
+        html_text,
+        flags=re.IGNORECASE,
+    ):
+        _add(m.group(1))
+    return nids
+
+
 def update_link_description_in_note(note, target_nid_str, new_desc):
     """Updates the description of the link to target_nid_str in the fields of note in database."""
     modified = False
@@ -478,18 +523,19 @@ def update_link_description_in_note(note, target_nid_str, new_desc):
     # We support standard dashes —, \u2014, –, \u2013, hyphens, and various spaces/nbsp
     space_pattern = r'(?:\s|&nbsp;|&#160;|\xa0)*'
     dash_pattern = r'(?:—|\u2014|–|\u2013|-|&mdash;|&ndash;|&#8212;|&#8211;)'
+    badge_start_pat = _kbd_badge_start_pattern(target_nid_str)
     
-    pattern_span = r'<span\s+[^>]*class="edn-desc"[^>]*>(?:<br\s*/?>|[^<])*</span>' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
-    pattern_text = r'([^<>\n]*?)' + space_pattern + dash_pattern + space_pattern + r'(<kbd\s+[^>]*data-nid="' + re.escape(target_nid_str) + r'"[^>]*>)'
+    pattern_span = r'<span\s+[^>]*class="edn-desc"[^>]*>(?:<br\s*/?>|[^<])*</span>' + space_pattern + dash_pattern + space_pattern + rf'({badge_start_pat})'
+    pattern_text = r'([^<>\n]*?)' + space_pattern + dash_pattern + space_pattern + rf'({badge_start_pat})'
     
     for i in range(len(note.fields)):
         content = note.fields[i]
         if target_nid_str in content:
             new_content = _move_br_outside_edn_desc(content)
-            if re.search(pattern_span, new_content):
-                new_content = re.sub(pattern_span, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(1)}', new_content)
+            if re.search(pattern_span, new_content, flags=re.IGNORECASE | re.DOTALL):
+                new_content = re.sub(pattern_span, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(1)}', new_content, flags=re.IGNORECASE | re.DOTALL)
             else:
-                new_content = re.sub(pattern_text, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(2)}', new_content)
+                new_content = re.sub(pattern_text, lambda m: f'<span class="edn-desc">{new_desc_escaped}</span>&nbsp;—&nbsp;{m.group(2)}', new_content, flags=re.IGNORECASE | re.DOTALL)
             if new_content != content:
                 note.fields[i] = new_content
                 modified = True
@@ -562,7 +608,7 @@ def on_add_cards_did_add_note(note: Any) -> None:
         target_nids = []
         nid_to_source_field = {}
         for field_idx, field_value in enumerate(note.fields):
-            nids = re.findall(r'data-nid="(\d+)"', field_value)
+            nids = _extract_badge_nids(field_value)
             for nid in nids:
                 if nid not in target_nids:
                     target_nids.append(nid)
@@ -2511,11 +2557,21 @@ def _clean_kbd_html(html_text):
     # et on reconstruit un kbd badge unique et propre à la fin.
     def flatten_nested(match):
         outer_content = match.group(1)
-        inner_match = re.search(r'<kbd\s+class="clickable_cards"[^>]*data-nid="(\d{10,})"[^>]*>.*?</kbd>', outer_content)
-        if inner_match:
-            nid = inner_match.group(1)
+        inner_match = re.search(
+            r'<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>.*?</kbd>',
+            outer_content,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        inner_nids = [n for n in (_extract_badge_nids(inner_match.group(0)) if inner_match else []) if len(n) >= 10]
+        if inner_match and inner_nids:
+            nid = inner_nids[0]
             # Retirer l'élément kbd interne du texte extérieur
-            text_outside = re.sub(r'<kbd\s+class="clickable_cards"[^>]*>.*?</kbd>', '', outer_content)
+            text_outside = re.sub(
+                r'<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>.*?</kbd>',
+                '',
+                outer_content,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             # Nettoyer toutes les balises span.edn-nid résiduelles ou imbriquées
             text_outside = re.sub(r'<span[^>]*class="edn-nid"[^>]*>.*?</span>', '', text_outside)
             text_outside = re.sub(r'<span[^>]*class="edn-nid"[^>]*>', '', text_outside)
@@ -2535,7 +2591,12 @@ def _clean_kbd_html(html_text):
         return match.group(0)
 
     # Aplatir récursivement les kbd imbriqués
-    html_text = re.sub(r'<kbd\s+class="clickable_cards"[^>]*>(.*?)</kbd>', flatten_nested, html_text, flags=re.DOTALL)
+    nested_kbd_pat = (
+        r'<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>'
+        r'((?:(?!</?kbd\b).)*<kbd\b[^>]*\bclass=["\'][^"\']*\bclickable_cards\b[^"\']*["\'][^>]*>(?:(?!</?kbd\b).)*?</kbd>(?:(?!</?kbd\b).)*)'
+        r'</kbd>'
+    )
+    html_text = re.sub(nested_kbd_pat, flatten_nested, html_text, flags=re.IGNORECASE | re.DOTALL)
     
     # 3. Supprimer les <kbd> vides résiduels (après nettoyage des imbriqués)
     html_text = re.sub(empty_kbd, '', html_text)
@@ -2856,6 +2917,11 @@ def _on_editor_load_note(editor):
             try:
                 from .editor_assistant import clear_assistant_preview_cache
                 clear_assistant_preview_cache(note.id)
+            except Exception:
+                pass
+        if editor and getattr(editor, 'web', None):
+            try:
+                editor.web.eval("if (window._ednInjectShadowStyles) window._ednInjectShadowStyles();")
             except Exception:
                 pass
     except Exception:
@@ -4045,6 +4111,39 @@ def _do_editor_init(editor: Editor):
         if (window._ednEditorHoverInit) return;
         window._ednEditorHoverInit = true;
         
+        function _extractNidFromBadgeEl(kbd) {
+            if (!kbd) return '';
+            var nid = kbd.getAttribute('data-nid');
+            if (nid && /^\d{10,}$/.test(nid.trim())) return nid.trim();
+            var nidSpan = kbd.querySelector('.edn-nid');
+            if (nidSpan) {
+                var t = (nidSpan.textContent || nidSpan.innerText || '').trim();
+                if (/^\d{10,}$/.test(t)) return t;
+            }
+            var plain = (kbd.textContent || kbd.innerText || '').trim();
+            if (/^\d{10,}$/.test(plain)) return plain;
+            return '';
+        }
+
+        function _repairEdnBadgesInRoot(root) {
+            if (!root || !root.querySelectorAll) return;
+            var badges = root.querySelectorAll('.clickable_cards');
+            for (var i = 0; i < badges.length; i++) {
+                var kbd = badges[i];
+                if (kbd.getAttribute('contenteditable') !== 'false') {
+                    kbd.setAttribute('contenteditable', 'false');
+                }
+                if (kbd.getAttribute('tabindex') !== '0') {
+                    kbd.setAttribute('tabindex', '0');
+                }
+                if (!kbd.getAttribute('data-nid')) {
+                    var nid = _extractNidFromBadgeEl(kbd);
+                    if (nid) kbd.setAttribute('data-nid', nid);
+                }
+            }
+        }
+        window._ednRepairBadgesInRoot = _repairEdnBadgesInRoot;
+
         function _injectEdnShadowStyles() {
             var css = `
                 kbd.clickable_cards {
@@ -4228,14 +4327,27 @@ def _do_editor_init(editor: Editor):
                 }
             `;
 
+            _repairEdnBadgesInRoot(document);
             var editables = document.querySelectorAll('anki-editable');
             for (var i = 0; i < editables.length; i++) {
                 var ed = editables[i];
-                if (ed.shadowRoot && !ed.shadowRoot.getElementById('edn-shadow-styles')) {
-                    var st = document.createElement('style');
-                    st.id = 'edn-shadow-styles';
-                    st.textContent = css;
-                    ed.shadowRoot.appendChild(st);
+                _repairEdnBadgesInRoot(ed);
+                if (ed.shadowRoot) {
+                    if (!ed.shadowRoot.getElementById('edn-shadow-styles')) {
+                        var st = document.createElement('style');
+                        st.id = 'edn-shadow-styles';
+                        st.textContent = css;
+                        ed.shadowRoot.appendChild(st);
+                    }
+                    _repairEdnBadgesInRoot(ed.shadowRoot);
+                    if (window.MutationObserver && !ed.shadowRoot._ednBadgeObserver) {
+                        (function(sr) {
+                            sr._ednBadgeObserver = new MutationObserver(function() {
+                                _repairEdnBadgesInRoot(sr);
+                            });
+                            sr._ednBadgeObserver.observe(sr, { childList: true, subtree: true });
+                        })(ed.shadowRoot);
+                    }
                 }
             }
         }
@@ -4500,6 +4612,7 @@ def _do_editor_init(editor: Editor):
                         else nid = (kbd.innerText || '').trim().replace(/[^0-9]/g, '');
                     }
                     if (nid && nid.length > 9) {
+                        if (kbd.getAttribute('contenteditable') !== 'false') kbd.setAttribute('contenteditable', 'false');
                         if (!kbd.getAttribute('data-nid')) kbd.setAttribute('data-nid', nid);
                         if (!kbd.getAttribute('tabindex')) kbd.setAttribute('tabindex', '0');
                     }
@@ -7131,13 +7244,40 @@ def generate_smart_link_label(source_note, target_note, allow_main=True):
     return clean_t
 
 
+def _build_selected_text_html_pattern(text: str) -> str:
+    """Construit une regex tolérante au HTML (entités, &nbsp;, espaces) pour retrouver un texte sélectionné."""
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+    entity_map = {
+        "&": r"(?:&amp;|&)",
+        "<": r"(?:&lt;|<)",
+        ">": r"(?:&gt;|>)",
+        '"': r'(?:&quot;|&#34;|")',
+        "'": r"(?:&#39;|&#x27;|&apos;|')",
+    }
+    parts = []
+    i = 0
+    n = len(clean)
+    while i < n:
+        ch = clean[i]
+        if ch.isspace():
+            while i < n and clean[i].isspace():
+                i += 1
+            parts.append(r"(?:&nbsp;|\s)+")
+        else:
+            parts.append(entity_map.get(ch, re.escape(ch)))
+            i += 1
+    return "".join(parts)
+
+
 class LinkInserter:
     is_inserting = False
 
     def __init__(self, editor):
         self.editor = editor
         
-    def insert_link(self, items, override_html=None, mirror_requested=False, target_fidx=None, is_first_line=False):
+    def insert_link(self, items, override_html=None, mirror_requested=False, target_fidx=None, is_first_line=False, replaced_text=None):
         """Insère les liens de cartes directement dans la note courante.
         Persistance garantie à 100% dans la collection SQLite via col_note.fields[fidx].
         100% rétro-compatible avec Svelte ON (NewEditor) et Svelte OFF (Legacy Editor).
@@ -7227,6 +7367,8 @@ class LinkInserter:
                     def _unwrap_legacy_kbd(m):
                         whole_tag = m.group(1)
                         inner = m.group(2)
+                        if re.search(r'\bclass=["\'][^"\']*\bclickable_cards\b', whole_tag, flags=re.IGNORECASE):
+                            return m.group(0)
                         inner_text = re.sub(r'<[^>]+>|&nbsp;|:::EDN_MARKER:::', '', inner)
                         if _snid in whole_tag or _snid in inner_text:
                             return inner
@@ -7251,6 +7393,17 @@ class LinkInserter:
 
                 if has_marker:
                     # Emplacement exact du curseur mémorisé : insérer le HTML directement à cette position.
+                    # Si le texte sélectionné (mode hyperlien) est juste avant le marker, le retirer pour éviter le doublon.
+                    if replaced_text:
+                        sel_pat = _build_selected_text_html_pattern(replaced_text)
+                        if sel_pat:
+                            cur_val = re.sub(
+                                rf'(?:{sel_pat})(?:&nbsp;|\s)*(?:{marker_pattern})',
+                                ':::EDN_MARKER:::',
+                                cur_val,
+                                count=1,
+                                flags=re.IGNORECASE
+                            )
                     # Si le NID brut sélectionné n'a pas été effacé du DOM (ex. juste avant ou après le marker), on le retire.
                     if single_nid_str:
                         # 1) NID brut juste avant le marker (avec éventuel espace/&nbsp;)
@@ -7271,11 +7424,11 @@ class LinkInserter:
                         )
                         # 3) Badge nu adjacent au marker
                         cur_val = re.sub(
-                            rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*(?:{marker_pattern})',
+                            rf'(?:&nbsp;|\s)*{_kbd_badge_full_pattern(single_nid_str)}(?:&nbsp;|\s)*(?:{marker_pattern})',
                             ':::EDN_MARKER:::',
                             cur_val,
                             count=1,
-                            flags=re.IGNORECASE
+                            flags=re.IGNORECASE | re.DOTALL
                         )
                     new_val = re.sub(marker_pattern, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
                 elif is_inline:
@@ -7301,11 +7454,11 @@ class LinkInserter:
                     if not prefix.endswith('&nbsp;') and not prefix.endswith(' '):
                         prefix += '&nbsp;'
                     new_val = prefix + badge_html + '&nbsp;'
-                elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*', cur_val, flags=re.IGNORECASE):
+                elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*{_kbd_badge_full_pattern(single_nid_str)}(?:&nbsp;|\s)*', cur_val, flags=re.IGNORECASE | re.DOTALL):
                     # Remplacement en place d'un badge nu (sans titre) déjà présent sur cette ligne :
                     # on intègre directement le titre et le badge sur cette même ligne sans sauter de ligne
-                    naked_badge_pat = rf'(?:&nbsp;|\s)*<kbd[^>]*data-nid=["\']{re.escape(single_nid_str)}["\'][^>]*>.*?</kbd>(?:&nbsp;|\s)*'
-                    new_val = re.sub(naked_badge_pat, lambda _: html, cur_val, count=1, flags=re.IGNORECASE)
+                    naked_badge_pat = rf'(?:&nbsp;|\s)*{_kbd_badge_full_pattern(single_nid_str)}(?:&nbsp;|\s)*'
+                    new_val = re.sub(naked_badge_pat, lambda _: html, cur_val, count=1, flags=re.IGNORECASE | re.DOTALL)
                 elif single_nid_str and re.search(rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$', cur_val, flags=re.IGNORECASE):
                     # Remplacement en place d'un NID brut en fin de ligne : pas de saut de ligne
                     trailing_nid_pat = rf'(?:&nbsp;|\s)*{re.escape(single_nid_str)}(?:&nbsp;|\s)*(?:<br\s*/?>\s*)?$'
@@ -7474,7 +7627,14 @@ class LinkInserter:
         safe_nid = str(nid)
         badge = make_clickable_card_badge(safe_nid, custom_text=display_text)
         html = f'{badge}&nbsp;'
-        self.insert_link([(safe_nid, None)], override_html=html, mirror_requested=mirror_requested, target_fidx=target_fidx, is_first_line=is_first_line)
+        self.insert_link(
+            [(safe_nid, None)],
+            override_html=html,
+            mirror_requested=mirror_requested,
+            target_fidx=target_fidx,
+            is_first_line=is_first_line,
+            replaced_text=display_text,
+        )
         tooltip(f"Lien '{display_text}' -> carte {nid}")
 
 
